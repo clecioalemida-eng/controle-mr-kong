@@ -16,12 +16,15 @@ admin. Banco de dados: Supabase. Deploy: Vercel.
    - criação automática de perfil (pendente) a cada novo cadastro
    - tabela `modulos` (os cards) e `acessos_modulo` (quem pode ver qual card)
    - trava o checklist para só usuários aprovados lerem/gravarem
-4. Em **Authentication > Providers > Email**, decida se quer manter a
+4. **SQL Editor > New query** mais uma vez: cole e rode
+   `supabase/003_novos_modulos.sql`. Isso cadastra os cards de Financeiro,
+   Marketing, Comercial, SAC e Rastreabilidade.
+5. Em **Authentication > Providers > Email**, decida se quer manter a
    confirmação de e-mail obrigatória. Para uso interno simples, muita gente
    desliga "Confirm email" — assim a pessoa consegue entrar assim que o
    admin aprovar, sem precisar clicar em link de e-mail. Se deixar ligado,
    o usuário precisa confirmar o e-mail E ser aprovado pelo admin.
-5. Em **Project Settings > Data API** / **API Keys**, copie a **Project URL**
+6. Em **Project Settings > Data API** / **API Keys**, copie a **Project URL**
    e a chave **publishable** (ou "anon public" nas chaves legadas).
 
 ## 2. Criar o primeiro administrador
@@ -80,6 +83,37 @@ republica sozinho. As variáveis de ambiente (`VITE_SUPABASE_URL` e
 - Administradores veem todos os módulos automaticamente, sem precisar de
   liberação.
 
+## Ícone do app e tela de login
+
+A logo foi vetorizada automaticamente (recorte + traçado por cores) a partir
+da imagem enviada e colocada em `public/icons/`:
+
+- `logo.svg` — logo completa, usada na tela de login.
+- `mascot.svg` / `mascot-transparent-512.png` — só a cabeça do macaco, usada
+  como favicon e como ícone dentro do app.
+- `favicon.ico`, `favicon-16x16.png`, `favicon-32x32.png` — ícone da aba do
+  navegador (PC).
+- `apple-touch-icon*.png` — ícone ao "Adicionar à Tela de Início" no iOS.
+- `icon-192.png`, `icon-512.png`, `maskable-icon-*.png` — ícone ao instalar
+  como app no Android (PWA), registrados em `public/manifest.webmanifest`.
+
+Como a imagem original não tinha uma versão vetorial, o resultado é um
+traçado automático (por cores) — funciona bem em qualquer tamanho de ícone,
+mas se um dia vocês tiverem o arquivo vetorial "oficial" da marca (feito em
+Illustrator/Figma pelo designer), vale trocar `logo.svg`/`mascot.svg` por
+ele para ficar 100% fiel.
+
+Depois do deploy, no celular dá para usar "Adicionar à Tela de Início"
+(iOS, no Safari) ou o próprio prompt de instalação do Chrome (Android) para
+o app abrir com o ícone do Mr. Kong, em tela cheia, como um app nativo.
+
+## Layout responsivo
+
+O app usa uma largura de conteúdo que cresce com a tela (celular → tablet →
+desktop) e os cards da tela inicial se reorganizam automaticamente em 1, 2
+ou 3 colunas conforme o espaço disponível (`src/index.css`). Não precisa de
+nenhuma configuração — funciona igual em celular, tablet e computador.
+
 ## Adicionar um novo card/módulo no futuro
 
 1. Crie o componente React em `src/modules/NovoModulo.jsx`.
@@ -99,11 +133,36 @@ republica sozinho. As variáveis de ambiente (`VITE_SUPABASE_URL` e
 ├── supabase/
 │   ├── schema.sql                 ← tabela do checklist (rodar primeiro)
 │   └── 002_auth_e_modulos.sql     ← login, perfis, módulos, acessos
+├── public/
+│   ├── favicon.ico
+│   ├── manifest.webmanifest
+│   └── icons/                     ← logo, mascote e ícones em todos os tamanhos
 └── src/
     ├── main.jsx
+    ├── index.css                  ← layout responsivo
     ├── App.jsx                    ← login, aprovação, cards, painel admin
     ├── lib/
     │   └── supabaseClient.js
     └── modules/
-        └── ChecklistOperacional.jsx
+        ├── ChecklistOperacional.jsx
+        ├── EmConstrucao.jsx       ← tela-base "em construção" reaproveitada
+        ├── Financeiro.jsx
+        ├── Marketing.jsx
+        ├── Comercial.jsx
+        ├── Sac.jsx
+        └── Rastreabilidade.jsx
 ```
+
+## Novos cards: Financeiro, Marketing, Comercial, SAC, Rastreabilidade
+
+Os 5 já aparecem na tela inicial (e o admin já pode liberar acesso a cada
+um por usuário no Painel Admin), mas por enquanto mostram só uma tela "Em
+construção" — o conteúdo de verdade de cada um ainda precisa ser
+desenvolvido. Quando for a hora de construir um deles de verdade, é só
+substituir o conteúdo do arquivo correspondente em `src/modules/` (ex.:
+`Financeiro.jsx`) por uma tela real, seguindo o mesmo padrão do
+`ChecklistOperacional.jsx`.
+
+Não esqueça de rodar `supabase/003_novos_modulos.sql` no SQL Editor do
+Supabase para cadastrar os 5 módulos no banco (sem isso os cards não
+aparecem, mesmo já estando no código).

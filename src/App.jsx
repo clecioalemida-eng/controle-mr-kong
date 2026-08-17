@@ -1,10 +1,15 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  Bell, LogOut, ClipboardList, Loader2, CheckCircle2, XCircle,
+  Bell, LogOut, Loader2, CheckCircle2, XCircle,
   Clock, ChevronLeft, LayoutGrid,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 import ChecklistOperacional from "./modules/ChecklistOperacional";
+import Financeiro from "./modules/Financeiro";
+import Marketing from "./modules/Marketing";
+import Comercial from "./modules/Comercial";
+import Sac from "./modules/Sac";
+import Rastreabilidade from "./modules/Rastreabilidade";
 
 // Mapa: chave do módulo (banco) -> componente React que o renderiza.
 // Para adicionar um novo card no futuro: crie o componente, cadastre uma
@@ -12,6 +17,11 @@ import ChecklistOperacional from "./modules/ChecklistOperacional";
 // mesma `chave`, e adicione a entrada aqui.
 const COMPONENTES_MODULO = {
   checklist: ChecklistOperacional,
+  financeiro: Financeiro,
+  marketing: Marketing,
+  comercial: Comercial,
+  sac: Sac,
+  rastreabilidade: Rastreabilidade,
 };
 
 export default function App() {
@@ -186,10 +196,7 @@ function TelaLogin() {
     <div style={{ ...pageStyle, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
       <div style={{ maxWidth: 340, width: "100%" }}>
         <div style={{ textAlign: "center", marginBottom: 24 }}>
-          <div style={{ width: 52, height: 52, borderRadius: 12, background: "#22231F", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
-            <ClipboardList size={26} color="#F3EFE3" />
-          </div>
-          <div style={{ fontWeight: 800, fontSize: 20, color: "#22231F" }}>Painel Mr. Kong</div>
+          <img src="/icons/logo.svg" alt="Mr. Kong Fast Food" style={{ width: "100%", maxWidth: 260, height: "auto", margin: "0 auto 12px", display: "block" }} />
           <div style={{ fontSize: 13, color: "#8A8778" }}>Acesso da equipe</div>
         </div>
 
@@ -259,42 +266,47 @@ function TelaAguardando({ perfil, onSair }) {
 function TelaInicio({ perfil, modulos, carregando, totalPendentes, onAbrirModulo, onAbrirAdmin, onSair }) {
   return (
     <div style={pageStyle}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 18, color: "#22231F" }}>Olá, {perfil?.nome}</div>
-          <div style={{ fontSize: 12, color: "#8A8778" }}>{perfil?.is_admin ? "Administrador" : "Equipe"}</div>
+      <div className="app-shell">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <img src="/icons/mascot.svg" alt="" style={{ width: 34, height: 34 }} />
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 18, color: "#22231F" }}>Olá, {perfil?.nome}</div>
+              <div style={{ fontSize: 12, color: "#8A8778" }}>{perfil?.is_admin ? "Administrador" : "Equipe"}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {perfil?.is_admin && (
+              <button onClick={onAbrirAdmin} style={{ ...iconBtn, position: "relative" }}>
+                <Bell size={18} />
+                {totalPendentes > 0 && (
+                  <span style={badgeSino}>{totalPendentes}</span>
+                )}
+              </button>
+            )}
+            <button onClick={onSair} style={iconBtn}><LogOut size={18} /></button>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          {perfil?.is_admin && (
-            <button onClick={onAbrirAdmin} style={{ ...iconBtn, position: "relative" }}>
-              <Bell size={18} />
-              {totalPendentes > 0 && (
-                <span style={badgeSino}>{totalPendentes}</span>
-              )}
-            </button>
-          )}
-          <button onClick={onSair} style={iconBtn}><LogOut size={18} /></button>
-        </div>
-      </div>
 
-      {carregando ? (
-        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
-      ) : modulos.length === 0 ? (
-        <div style={{ ...cardStyle, textAlign: "center", color: "#8A8778", fontSize: 13 }}>
-          <LayoutGrid size={22} style={{ marginBottom: 8 }} />
-          <div>Nenhum módulo liberado para o seu usuário ainda.</div>
-        </div>
-      ) : (
-        <div style={{ display: "grid", gap: 14 }}>
-          {modulos.map((m) => (
-            <button key={m.id} onClick={() => onAbrirModulo(m.chave)}
-              style={{ ...cardStyle, textAlign: "left", cursor: "pointer", border: "1px solid #E8E2D2" }}>
-              <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F", marginBottom: 4 }}>{m.nome}</div>
-              {m.descricao && <div style={{ fontSize: 13, color: "#8A8778" }}>{m.descricao}</div>}
-            </button>
-          ))}
-        </div>
-      )}
+        {carregando ? (
+          <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
+        ) : modulos.length === 0 ? (
+          <div style={{ ...cardStyle, textAlign: "center", color: "#8A8778", fontSize: 13 }}>
+            <LayoutGrid size={22} style={{ marginBottom: 8 }} />
+            <div>Nenhum módulo liberado para o seu usuário ainda.</div>
+          </div>
+        ) : (
+          <div className="cards-grid">
+            {modulos.map((m) => (
+              <button key={m.id} onClick={() => onAbrirModulo(m.chave)}
+                style={{ ...cardStyle, textAlign: "left", cursor: "pointer", border: "1px solid #E8E2D2" }}>
+                <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F", marginBottom: 4 }}>{m.nome}</div>
+                {m.descricao && <div style={{ fontSize: 13, color: "#8A8778" }}>{m.descricao}</div>}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -362,66 +374,68 @@ function PainelAdmin({ onVoltar }) {
 
   return (
     <div style={pageStyle}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
-        <button onClick={onVoltar} style={iconBtn}><ChevronLeft size={18} /></button>
-        <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Painel Admin</div>
-      </div>
+      <div className="app-shell">
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+          <button onClick={onVoltar} style={iconBtn}><ChevronLeft size={18} /></button>
+          <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Painel Admin</div>
+        </div>
 
-      {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 14 }}>{erro}</div>}
+        {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 14 }}>{erro}</div>}
 
-      {carregando ? (
-        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
-      ) : (
-        <>
-          <div style={{ marginBottom: 22 }}>
-            <div style={sectionLabel}>Aguardando aprovação</div>
-            {pendentes.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum cadastro pendente.</div>}
-            <div style={{ display: "grid", gap: 8 }}>
-              {pendentes.map((p) => (
-                <div key={p.id} style={cardStyle}>
-                  <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>{p.nome}</div>
-                  <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 10 }}>{p.email}</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => aprovar(p.id)} style={{ ...pillBtn, ...pillOk, flex: 1, justifyContent: "center" }}>
-                      <CheckCircle2 size={14} /> Aprovar
-                    </button>
-                    <button onClick={() => rejeitar(p.id)} style={{ ...pillBtn, ...pillNok, flex: 1, justifyContent: "center" }}>
-                      <XCircle size={14} /> Rejeitar
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <div style={sectionLabel}>Usuários aprovados · acesso por módulo</div>
-            {aprovados.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum usuário aprovado ainda.</div>}
-            <div style={{ display: "grid", gap: 8 }}>
-              {aprovados.map((p) => {
-                const meusAcessos = acessosPorUsuario[p.id] || new Set();
-                return (
+        {carregando ? (
+          <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
+        ) : (
+          <>
+            <div style={{ marginBottom: 22 }}>
+              <div style={sectionLabel}>Aguardando aprovação</div>
+              {pendentes.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum cadastro pendente.</div>}
+              <div className="list-grid">
+                {pendentes.map((p) => (
                   <div key={p.id} style={cardStyle}>
                     <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>{p.nome}</div>
                     <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 10 }}>{p.email}</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                      {modulos.map((m) => {
-                        const tem = meusAcessos.has(m.id);
-                        return (
-                          <button key={m.id} onClick={() => alternarAcesso(p.id, m.id, tem)}
-                            style={{ ...pillBtn, ...(tem ? pillOk : {}) }}>
-                            {tem ? <CheckCircle2 size={13} /> : null} {m.nome}
-                          </button>
-                        );
-                      })}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={() => aprovar(p.id)} style={{ ...pillBtn, ...pillOk, flex: 1, justifyContent: "center" }}>
+                        <CheckCircle2 size={14} /> Aprovar
+                      </button>
+                      <button onClick={() => rejeitar(p.id)} style={{ ...pillBtn, ...pillNok, flex: 1, justifyContent: "center" }}>
+                        <XCircle size={14} /> Rejeitar
+                      </button>
                     </div>
                   </div>
-                );
-              })}
+                ))}
+              </div>
             </div>
-          </div>
-        </>
-      )}
+
+            <div>
+              <div style={sectionLabel}>Usuários aprovados · acesso por módulo</div>
+              {aprovados.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum usuário aprovado ainda.</div>}
+              <div className="list-grid">
+                {aprovados.map((p) => {
+                  const meusAcessos = acessosPorUsuario[p.id] || new Set();
+                  return (
+                    <div key={p.id} style={cardStyle}>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>{p.nome}</div>
+                      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 10 }}>{p.email}</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {modulos.map((m) => {
+                          const tem = meusAcessos.has(m.id);
+                          return (
+                            <button key={m.id} onClick={() => alternarAcesso(p.id, m.id, tem)}
+                              style={{ ...pillBtn, ...(tem ? pillOk : {}) }}>
+                              {tem ? <CheckCircle2 size={13} /> : null} {m.nome}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

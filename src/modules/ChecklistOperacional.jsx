@@ -195,7 +195,7 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
     return (
       <Shell titulo="Checklist Operacional" subtitulo={`Olá, ${nomeUsuario} · Dia operacional ${formatDiaLabel(opDate)}`}
         onBack={onVoltar} onDashboard={() => setTela("dashboard")}>
-        <div style={{ display: "grid", gap: 14 }}>
+        <div className="cards-grid">
           {DEPT_KEYS.map((k) => {
             const dept = DEPARTAMENTOS[k];
             const Icon = dept.icon;
@@ -293,21 +293,23 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
 function Shell({ titulo, subtitulo, children, onBack, onDashboard }) {
   return (
     <div style={pageStyle}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {onBack && (
-            <button onClick={onBack} style={iconBtn}><ChevronLeft size={18} /></button>
-          )}
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>{titulo}</div>
-            {subtitulo && <div style={{ fontSize: 12, color: "#8A8778" }}>{subtitulo}</div>}
+      <div className="app-shell">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {onBack && (
+              <button onClick={onBack} style={iconBtn}><ChevronLeft size={18} /></button>
+            )}
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>{titulo}</div>
+              {subtitulo && <div style={{ fontSize: 12, color: "#8A8778" }}>{subtitulo}</div>}
+            </div>
           </div>
+          {onDashboard && (
+            <button onClick={onDashboard} style={iconBtn}><LayoutDashboard size={18} /></button>
+          )}
         </div>
-        {onDashboard && (
-          <button onClick={onDashboard} style={iconBtn}><LayoutDashboard size={18} /></button>
-        )}
+        {children}
       </div>
-      {children}
     </div>
   );
 }

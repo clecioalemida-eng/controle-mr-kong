@@ -1,0 +1,53 @@
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: #F6F1E7;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Centraliza o conteúdo e limita a largura em telas maiores (tablet/desktop),
+   sem mudar nada no celular (onde a largura da tela já é o limite natural). */
+.app-shell {
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+@media (min-width: 720px) {
+  .app-shell { max-width: 640px; }
+}
+
+@media (min-width: 1024px) {
+  .app-shell { max-width: 880px; }
+}
+
+/* Grid de cards: 1 coluna no celular, 2 em tablet, 3 em telas largas */
+.cards-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+@media (min-width: 640px) {
+  .cards-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (min-width: 1024px) {
+  .cards-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* Grid mais compacto (usado em listas administrativas) */
+.list-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+@media (min-width: 720px) {
+  .list-grid { grid-template-columns: repeat(2, 1fr); }
+}
