@@ -35,12 +35,20 @@ admin. Banco de dados: Supabase. Deploy: Vercel.
 10. **SQL Editor > New query**: cole e rode `supabase/009_molho_gourmet_e_mussarela.sql`
    — separa mussarela fatiada/em barra e cadastra o molho gourmet nos 8
    hambúrgueres da linha gourmet.
-11. Em **Authentication > Providers > Email**, decida se quer manter a
+11. **SQL Editor > New query**: cole e rode `supabase/010_estoque.sql` —
+   cria o estoque com histórico de movimentações.
+12. **SQL Editor > New query**: cole e rode `supabase/011_notas_fiscais.sql`
+   — cria as tabelas de recepção de notas e o bucket `notas-fiscais` no
+   Storage.
+13. Publique a Edge Function `processar-documento-compra` (ver seção
+   "Estoque e recepção de notas fiscais" abaixo — precisa de uma chave da
+   Anthropic API).
+14. Em **Authentication > Providers > Email**, decida se quer manter a
    confirmação de e-mail obrigatória. Para uso interno simples, muita gente
    desliga "Confirm email" — assim a pessoa consegue entrar assim que o
    admin aprovar, sem precisar clicar em link de e-mail. Se deixar ligado,
    o usuário precisa confirmar o e-mail E ser aprovado pelo admin.
-12. Em **Project Settings > Data API** / **API Keys**, copie a **Project URL**
+15. Em **Project Settings > Data API** / **API Keys**, copie a **Project URL**
    e a chave **publishable** (ou "anon public" nas chaves legadas).
 
 ## 2. Criar o primeiro administrador
@@ -153,6 +161,56 @@ sem receita definida — e ligado a 30ml em cada um desses 8 pratos. Também
 separei **Mussarela fatiada** (a que já estava nas fichas técnicas) de
 **Mussarela em barra** (insumo novo, custo ainda em aberto) — são produtos
 diferentes.
+
+## Estoque e recepção de notas fiscais
+
+Duas abas novas dentro do Financeiro:
+
+**Estoque** — saldo atual de cada insumo, calculado a partir de um
+"extrato" de movimentações (compra, ajuste, perda, contagem) — mesmo
+padrão de gatilho já usado no custo do insumo composto: o saldo nunca é
+digitado direto, é sempre a soma das movimentações, recalculado sozinho.
+Tocar num insumo abre o extrato completo e permite registrar ajustes
+manuais (perda, contagem) e configurar um estoque mínimo (fica com aviso
+visual quando o saldo cai abaixo dele).
+
+**Notas** — envio de foto/PDF de nota fiscal ou recibo pelo celular. Uma
+Edge Function (`processar-documento-compra`) manda o arquivo pra Anthropic
+API (Claude, com visão) pedindo os itens comprados em formato estruturado
+(nome, quantidade, unidade, preço unitário), casa cada item com um insumo
+já cadastrado — por nome exato, por um sinônimo já aprendido, ou por
+aproximação simples — e sinaliza em vermelho qualquer item **30% ou mais
+acima** da última compra confirmada daquele insumo. Nada é lançado no
+estoque nesse momento — só depois que alguém revisar na tela de
+conferência (editar com o lápis, excluir o que não deve entrar, vincular
+itens não reconhecidos a um insumo) e apertar "Confirmar". A confirmação
+gera a movimentação de estoque, atualiza o custo do insumo pro preço
+dessa compra, e — se o nome lido for diferente do nome do insumo — grava
+um sinônimo, pra reconhecer esse mesmo texto automaticamente da próxima
+vez (o "aprendizado contínuo" do plano original).
+
+### Configuração extra necessária
+
+1. Pegue uma chave de API em **console.anthropic.com** (Anthropic
+   Console → API Keys).
+2. Nos **Secrets** do Supabase (mesmo lugar do `CARDAPIOWEB_API_TOKEN`),
+   adicione: `ANTHROPIC_API_KEY` = a chave que você gerou.
+3. Publique a nova função (`processar-documento-compra`) do mesmo jeito
+   que publicou a `cardapioweb-proxy`: Edge Functions → Deploy a new
+   function → Via Editor → cole o conteúdo de
+   `supabase/functions/processar-documento-compra/index.ts` → nome exatamente
+   `processar-documento-compra` → Deploy.
+4. Rode `010_estoque.sql` e `011_notas_fiscais.sql` no SQL Editor (essa
+   última também cria o bucket privado `notas-fiscais` no Storage).
+
+### Simplificação assumida (documentando pra não esquecer)
+
+O plano original falava em "custo médio dos últimos 30 dias". O que está
+implementado agora é mais simples: **o custo do insumo vira o preço da
+última compra confirmada**, não uma média das compras do mês. Dá pra
+evoluir isso depois porque o histórico de preços já fica registrado no
+extrato do estoque (`movimentacoes_estoque.preco_unitario`) — só falta
+trocar a fórmula.
 
 ## Fichas técnicas, custo e margem
 

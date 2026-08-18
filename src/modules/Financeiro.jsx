@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback } from "react";
 import { ChevronLeft, Loader2, AlertTriangle, RefreshCw, DollarSign } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import FichasTecnicas from "./FichasTecnicas";
+import NotasFiscais from "./NotasFiscais";
+import Estoque from "./Estoque";
 
 const ABAS = [
   { chave: "vendas", label: "Vendas" },
@@ -9,6 +11,8 @@ const ABAS = [
   { chave: "pagamentos", label: "Pagamentos" },
   { chave: "fechamento", label: "Fechamento" },
   { chave: "fichas", label: "Fichas técnicas" },
+  { chave: "notas", label: "Notas" },
+  { chave: "estoque", label: "Estoque" },
 ];
 
 const NOMES_PAGAMENTO = {
@@ -84,6 +88,10 @@ export default function Financeiro({ onVoltar }) {
 
         {aba === "fichas" ? (
           <FichasTecnicas />
+        ) : aba === "notas" ? (
+          <NotasFiscais />
+        ) : aba === "estoque" ? (
+          <Estoque />
         ) : (
           <>
             <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
