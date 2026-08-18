@@ -100,7 +100,7 @@ Deno.serve(async (req) => {
           role: "user",
           content: [
             { type: ehPdf ? "document" : "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-            { type: "text", text: "Leia esta nota fiscal ou recibo de compra de um restaurante e extraia fornecedor, data e cada item comprado (nome, quantidade, unidade, preço unitário)." },
+            { type: "text", text: "Leia esta nota fiscal ou recibo de compra de um restaurante e extraia fornecedor, data e cada item comprado (nome, quantidade, unidade, preço unitário). Regras importantes: (1) liste apenas itens que aparecem literalmente impressos no documento — nunca invente, deduza ou repita um item que não está lá; (2) leia cada linha inteira antes de passar pra próxima, sem misturar valores entre linhas diferentes; (3) depois de ler quantidade e preço unitário de cada item, confira se quantidade × preço_unitário bate (aproximadamente) com o valor total daquela linha impresso no documento — se não bater, releia os números com mais atenção antes de responder." },
           ],
         }],
       }),

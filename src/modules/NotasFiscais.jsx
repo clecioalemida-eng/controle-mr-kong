@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  ChevronLeft, Camera, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText,
+  ChevronLeft, Camera, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
@@ -8,6 +8,12 @@ const UNIDADES = ["un", "g", "kg", "ml", "l"];
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function fmtData(d) { if (!d) return ""; return new Date(d).toLocaleDateString("pt-BR"); }
+
+async function abrirPreview(caminho) {
+  const { data, error } = await supabase.storage.from("notas-fiscais").createSignedUrl(caminho, 300);
+  if (error || !data?.signedUrl) { alert("Não consegui abrir o arquivo: " + (error?.message || "")); return; }
+  window.open(data.signedUrl, "_blank");
+}
 
 const STATUS_LABEL = {
   processando: "Lendo com IA",
@@ -100,10 +106,10 @@ export default function NotasFiscais() {
       ) : (
         <div className="list-grid">
           {documentos.map((d) => (
-            <button key={d.id}
-              onClick={() => { if (d.status === "aguardando_confirmacao") { setDocumentoAtual(d); setTela("conferencia"); } }}
-              style={{ ...itemRow, cursor: d.status === "aguardando_confirmacao" ? "pointer" : "default", textAlign: "left" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <div key={d.id} style={itemRow}>
+              <button
+                onClick={() => { if (d.status === "aguardando_confirmacao") { setDocumentoAtual(d); setTela("conferencia"); } }}
+                style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1, background: "none", border: "none", padding: 0, cursor: d.status === "aguardando_confirmacao" ? "pointer" : "default", textAlign: "left" }}>
                 <div style={iconBox}><FileText size={16} color="#8A8778" /></div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -113,9 +119,12 @@ export default function NotasFiscais() {
                     {fmtData(d.data_documento || d.criado_em)}{d.valor_total ? ` · ${brl(d.valor_total)}` : ""}
                   </div>
                 </div>
-              </div>
+              </button>
+              <button onClick={() => abrirPreview(d.arquivo_path)} style={ghostIconBtn} aria-label="Ver documento original">
+                <Eye size={16} />
+              </button>
               <span style={{ ...pill, ...STATUS_ESTILO[d.status], whiteSpace: "nowrap", flexShrink: 0 }}>{STATUS_LABEL[d.status]}</span>
-            </button>
+            </div>
           ))}
           {documentos.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum documento enviado ainda.</div>}
         </div>
@@ -240,10 +249,13 @@ function Conferencia({ documento, onVoltar }) {
 
       <div style={{ ...cardStyle, marginBottom: 14, display: "flex", alignItems: "center", gap: 12 }}>
         <div style={iconBox}><FileText size={18} color="#8A8778" /></div>
-        <div>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F" }}>{documento.fornecedor || "Fornecedor não identificado"}</div>
           <div style={{ fontSize: 12, color: "#8A8778" }}>{fmtData(documento.data_documento || documento.criado_em)} · {itens.length} itens lidos pela IA</div>
         </div>
+        <button onClick={() => abrirPreview(documento.arquivo_path)} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <Eye size={14} /> Ver original
+        </button>
       </div>
 
       <div style={sectionLabel}>Itens encontrados</div>
@@ -307,18 +319,28 @@ function Conferencia({ documento, onVoltar }) {
                 )}
 
                 {editandoId === item.id && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 8, borderTop: "1px solid #E8E2D2", flexWrap: "wrap" }}>
-                    <input value={formEdicao.nome_lido} onChange={(e) => setFormEdicao((f) => ({ ...f, nome_lido: e.target.value }))}
-                      style={{ flex: 1, minWidth: 100, padding: "4px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                    <input type="number" value={formEdicao.quantidade} onChange={(e) => setFormEdicao((f) => ({ ...f, quantidade: e.target.value }))}
-                      style={{ width: 60, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                    <select value={formEdicao.unidade} onChange={(e) => setFormEdicao((f) => ({ ...f, unidade: e.target.value }))}
-                      style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }}>
-                      {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
-                    </select>
-                    <input type="number" step="0.01" value={formEdicao.preco_unitario} onChange={(e) => setFormEdicao((f) => ({ ...f, preco_unitario: e.target.value }))}
-                      style={{ width: 70, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                    <button onClick={salvarEdicao} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #E8E2D2" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                      <input value={formEdicao.nome_lido} onChange={(e) => setFormEdicao((f) => ({ ...f, nome_lido: e.target.value }))}
+                        style={{ flex: 1, minWidth: 100, padding: "4px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                      <input type="number" value={formEdicao.quantidade} onChange={(e) => setFormEdicao((f) => ({ ...f, quantidade: e.target.value }))}
+                        style={{ width: 60, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                      <select value={formEdicao.unidade} onChange={(e) => setFormEdicao((f) => ({ ...f, unidade: e.target.value }))}
+                        style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }}>
+                        {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                      </select>
+                      <input type="number" step="0.01" value={formEdicao.preco_unitario} onChange={(e) => setFormEdicao((f) => ({ ...f, preco_unitario: e.target.value }))}
+                        style={{ width: 70, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 11, color: "#8A8778" }}>Vinculado a:</span>
+                      <select value={formEdicao.insumo_id} onChange={(e) => setFormEdicao((f) => ({ ...f, insumo_id: e.target.value }))}
+                        style={{ flex: 1, padding: "4px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                        <option value="">— nenhum insumo —</option>
+                        {insumos.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}
+                      </select>
+                      <button onClick={salvarEdicao} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
+                    </div>
                   </div>
                 )}
               </div>
