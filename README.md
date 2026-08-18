@@ -212,6 +212,40 @@ evoluir isso depois porque o histórico de preços já fica registrado no
 extrato do estoque (`movimentacoes_estoque.preco_unitario`) — só falta
 trocar a fórmula.
 
+## Equipe e premiação diária
+
+8ª aba do Financeiro. Três telas:
+
+- **Pessoas** — cadastro de funcionários: nome, papel (Garçom ou Equipe
+  interna), e se é Registrado (comissão acumula pro fechamento do mês) ou
+  Diarista (soma uma base diária fixa em cima da comissão do dia).
+- **Premiação do dia** — escolhe a data, busca (ou digita manualmente) a
+  taxa de serviço do dia, marca quem trabalhou e o peso de cada um (1 =
+  dia inteiro, 0.5 = meio período — igual ao jeito que já era calculado na
+  planilha de vocês, que tinha um "6,5" de gente numa das contas). A taxa
+  é dividida 50% para os garçons selecionados (pelo peso de cada um) e 50%
+  para a equipe interna selecionada, do mesmo jeito.
+- **Fechamento mensal** — soma o acumulado de cada pessoa **registrada**
+  no mês (diaristas não entram aqui, porque já recebem por dia). Toca numa
+  pessoa pra ver o extrato dia a dia.
+
+A busca automática da taxa de serviço usa a janela **17h do dia escolhido
+até 03h do dia seguinte**. Uma ressalva importante: **não consegui
+confirmar na documentação pública do CardápioWeb o nome exato do campo de
+taxa de serviço** nos pedidos — a função tenta alguns nomes prováveis
+(`service_charge`, `taxa_servico`, `service_fee`, `tip`, `gorjeta`), mas
+se nenhum bater ela avisa e o campo fica pra digitar manualmente. Se um
+pedido de exemplo com taxa de serviço mostrar o nome certo do campo (dá
+pra ver usando o "Ver original" de uma nota, ou me mandando um print do
+retorno da API), o ajuste na função é rápido.
+
+### Migração e Edge Function
+
+- `014_equipe_premiacao.sql` — tabelas `pessoas`, `presencas_diarias`,
+  `premiacoes_diarias`.
+- `cardapioweb-proxy` ganhou uma ação nova (`taxa_servico_dia`) — precisa
+  republicar a função depois de rodar a migração.
+
 ## Produtos do resto do cardápio (Petiscos, Bombons, Extras, Bebidas, Na Chapa, Fritas, Sorvetes, Açaí, Milkshake)
 
 `013_produtos_extras_cardapio.sql` cadastra 91 produtos que ainda não estavam

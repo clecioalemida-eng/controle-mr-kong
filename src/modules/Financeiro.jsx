@@ -4,6 +4,7 @@ import { supabase } from "../lib/supabaseClient";
 import FichasTecnicas from "./FichasTecnicas";
 import NotasFiscais from "./NotasFiscais";
 import Estoque from "./Estoque";
+import Equipe from "./Equipe";
 
 const ABAS = [
   { chave: "vendas", label: "Vendas" },
@@ -13,6 +14,7 @@ const ABAS = [
   { chave: "fichas", label: "Fichas técnicas" },
   { chave: "notas", label: "Notas" },
   { chave: "estoque", label: "Estoque" },
+  { chave: "equipe", label: "Equipe" },
 ];
 
 const NOMES_PAGAMENTO = {
@@ -92,6 +94,8 @@ export default function Financeiro({ onVoltar }) {
           <NotasFiscais />
         ) : aba === "estoque" ? (
           <Estoque />
+        ) : aba === "equipe" ? (
+          <Equipe />
         ) : (
           <>
             <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>

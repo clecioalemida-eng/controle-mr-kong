@@ -69,6 +69,42 @@ Deno.serve(async (req) => {
 
     const body = await req.json();
     const acao = body.acao ?? "resumo_financeiro";
+
+    // Ação separada: taxa de serviço do dia, sempre na janela 17h–03h
+    // (do dia escolhido às 17h até 03h do dia seguinte), independente do
+    // período livre usado nas outras abas do Financeiro.
+    if (acao === "taxa_servico_dia") {
+      const { dia } = body; // "YYYY-MM-DD"
+      if (!dia) return json({ error: "Informe dia (YYYY-MM-DD)." }, 400, corsHeaders);
+      const inicio = `${dia}T17:00:00-03:00`;
+      const diaSeguinte = new Date(`${dia}T12:00:00-03:00`);
+      diaSeguinte.setDate(diaSeguinte.getDate() + 1);
+      const fim = `${diaSeguinte.toISOString().slice(0, 10)}T03:00:00-03:00`;
+
+      const { pedidosDetalhados } = await buscarPedidos(headersCW, inicio, fim);
+      // Tenta alguns nomes de campo plausíveis pra taxa de serviço — a
+      // documentação pública do CardápioWeb não confirma o nome exato.
+      // Se nada bater, volta 0 e a tela pede pra digitar manualmente.
+      let taxaTotal = 0;
+      let encontrouAutomaticamente = false;
+      for (const p of pedidosDetalhados as any[]) {
+        for (const campo of ["service_charge", "taxa_servico", "service_fee", "tip", "gorjeta"]) {
+          const valor = p[campo];
+          if (typeof valor === "number" && valor > 0) {
+            taxaTotal += valor;
+            encontrouAutomaticamente = true;
+            break;
+          }
+        }
+      }
+      return json({
+        dia, periodo: { inicio, fim },
+        taxa_servico: round2(taxaTotal),
+        encontrado_automaticamente: encontrouAutomaticamente,
+        pedidos_no_periodo: pedidosDetalhados.length,
+      }, 200, corsHeaders);
+    }
+
     const { data_inicio, data_fim } = body;
     if (!data_inicio || !data_fim) {
       return json({ error: "Informe data_inicio e data_fim (ISO 8601)." }, 400, corsHeaders);
