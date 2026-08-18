@@ -174,7 +174,9 @@ function ExtratoInsumo({ insumo, onVoltar }) {
                 <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                   <Icone size={15} color={positivo ? "#0F6E56" : "#791F1F"} style={{ flexShrink: 0 }} />
                   <span style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 12, color: "#22231F" }}>{TIPO_LABEL[m.tipo]}{m.motivo ? ` · ${m.motivo}` : ""}</div>
+                    <div style={{ fontSize: 12, color: "#22231F" }}>
+                      {TIPO_LABEL[m.tipo]}{m.fornecedor ? ` · ${m.fornecedor}` : ""}{m.motivo ? ` · ${m.motivo}` : ""}
+                    </div>
                     <div style={{ fontSize: 11, color: "#8A8778" }}>{fmtData(m.criado_em)}</div>
                   </span>
                 </span>

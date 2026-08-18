@@ -217,6 +217,7 @@ function Conferencia({ documento, onVoltar }) {
         tipo: "compra",
         quantidade: item.quantidade,
         preco_unitario: item.preco_unitario,
+        fornecedor: documento.fornecedor || null,
         documento_compra_id: documento.id,
         criado_por: userData?.user?.id,
       });
