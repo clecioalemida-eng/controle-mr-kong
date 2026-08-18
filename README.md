@@ -19,12 +19,20 @@ admin. Banco de dados: Supabase. Deploy: Vercel.
 4. **SQL Editor > New query** mais uma vez: cole e rode
    `supabase/003_novos_modulos.sql`. Isso cadastra os cards de Financeiro,
    Marketing, Comercial, SAC e Rastreabilidade.
-5. Em **Authentication > Providers > Email**, decida se quer manter a
+5. **SQL Editor > New query** de novo: cole e rode
+   `supabase/004_fichas_tecnicas.sql`. Cria as tabelas `insumos`, `pratos`
+   e `prato_insumos`, e cadastra o card "Fichas técnicas".
+6. **SQL Editor > New query**: cole e rode `supabase/005_pratos_nome_unico.sql`.
+7. **SQL Editor > New query**: cole e rode
+   `supabase/006_seed_fichas_tecnicas_hamburgueres.sql` — popula os 23
+   insumos e as 14 fichas técnicas dos hambúrgueres, extraídas da planilha
+   de custos que vocês enviaram (ver seção própria abaixo).
+8. Em **Authentication > Providers > Email**, decida se quer manter a
    confirmação de e-mail obrigatória. Para uso interno simples, muita gente
    desliga "Confirm email" — assim a pessoa consegue entrar assim que o
    admin aprovar, sem precisar clicar em link de e-mail. Se deixar ligado,
    o usuário precisa confirmar o e-mail E ser aprovado pelo admin.
-6. Em **Project Settings > Data API** / **API Keys**, copie a **Project URL**
+9. Em **Project Settings > Data API** / **API Keys**, copie a **Project URL**
    e a chave **publishable** (ou "anon public" nas chaves legadas).
 
 ## 2. Criar o primeiro administrador
@@ -113,6 +121,111 @@ O app usa uma largura de conteúdo que cresce com a tela (celular → tablet →
 desktop) e os cards da tela inicial se reorganizam automaticamente em 1, 2
 ou 3 colunas conforme o espaço disponível (`src/index.css`). Não precisa de
 nenhuma configuração — funciona igual em celular, tablet e computador.
+
+## Fichas técnicas, custo e margem
+
+Card novo: para cada prato, você monta a composição (insumos + quantidade)
+e o app calcula custo e margem de contribuição em tempo real.
+
+**Como o app "conhece" os pratos, já que não dá pra consultar o Catálogo**
+(ver limitação abaixo): o botão **Importar pratos**, na tela inicial do
+módulo, varre os pedidos dos últimos 90 dias e extrai os itens vendidos
+(nome, id do CardápioWeb, preço) — usa a mesma ação de busca de pedidos que
+o Financeiro já usa, só que agrupando por item em vez de somar por pedido.
+Pode rodar de novo a qualquer momento; ele atualiza os pratos existentes
+(por `cardapioweb_item_id`) em vez de duplicar.
+
+**Insumos são cadastrados dentro do próprio app** (não vêm de lugar
+nenhum) — nome, unidade (un/g/kg/ml/l) e custo médio atual. O custo de um
+insumo é uma informação compartilhada: editá-lo no lápis de uma ficha
+técnica atualiza o custo em todas as fichas que usam aquele insumo, porque
+ele é uma propriedade do insumo, não da receita.
+
+⚠️ Limitação conhecida da API do CardápioWeb: o endpoint de Catálogo
+(`GET /catalog`) exige `X-API-KEY` **e** `X-PARTNER-KEY` — e só temos o
+`X-API-KEY` (token do estabelecimento). O `X-PARTNER-KEY` é um token de
+integradora, que exige um cadastro separado (contato com
+`integracao@cardapioweb.com`). Por isso o app descobre os pratos a partir
+dos pedidos em vez do Catálogo direto — funciona bem para pratos que já
+foram vendidos, mas um prato novo, ainda sem nenhuma venda registrada, só
+aparece depois da primeira venda (ou pode ser cadastrado manualmente
+direto na tabela `pratos` do Supabase, se precisar adiantar).
+
+## Dados importados da planilha de custos (18/08/2026)
+
+`supabase/006_seed_fichas_tecnicas_hamburgueres.sql` popula 23 insumos e as
+fichas técnicas dos 14 hambúrgueres do cardápio, extraídos e conferidos
+item a item contra a planilha `Cardápio Mr Kong com custo e preços`. Fora
+do escopo (sem dado de composição confiável na planilha, ficam para depois):
+Na Chapa, Fritas, Cozinha, Sorvetes, Açaí, Milkshake, Bebidas, Extras,
+Bombons e Balas.
+
+Pontos que ficaram marcados para revisão (o custo já está lançado, mas vale
+conferir e ajustar pelo lápis de edição do app quando puder):
+- **Molho tártaro** a R$1,00/kg parece baixo demais — provavelmente um
+  valor provisório na planilha original.
+- **Rúcula**: a planilha usa 333g por hambúrguer (só no Kong Dril), o que
+  parece muito para um topping — pode ser um erro de digitação (talvez
+  fosse 33g).
+- **Kongzilla**: importado exatamente como está na ficha de custo da
+  planilha — blend triplo (180g×3) e bacon em dobro, mas **sem** cheddar,
+  provolone ou cebola caramelizada, mesmo a descrição do cardápio citando
+  esses itens. Se a receita real inclui isso, a margem calculada hoje está
+  otimista; ajuste a ficha técnica do Kongzilla no app assim que confirmar
+  a composição real.
+
+Os custos lançados são só de insumo — não incluem mão de obra de preparo
+nem embalagem além da listada (papel acoplado, saco kraft).
+
+## Integração com o CardápioWeb (módulo Financeiro)
+
+O CardápioWeb não tem um módulo financeiro na API aberta — só **Loja**,
+**Catálogo** e **Pedidos**. Por isso, vendas, formas de pagamento e
+fechamento de caixa são calculados dentro do nosso app a partir dos
+pedidos, não vêm prontos de um endpoint só. O fluxo, dentro da Edge
+Function `supabase/functions/cardapioweb-proxy`:
+
+1. Busca o histórico de pedidos do período (`GET /orders/history`) — esse
+   endpoint só traz status e datas, sem valores.
+2. Para cada pedido, busca o detalhe (`GET /orders/{id}`) — é ali que vêm
+   o `total` e a lista de `payments` (forma de pagamento de cada um).
+3. Soma tudo: faturamento total, por forma de pagamento, por dia.
+
+O token do CardápioWeb (o mesmo que você pegou em
+`portal.cardapioweb.com/configuracoes/integracao/api`) fica guardado como
+**secret** do projeto Supabase — nunca em código, nunca no navegador do
+usuário.
+
+**Limites a ter em mente** (regras do próprio CardápioWeb):
+- O endpoint de histórico aceita no máximo 6 meses por consulta, e não
+  retrocede mais de 1 ano.
+- Rate limit: 5 requisições/minuto para o histórico, 300 a cada 3 minutos
+  para o detalhe de cada pedido — por isso a função tem um limite de
+  segurança de 200 pedidos processados por consulta. Para períodos com
+  muito movimento, prefira consultar por dia ou por semana em vez de por
+  mês inteiro.
+
+### Como configurar
+
+1. Instale a Supabase CLI (`npm install -g supabase`) e faça login
+   (`supabase login`).
+2. Vincule o projeto: `supabase link --project-ref SEU_PROJECT_REF` (o ref
+   aparece na URL do projeto no Supabase, ou em Settings > General).
+3. Guarde o token do CardápioWeb como secret — **nunca** em arquivo `.env`
+   do frontend:
+   ```bash
+   supabase secrets set CARDAPIOWEB_API_TOKEN=coloque_o_token_aqui
+   ```
+   (Ou pelo dashboard: Project Settings > Edge Functions > Secrets.)
+4. Publique a função:
+   ```bash
+   supabase functions deploy cardapioweb-proxy
+   ```
+
+Por segurança, depois que a integração estiver testada e funcionando, gere
+um novo token na tela de integração do CardápioWeb e atualize o secret —
+uma boa prática sempre que uma chave de API circulou fora do painel oficial
+do fornecedor.
 
 ## Adicionar um novo card/módulo no futuro
 
