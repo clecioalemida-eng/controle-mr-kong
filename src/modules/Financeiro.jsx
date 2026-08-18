@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ChevronLeft, Loader2, AlertTriangle, RefreshCw, DollarSign } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import FichasTecnicas from "./FichasTecnicas";
 
 const ABAS = [
   { chave: "vendas", label: "Vendas" },
   { chave: "pedidos", label: "Pedidos" },
   { chave: "pagamentos", label: "Pagamentos" },
   { chave: "fechamento", label: "Fechamento" },
+  { chave: "fichas", label: "Fichas técnicas" },
 ];
 
 const NOMES_PAGAMENTO = {
@@ -71,14 +73,6 @@ export default function Financeiro({ onVoltar }) {
           <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Financeiro</div>
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-          <input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} style={inputStyle} />
-          <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={inputStyle} />
-          <button onClick={carregar} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
-            <RefreshCw size={14} /> Atualizar
-          </button>
-        </div>
-
         <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
           {ABAS.map((a) => (
             <button key={a.chave} onClick={() => setAba(a.chave)}
@@ -88,37 +82,51 @@ export default function Financeiro({ onVoltar }) {
           ))}
         </div>
 
-        {carregando && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A8778", fontSize: 13 }}>
-            <Loader2 size={16} /> Consultando o CardápioWeb…
-          </div>
-        )}
-
-        {!carregando && erro && (
-          <div style={avisoStyle}>
-            <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>Não deu para trazer esses dados</div>
-              <div style={{ fontSize: 13 }}>{erro}</div>
-            </div>
-          </div>
-        )}
-
-        {!carregando && !erro && resumo && (
+        {aba === "fichas" ? (
+          <FichasTecnicas />
+        ) : (
           <>
-            {resumo.truncado && (
-              <div style={{ ...avisoStyle, marginBottom: 14 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+              <input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} style={inputStyle} />
+              <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={inputStyle} />
+              <button onClick={carregar} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
+                <RefreshCw size={14} /> Atualizar
+              </button>
+            </div>
+
+            {carregando && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A8778", fontSize: 13 }}>
+                <Loader2 size={16} /> Consultando o CardápioWeb…
+              </div>
+            )}
+
+            {!carregando && erro && (
+              <div style={avisoStyle}>
                 <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
-                <div style={{ fontSize: 13 }}>
-                  Esse período tem mais pedidos do que o limite processado de uma vez. Reduza o intervalo de datas para ver todos.
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Não deu para trazer esses dados</div>
+                  <div style={{ fontSize: 13 }}>{erro}</div>
                 </div>
               </div>
             )}
 
-            {aba === "vendas" && <AbaVendas resumo={resumo} />}
-            {aba === "pedidos" && <AbaPedidos resumo={resumo} />}
-            {aba === "pagamentos" && <AbaPagamentos resumo={resumo} />}
-            {aba === "fechamento" && <AbaFechamento resumo={resumo} />}
+            {!carregando && !erro && resumo && (
+              <>
+                {resumo.truncado && (
+                  <div style={{ ...avisoStyle, marginBottom: 14 }}>
+                    <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div style={{ fontSize: 13 }}>
+                      Esse período tem mais pedidos do que o limite processado de uma vez. Reduza o intervalo de datas para ver todos.
+                    </div>
+                  </div>
+                )}
+
+                {aba === "vendas" && <AbaVendas resumo={resumo} />}
+                {aba === "pedidos" && <AbaPedidos resumo={resumo} />}
+                {aba === "pagamentos" && <AbaPagamentos resumo={resumo} />}
+                {aba === "fechamento" && <AbaFechamento resumo={resumo} />}
+              </>
+            )}
           </>
         )}
       </div>

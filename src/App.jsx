@@ -5,7 +5,6 @@ import {
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 import ChecklistOperacional from "./modules/ChecklistOperacional";
-import FichasTecnicas from "./modules/FichasTecnicas";
 import Financeiro from "./modules/Financeiro";
 import Marketing from "./modules/Marketing";
 import Comercial from "./modules/Comercial";
@@ -18,7 +17,6 @@ import Rastreabilidade from "./modules/Rastreabilidade";
 // mesma `chave`, e adicione a entrada aqui.
 const COMPONENTES_MODULO = {
   checklist: ChecklistOperacional,
-  fichas_tecnicas: FichasTecnicas,
   financeiro: Financeiro,
   marketing: Marketing,
   comercial: Comercial,

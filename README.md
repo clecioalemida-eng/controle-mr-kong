@@ -21,18 +21,21 @@ admin. Banco de dados: Supabase. Deploy: Vercel.
    Marketing, Comercial, SAC e Rastreabilidade.
 5. **SQL Editor > New query** de novo: cole e rode
    `supabase/004_fichas_tecnicas.sql`. Cria as tabelas `insumos`, `pratos`
-   e `prato_insumos`, e cadastra o card "Fichas técnicas".
+   e `prato_insumos`.
 6. **SQL Editor > New query**: cole e rode `supabase/005_pratos_nome_unico.sql`.
 7. **SQL Editor > New query**: cole e rode
    `supabase/006_seed_fichas_tecnicas_hamburgueres.sql` — popula os 23
    insumos e as 14 fichas técnicas dos hambúrgueres, extraídas da planilha
    de custos que vocês enviaram (ver seção própria abaixo).
-8. Em **Authentication > Providers > Email**, decida se quer manter a
+8. **SQL Editor > New query**: cole e rode
+   `supabase/007_mover_fichas_tecnicas_para_financeiro.sql` — remove o card
+   separado de Fichas Técnicas (ela passa a viver dentro do Financeiro).
+9. Em **Authentication > Providers > Email**, decida se quer manter a
    confirmação de e-mail obrigatória. Para uso interno simples, muita gente
    desliga "Confirm email" — assim a pessoa consegue entrar assim que o
    admin aprovar, sem precisar clicar em link de e-mail. Se deixar ligado,
    o usuário precisa confirmar o e-mail E ser aprovado pelo admin.
-9. Em **Project Settings > Data API** / **API Keys**, copie a **Project URL**
+10. Em **Project Settings > Data API** / **API Keys**, copie a **Project URL**
    e a chave **publishable** (ou "anon public" nas chaves legadas).
 
 ## 2. Criar o primeiro administrador
@@ -124,8 +127,15 @@ nenhuma configuração — funciona igual em celular, tablet e computador.
 
 ## Fichas técnicas, custo e margem
 
-Card novo: para cada prato, você monta a composição (insumos + quantidade)
-e o app calcula custo e margem de contribuição em tempo real.
+Vive dentro do card **Financeiro**, como uma 5ª aba ("Fichas técnicas") —
+não é mais um card separado (movido em `007_mover_fichas_tecnicas_para_financeiro.sql`).
+A razão da mudança: fichas técnicas são uma questão financeira (custo e
+margem de cada prato), diferente de **Rastreabilidade**, que fica reservada
+para lote/validade/origem dos insumos — outro eixo de informação sobre o
+mesmo insumo, mas com dono e frequência de uso bem diferentes.
+
+Para cada prato, você monta a composição (insumos + quantidade) e o app
+calcula custo e margem de contribuição em tempo real.
 
 **Como o app "conhece" os pratos, já que não dá pra consultar o Catálogo**
 (ver limitação abaixo): o botão **Importar pratos**, na tela inicial do
