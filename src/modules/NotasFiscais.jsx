@@ -262,41 +262,49 @@ function Conferencia({ documento, onVoltar }) {
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
-        <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
-          {itens.map((item) => {
+        <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
+          <div style={{ ...linhaTabela, background: "#F6F1E7", borderBottom: "1px solid #E8E2D2", fontSize: 10, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "#8A8778" }}>
+            <span>Produto</span><span style={{ textAlign: "right" }}>Qtd.</span><span>Unid.</span><span style={{ textAlign: "right" }}>Vl. unit.</span><span style={{ textAlign: "right" }}>Vl. total</span><span></span>
+          </div>
+          {itens.map((item, idx) => {
             const semInsumo = !item.insumo_id;
             return (
               <div key={item.id} style={{
-                ...cardStyle,
                 background: item.alerta_preco ? "#FCEBEB" : "#FFFFFF",
-                border: item.alerta_preco ? "1px solid #E24B4A" : semInsumo ? "1px dashed #C9A227" : "1px solid #E8E2D2",
+                borderTop: idx > 0 ? "1px solid #F0EBDD" : "none",
               }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, color: item.alerta_preco ? "#501313" : "#22231F", fontWeight: item.alerta_preco ? 700 : 400 }}>{item.nome_lido}</div>
-                    {semInsumo ? (
-                      <div style={{ fontSize: 11, color: "#8A6A0F" }}>→ insumo não reconhecido — escolher ou criar</div>
-                    ) : (
-                      <div style={{ fontSize: 11, color: item.alerta_preco ? "#791F1F" : "#8A8778" }}>
-                        → vinculado a: {insumos.find((i) => i.id === item.insumo_id)?.nome}
-                      </div>
-                    )}
-                  </div>
-                  <span style={{ fontSize: 13, color: "#22231F" }}>{item.quantidade} {item.unidade}</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F", width: 74, textAlign: "right" }}>{brl(item.preco_unitario)}</span>
-                  <button onClick={() => abrirEdicao(item)} style={ghostIconBtn} aria-label="Editar item"><Pencil size={15} /></button>
-                  <button onClick={() => removerItem(item.id)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Remover item"><Trash2 size={15} /></button>
+                <div style={linhaTabela}>
+                  <span style={{ fontSize: 12, color: item.alerta_preco ? "#501313" : "#22231F", fontWeight: item.alerta_preco ? 700 : 400, overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {item.nome_lido}
+                  </span>
+                  <span style={{ fontSize: 12, color: "#22231F", textAlign: "right" }}>{item.quantidade}</span>
+                  <span style={{ fontSize: 12, color: "#8A8778" }}>{item.unidade}</span>
+                  <span style={{ fontSize: 12, color: "#22231F", textAlign: "right" }}>{brl(item.preco_unitario)}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#22231F", textAlign: "right" }}>{brl(item.quantidade * item.preco_unitario)}</span>
+                  <span style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                    <button onClick={() => abrirEdicao(item)} style={ghostIconBtn} aria-label="Editar item"><Pencil size={14} /></button>
+                    <button onClick={() => removerItem(item.id)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Remover item"><Trash2 size={14} /></button>
+                  </span>
                 </div>
 
+                {semInsumo && (
+                  <div style={{ fontSize: 11, color: "#8A6A0F", padding: "0 10px 8px" }}>→ insumo não reconhecido — escolher ou criar abaixo</div>
+                )}
+                {!semInsumo && (
+                  <div style={{ fontSize: 11, color: item.alerta_preco ? "#791F1F" : "#8A8778", padding: "0 10px 8px" }}>
+                    → vinculado a: {insumos.find((i) => i.id === item.insumo_id)?.nome}
+                  </div>
+                )}
+
                 {item.alerta_preco && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, paddingTop: 8, borderTop: "1px solid #F09595", fontSize: 12, color: "#791F1F" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderTop: "1px solid #F09595", fontSize: 12, color: "#791F1F" }}>
                     <AlertTriangle size={14} style={{ flexShrink: 0 }} />
                     {(((item.preco_unitario / item.preco_anterior) - 1) * 100).toFixed(0)}% acima da última compra ({brl(item.preco_anterior)})
                   </div>
                 )}
 
                 {semInsumo && criarInsumoAberto !== item.id && (
-                  <div style={{ display: "flex", gap: 6, marginTop: 8, paddingTop: 8, borderTop: "1px dashed #E8D48A" }}>
+                  <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderTop: "1px dashed #E8D48A" }}>
                     <select defaultValue="" onChange={(e) => e.target.value && vincularInsumo(item.id, e.target.value)}
                       style={{ flex: 1, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }}>
                       <option value="">Escolher insumo cadastrado…</option>
@@ -307,7 +315,7 @@ function Conferencia({ documento, onVoltar }) {
                   </div>
                 )}
                 {criarInsumoAberto === item.id && (
-                  <div style={{ display: "flex", gap: 6, marginTop: 8, paddingTop: 8, borderTop: "1px dashed #E8D48A", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderTop: "1px dashed #E8D48A", flexWrap: "wrap" }}>
                     <input value={novoInsumoNome} onChange={(e) => setNovoInsumoNome(e.target.value)}
                       style={{ flex: 1, minWidth: 100, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
                     <select value={novoInsumoUnidade} onChange={(e) => setNovoInsumoUnidade(e.target.value)}
@@ -319,7 +327,7 @@ function Conferencia({ documento, onVoltar }) {
                 )}
 
                 {editandoId === item.id && (
-                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #E8E2D2" }}>
+                  <div style={{ padding: "8px 10px", borderTop: "1px solid #E8E2D2" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
                       <input value={formEdicao.nome_lido} onChange={(e) => setFormEdicao((f) => ({ ...f, nome_lido: e.target.value }))}
                         style={{ flex: 1, minWidth: 100, padding: "4px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
@@ -364,6 +372,7 @@ function Conferencia({ documento, onVoltar }) {
 }
 
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
+const linhaTabela = { display: "grid", gridTemplateColumns: "2fr 0.6fr 0.5fr 0.8fr 0.8fr 0.6fr", gap: 6, padding: "8px 10px", alignItems: "center" };
 const itemRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10, padding: "12px 14px" };
 const iconBox = { width: 36, height: 44, borderRadius: 6, background: "#F6F1E7", border: "1px solid #E8E2D2", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
 const ghostIconBtn = { border: "none", background: "none", color: "#8A8778", cursor: "pointer", padding: 2, display: "flex" };

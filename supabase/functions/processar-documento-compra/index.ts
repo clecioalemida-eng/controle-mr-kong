@@ -13,6 +13,29 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 const LIMITE_ALERTA_PRECO = 0.30; // 30% acima da última compra -> alerta vermelho
 
+function normalizar(s: string) {
+  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+
+// Junta itens que a IA leu como linhas separadas mas são o mesmo produto —
+// mesmo nome (normalizado), mesma unidade e mesmo preço unitário. Isso
+// cobre o caso comum de um produto pesado em pacotes separados (ex.: três
+// pacotes de queijo com pesos diferentes, mesmo R$/kg): em vez de manter
+// três linhas quase iguais, soma as quantidades numa linha só.
+function consolidarIguais(itens: { nome: string; quantidade: number; unidade: string; preco_unitario: number }[]) {
+  const grupos = new Map<string, { nome: string; quantidade: number; unidade: string; preco_unitario: number }>();
+  for (const item of itens) {
+    const chave = `${normalizar(item.nome)}|${item.unidade}|${item.preco_unitario}`;
+    const existente = grupos.get(chave);
+    if (existente) {
+      existente.quantidade = round2(existente.quantidade + item.quantidade);
+    } else {
+      grupos.set(chave, { ...item });
+    }
+  }
+  return Array.from(grupos.values());
+}
+
 Deno.serve(async (req) => {
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -58,7 +81,39 @@ Deno.serve(async (req) => {
     const ehPdf = documento.arquivo_path.toLowerCase().endsWith(".pdf");
     const mediaType = ehPdf ? "application/pdf" : (documento.arquivo_path.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
 
-    // 2) Manda pro Claude ler, com saída estruturada via tool use
+    // 2) Aprendizado: busca itens já confirmados antes, pra usar como
+    // referência de nome/unidade/preço esperado nesta leitura. Isso não
+    // corrige erro de leitura de imagem sozinho, mas evita repetir o mesmo
+    // erro de unidade/nome quando um produto já visto aparece de novo.
+    const { data: docsConfirmados } = await supabase
+      .from("documentos_compra").select("id")
+      .eq("status", "confirmado")
+      .order("confirmado_em", { ascending: false })
+      .limit(50);
+    const idsConfirmados = (docsConfirmados || []).map((d: any) => d.id);
+    let referenciaTexto = "";
+    if (idsConfirmados.length > 0) {
+      const { data: historico } = await supabase
+        .from("itens_documento_compra")
+        .select("nome_lido, unidade, preco_unitario, insumo:insumos(nome)")
+        .in("documento_id", idsConfirmados)
+        .limit(300);
+      const vistos = new Set<string>();
+      const linhasRef: string[] = [];
+      for (const h of historico || []) {
+        const chave = normalizar(h.nome_lido);
+        if (vistos.has(chave)) continue;
+        vistos.add(chave);
+        const nomeInsumo = (h as any).insumo?.nome;
+        linhasRef.push(`"${h.nome_lido}" -> unidade ${h.unidade}, ~R$${h.preco_unitario}${nomeInsumo ? `, insumo: ${nomeInsumo}` : ""}`);
+        if (linhasRef.length >= 40) break;
+      }
+      if (linhasRef.length > 0) {
+        referenciaTexto = `\n\nItens já confirmados manualmente em compras anteriores neste sistema (use como referência de nome, unidade e faixa de preço esperada para produtos parecidos — mas sempre confira contra o que está impresso NESTA nota específica, não copie automaticamente):\n${linhasRef.join("\n")}`;
+      }
+    }
+
+    // 3) Manda pro Claude ler, com saída estruturada via tool use
     const respostaClaude = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -100,7 +155,7 @@ Deno.serve(async (req) => {
           role: "user",
           content: [
             { type: ehPdf ? "document" : "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-            { type: "text", text: "Leia esta nota fiscal ou recibo de compra de um restaurante e extraia fornecedor, data e cada item comprado (nome, quantidade, unidade, preço unitário). Regras importantes: (1) liste apenas itens que aparecem literalmente impressos no documento — nunca invente, deduza ou repita um item que não está lá; (2) leia cada linha inteira antes de passar pra próxima, sem misturar valores entre linhas diferentes; (3) depois de ler quantidade e preço unitário de cada item, confira se quantidade × preço_unitário bate (aproximadamente) com o valor total daquela linha impresso no documento — se não bater, releia os números com mais atenção antes de responder." },
+            { type: "text", text: "Leia esta nota fiscal ou recibo de compra de um restaurante e extraia fornecedor, data e cada item comprado (nome, quantidade, unidade, preço unitário). Regras importantes: (1) liste apenas itens que aparecem literalmente impressos no documento — nunca invente, deduza ou repita um item que não está lá; (2) se algum trecho da imagem estiver ilegível, borrado ou com reflexo de luz que impeça leitura confiante, NÃO invente um item para preencher essa lacuna — é preferível deixar de fora um item real do que incluir um que não existe; (3) leia cada linha inteira antes de passar pra próxima, sem misturar valores entre linhas diferentes; (4) depois de ler quantidade e preço unitário de cada item, confira se quantidade × preço_unitário bate (aproximadamente) com o valor total daquela linha impresso no documento — se não bater, releia os números com mais atenção antes de responder; (5) se o mesmo produto aparecer em várias linhas com o mesmo preço por unidade (ex.: vários pacotes pesados separadamente), some as quantidades e devolva como um único item." + referenciaTexto },
           ],
         }],
       }),
@@ -122,17 +177,17 @@ Deno.serve(async (req) => {
       fornecedor?: string; data_documento?: string; tipo_documento?: "nota_fiscal" | "recibo";
       itens: { nome: string; quantidade: number; unidade: string; preco_unitario: number }[];
     };
+    const itensConsolidados = consolidarIguais(extraido.itens || []);
 
-    // 3) Casa cada item com um insumo (nome exato -> sinônimo aprendido -> aproximação simples)
+    // 4) Casa cada item com um insumo (nome exato -> sinônimo aprendido -> aproximação simples)
     const { data: todosInsumos } = await supabase.from("insumos").select("id, nome, custo_medio_atual");
     const { data: todosSinonimos } = await supabase.from("insumo_sinonimos").select("nome_variante, insumo_id");
-    const normalizar = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 
     const mapaSinonimos = new Map((todosSinonimos || []).map((s: any) => [normalizar(s.nome_variante), s.insumo_id]));
     const mapaExato = new Map((todosInsumos || []).map((i: any) => [normalizar(i.nome), i]));
 
     let valorTotal = 0;
-    const linhasParaGravar = (extraido.itens || []).map((item) => {
+    const linhasParaGravar = itensConsolidados.map((item) => {
       valorTotal += (item.quantidade || 0) * (item.preco_unitario || 0);
       const chave = normalizar(item.nome);
       let insumo: any = mapaExato.get(chave);
