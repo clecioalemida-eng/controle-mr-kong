@@ -134,7 +134,9 @@ function EditorFicha({ prato, onVoltar }) {
   const [insumos, setInsumos] = useState([]);
   const [selecaoNova, setSelecaoNova] = useState("");
   const [editandoInsumoId, setEditandoInsumoId] = useState(null);
-  const [formEdicao, setFormEdicao] = useState({ nome: "", unidade: "un", custo: 0 });
+  const [formEdicao, setFormEdicao] = useState({ nome: "", unidade: "un", custo: 0, composto: false, rendimento: "" });
+  const [composicaoEdicao, setComposicaoEdicao] = useState([]); // sub-insumos de um insumo composto
+  const [subInsumoSel, setSubInsumoSel] = useState("");
   const [novoInsumoAberto, setNovoInsumoAberto] = useState(false);
   const [novoInsumoForm, setNovoInsumoForm] = useState({ nome: "", unidade: "un", custo: 0 });
   const [salvando, setSalvando] = useState(false);
@@ -144,7 +146,7 @@ function EditorFicha({ prato, onVoltar }) {
   const carregarTudo = useCallback(async () => {
     setCarregando(true);
     const [{ data: itens }, { data: todosInsumos }] = await Promise.all([
-      supabase.from("prato_insumos").select("insumo_id, quantidade, insumo:insumos(id, nome, unidade, custo_medio_atual)").eq("prato_id", prato.id),
+      supabase.from("prato_insumos").select("insumo_id, quantidade, insumo:insumos(id, nome, unidade, custo_medio_atual, composto)").eq("prato_id", prato.id),
       supabase.from("insumos").select("*").order("nome"),
     ]);
     setLinhas((itens || []).map((it) => ({
@@ -152,6 +154,7 @@ function EditorFicha({ prato, onVoltar }) {
       nome: it.insumo?.nome,
       unidade: it.insumo?.unidade,
       custo_medio_atual: it.insumo?.custo_medio_atual || 0,
+      composto: it.insumo?.composto || false,
       quantidade: it.quantidade,
     })));
     setInsumos(todosInsumos || []);
@@ -161,12 +164,13 @@ function EditorFicha({ prato, onVoltar }) {
   useEffect(() => { carregarTudo(); }, [carregarTudo]);
 
   const insumosDisponiveis = insumos.filter((i) => !linhas.some((l) => l.insumo_id === i.id));
+  const insumosSimples = insumos.filter((i) => !i.composto); // composto só pode ser feito de insumos simples
 
   const adicionarInsumo = () => {
     if (!selecaoNova) return;
     const insumo = insumos.find((i) => i.id === selecaoNova);
     if (!insumo) return;
-    setLinhas((prev) => [...prev, { insumo_id: insumo.id, nome: insumo.nome, unidade: insumo.unidade, custo_medio_atual: insumo.custo_medio_atual, quantidade: 1 }]);
+    setLinhas((prev) => [...prev, { insumo_id: insumo.id, nome: insumo.nome, unidade: insumo.unidade, custo_medio_atual: insumo.custo_medio_atual, composto: insumo.composto, quantidade: 1 }]);
     setSelecaoNova("");
   };
 
@@ -176,25 +180,80 @@ function EditorFicha({ prato, onVoltar }) {
 
   const removerLinha = (idx) => setLinhas((prev) => prev.filter((_, i) => i !== idx));
 
-  const abrirEdicaoInsumo = (linha) => {
+  const abrirEdicaoInsumo = async (linha) => {
     setEditandoInsumoId(linha.insumo_id);
-    setFormEdicao({ nome: linha.nome, unidade: linha.unidade, custo: linha.custo_medio_atual });
+    setErro("");
+    const insumo = insumos.find((i) => i.id === linha.insumo_id);
+    setFormEdicao({
+      nome: linha.nome,
+      unidade: linha.unidade,
+      custo: linha.custo_medio_atual,
+      composto: insumo?.composto || false,
+      rendimento: insumo?.rendimento ?? "",
+    });
+    if (insumo?.composto) {
+      const { data } = await supabase
+        .from("insumo_composicao")
+        .select("insumo_filho_id, quantidade, filho:insumos(id, nome, unidade, custo_medio_atual)")
+        .eq("insumo_pai_id", linha.insumo_id);
+      setComposicaoEdicao((data || []).map((c) => ({
+        insumo_id: c.insumo_filho_id, nome: c.filho?.nome, unidade: c.filho?.unidade,
+        custo_medio_atual: c.filho?.custo_medio_atual || 0, quantidade: c.quantidade,
+      })));
+    } else {
+      setComposicaoEdicao([]);
+    }
   };
 
+  const adicionarSubInsumo = () => {
+    if (!subInsumoSel) return;
+    const insumo = insumosSimples.find((i) => i.id === subInsumoSel);
+    if (!insumo || composicaoEdicao.some((c) => c.insumo_id === insumo.id)) return;
+    setComposicaoEdicao((prev) => [...prev, { insumo_id: insumo.id, nome: insumo.nome, unidade: insumo.unidade, custo_medio_atual: insumo.custo_medio_atual, quantidade: 0 }]);
+    setSubInsumoSel("");
+  };
+  const alterarQtdSubInsumo = (idx, valor) => {
+    setComposicaoEdicao((prev) => prev.map((c, i) => i === idx ? { ...c, quantidade: parseFloat(valor) || 0 } : c));
+  };
+  const removerSubInsumo = (idx) => setComposicaoEdicao((prev) => prev.filter((_, i) => i !== idx));
+
+  const custoCompostoPreview = composicaoEdicao.reduce((s, c) => s + c.quantidade * c.custo_medio_atual, 0);
+  const rendimentoNum = parseFloat(formEdicao.rendimento) || 0;
+  const custoPorUnidadePreview = rendimentoNum > 0 ? custoCompostoPreview / rendimentoNum : 0;
+
   const salvarEdicaoInsumo = async () => {
-    const { error } = await supabase.from("insumos").update({
+    setErro("");
+    const patch = {
       nome: formEdicao.nome,
       unidade: formEdicao.unidade,
-      custo_medio_atual: parseFloat(formEdicao.custo) || 0,
+      composto: formEdicao.composto,
+      rendimento: formEdicao.composto ? (parseFloat(formEdicao.rendimento) || null) : null,
       atualizado_em: new Date().toISOString(),
-    }).eq("id", editandoInsumoId);
-    if (error) { setErro(error.message); return; }
+    };
+    if (!formEdicao.composto) {
+      patch.custo_medio_atual = parseFloat(formEdicao.custo) || 0;
+    }
+    const { error: errUpd } = await supabase.from("insumos").update(patch).eq("id", editandoInsumoId);
+    if (errUpd) { setErro(errUpd.message); return; }
+
+    if (formEdicao.composto) {
+      await supabase.from("insumo_composicao").delete().eq("insumo_pai_id", editandoInsumoId);
+      if (composicaoEdicao.length > 0) {
+        const { error: errComp } = await supabase.from("insumo_composicao").insert(
+          composicaoEdicao.map((c) => ({ insumo_pai_id: editandoInsumoId, insumo_filho_id: c.insumo_id, quantidade: c.quantidade }))
+        );
+        if (errComp) { setErro(errComp.message); return; }
+      }
+    }
+
+    // Recarrega o insumo pra pegar o custo_medio_atual já recalculado (se composto, quem calcula é o gatilho no banco)
+    const { data: insumoAtualizado } = await supabase.from("insumos").select("*").eq("id", editandoInsumoId).single();
+    const custoFinal = insumoAtualizado?.custo_medio_atual ?? (parseFloat(formEdicao.custo) || 0);
+
     setLinhas((prev) => prev.map((l) => l.insumo_id === editandoInsumoId
-      ? { ...l, nome: formEdicao.nome, unidade: formEdicao.unidade, custo_medio_atual: parseFloat(formEdicao.custo) || 0 }
+      ? { ...l, nome: formEdicao.nome, unidade: formEdicao.unidade, custo_medio_atual: custoFinal, composto: formEdicao.composto }
       : l));
-    setInsumos((prev) => prev.map((i) => i.id === editandoInsumoId
-      ? { ...i, nome: formEdicao.nome, unidade: formEdicao.unidade, custo_medio_atual: parseFloat(formEdicao.custo) || 0 }
-      : i));
+    setInsumos((prev) => prev.map((i) => i.id === editandoInsumoId ? { ...i, ...insumoAtualizado } : i));
     setEditandoInsumoId(null);
   };
 
@@ -207,7 +266,7 @@ function EditorFicha({ prato, onVoltar }) {
     }).select().single();
     if (error) { setErro(error.message); return; }
     setInsumos((prev) => [...prev, data].sort((a, b) => a.nome.localeCompare(b.nome)));
-    setLinhas((prev) => [...prev, { insumo_id: data.id, nome: data.nome, unidade: data.unidade, custo_medio_atual: data.custo_medio_atual, quantidade: 1 }]);
+    setLinhas((prev) => [...prev, { insumo_id: data.id, nome: data.nome, unidade: data.unidade, custo_medio_atual: data.custo_medio_atual, composto: false, quantidade: 1 }]);
     setNovoInsumoForm({ nome: "", unidade: "un", custo: 0 });
     setNovoInsumoAberto(false);
   };
@@ -254,7 +313,10 @@ function EditorFicha({ prato, onVoltar }) {
           {linhas.map((l, idx) => (
             <div key={l.insumo_id} style={cardStyle}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ flex: 1, fontSize: 13, color: "#22231F" }}>{l.nome}</div>
+                <div style={{ flex: 1, fontSize: 13, color: "#22231F" }}>
+                  {l.nome}
+                  {l.composto && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#8A6A0F", background: "#FBF3D9", padding: "1px 6px", borderRadius: 999 }}>composto</span>}
+                </div>
                 <input type="number" value={l.quantidade} onChange={(e) => alterarQuantidade(idx, e.target.value)}
                   style={{ width: 60, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
                 <span style={{ fontSize: 12, color: "#8A8778", width: 20 }}>{l.unidade}</span>
@@ -265,17 +327,70 @@ function EditorFicha({ prato, onVoltar }) {
                 <button onClick={() => removerLinha(idx)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Remover insumo"><Trash2 size={15} /></button>
               </div>
               {editandoInsumoId === l.insumo_id && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2", flexWrap: "wrap" }}>
-                  <input value={formEdicao.nome} onChange={(e) => setFormEdicao((f) => ({ ...f, nome: e.target.value }))}
-                    placeholder="Nome do insumo" style={{ flex: 1, minWidth: 120, padding: "4px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
-                  <select value={formEdicao.unidade} onChange={(e) => setFormEdicao((f) => ({ ...f, unidade: e.target.value }))}
-                    style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }}>
-                    {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
-                  </select>
-                  <span style={{ fontSize: 12, color: "#8A8778" }}>Custo unit.</span>
-                  <input type="number" step="0.01" value={formEdicao.custo} onChange={(e) => setFormEdicao((f) => ({ ...f, custo: e.target.value }))}
-                    style={{ width: 70, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
-                  <button onClick={salvarEdicaoInsumo} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                    <input value={formEdicao.nome} onChange={(e) => setFormEdicao((f) => ({ ...f, nome: e.target.value }))}
+                      placeholder="Nome do insumo" style={{ flex: 1, minWidth: 120, padding: "4px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+                    <select value={formEdicao.unidade} onChange={(e) => setFormEdicao((f) => ({ ...f, unidade: e.target.value }))}
+                      style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }}>
+                      {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                    </select>
+                  </div>
+
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#8A8778", marginBottom: 10 }}>
+                    <input type="checkbox" checked={formEdicao.composto} onChange={(e) => setFormEdicao((f) => ({ ...f, composto: e.target.checked }))} />
+                    Insumo composto (custo calculado a partir de outros insumos)
+                  </label>
+
+                  {!formEdicao.composto ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 12, color: "#8A8778" }}>Custo unitário</span>
+                      <input type="number" step="0.01" value={formEdicao.custo} onChange={(e) => setFormEdicao((f) => ({ ...f, custo: e.target.value }))}
+                        style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+                      <button onClick={salvarEdicaoInsumo} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
+                    </div>
+                  ) : (
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                        <span style={{ fontSize: 12, color: "#8A8778" }}>Rendimento (em {formEdicao.unidade}) — quanto essa receita produz</span>
+                        <input type="number" step="0.01" value={formEdicao.rendimento} onChange={(e) => setFormEdicao((f) => ({ ...f, rendimento: e.target.value }))}
+                          style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+                      </div>
+
+                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "#8A8778", marginBottom: 6 }}>Composição</div>
+                      <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
+                        {composicaoEdicao.map((c, cidx) => (
+                          <div key={c.insumo_id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#F6F1E7", borderRadius: 6, padding: "6px 8px" }}>
+                            <span style={{ flex: 1, fontSize: 12, color: "#22231F" }}>{c.nome}</span>
+                            <input type="number" value={c.quantidade} onChange={(e) => alterarQtdSubInsumo(cidx, e.target.value)}
+                              style={{ width: 56, padding: "3px 5px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                            <span style={{ fontSize: 11, color: "#8A8778", width: 18 }}>{c.unidade}</span>
+                            <button onClick={() => removerSubInsumo(cidx)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Remover sub-insumo"><Trash2 size={13} /></button>
+                          </div>
+                        ))}
+                        {composicaoEdicao.length === 0 && <div style={{ fontSize: 12, color: "#8A8778" }}>Nenhum insumo na composição ainda.</div>}
+                      </div>
+
+                      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                        <select value={subInsumoSel} onChange={(e) => setSubInsumoSel(e.target.value)}
+                          style={{ flex: 1, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                          <option value="">Adicionar insumo simples…</option>
+                          {insumosSimples.filter((i) => !composicaoEdicao.some((c) => c.insumo_id === i.id)).map((i) => (
+                            <option key={i.id} value={i.id}>{i.nome}</option>
+                          ))}
+                        </select>
+                        <button onClick={adicionarSubInsumo} style={{ ...btnSecondary, padding: "5px 10px", fontSize: 12 }}>+</button>
+                      </div>
+
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FBF3D9", border: "1px solid #E8D48A", borderRadius: 8, padding: "8px 10px" }}>
+                        <span style={{ fontSize: 12, color: "#7A6A1E" }}>Custo calculado por {formEdicao.unidade}</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: "#7A6A1E" }}>{brl(custoPorUnidadePreview)}</span>
+                      </div>
+                      <button onClick={salvarEdicaoInsumo} style={{ ...btnSecondary, width: "100%", marginTop: 10, display: "flex", justifyContent: "center", gap: 6 }}>
+                        <Check size={14} /> Confirmar
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

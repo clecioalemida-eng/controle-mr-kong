@@ -30,12 +30,17 @@ admin. Banco de dados: Supabase. Deploy: Vercel.
 8. **SQL Editor > New query**: cole e rode
    `supabase/007_mover_fichas_tecnicas_para_financeiro.sql` — remove o card
    separado de Fichas Técnicas (ela passa a viver dentro do Financeiro).
-9. Em **Authentication > Providers > Email**, decida se quer manter a
+9. **SQL Editor > New query**: cole e rode `supabase/008_insumos_compostos.sql`
+   — cria o suporte a insumo composto (schema + cálculo automático).
+10. **SQL Editor > New query**: cole e rode `supabase/009_molho_gourmet_e_mussarela.sql`
+   — separa mussarela fatiada/em barra e cadastra o molho gourmet nos 8
+   hambúrgueres da linha gourmet.
+11. Em **Authentication > Providers > Email**, decida se quer manter a
    confirmação de e-mail obrigatória. Para uso interno simples, muita gente
    desliga "Confirm email" — assim a pessoa consegue entrar assim que o
    admin aprovar, sem precisar clicar em link de e-mail. Se deixar ligado,
    o usuário precisa confirmar o e-mail E ser aprovado pelo admin.
-10. Em **Project Settings > Data API** / **API Keys**, copie a **Project URL**
+12. Em **Project Settings > Data API** / **API Keys**, copie a **Project URL**
    e a chave **publishable** (ou "anon public" nas chaves legadas).
 
 ## 2. Criar o primeiro administrador
@@ -124,6 +129,30 @@ O app usa uma largura de conteúdo que cresce com a tela (celular → tablet →
 desktop) e os cards da tela inicial se reorganizam automaticamente em 1, 2
 ou 3 colunas conforme o espaço disponível (`src/index.css`). Não precisa de
 nenhuma configuração — funciona igual em celular, tablet e computador.
+
+## Insumos compostos (receitas dentro do insumo)
+
+Alguns insumos não são comprados prontos — são preparados a partir de
+outros insumos (ex.: um molho da casa). Pra esses casos existe o **insumo
+composto**: em vez de digitar um custo fixo, você cadastra a receita dele
+(quais insumos entram, em que quantidade) e o **rendimento** (quanto essa
+receita produz, na mesma unidade do insumo — ex.: "rende 1000 ml"). O custo
+por unidade é **calculado automaticamente** (soma do custo dos ingredientes
+÷ rendimento) e recalculado sozinho sempre que:
+- a composição muda (adiciona/remove/edita quantidade de um ingrediente), ou
+- o custo de um dos ingredientes muda em outro lugar do app (efeito cascata).
+
+Ativa isso marcando "Insumo composto" no lápis de edição de qualquer
+insumo, dentro do editor de ficha técnica. Só suporta 1 nível (um composto
+feito de insumos simples — não dá pra fazer um composto usar outro
+composto como ingrediente, pra evitar complexidade desnecessária).
+
+Nessa entrega já veio cadastrado: **Molho gourmet** (o "kongnese" citado na
+descrição de 8 hambúrgueres da linha gourmet), como insumo composto ainda
+sem receita definida — e ligado a 30ml em cada um desses 8 pratos. Também
+separei **Mussarela fatiada** (a que já estava nas fichas técnicas) de
+**Mussarela em barra** (insumo novo, custo ainda em aberto) — são produtos
+diferentes.
 
 ## Fichas técnicas, custo e margem
 
