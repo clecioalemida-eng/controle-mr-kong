@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
-import { supabase } from "../lib/supabaseClient";
+import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function hoje() { return new Date().toISOString().slice(0, 10); }
@@ -196,7 +196,7 @@ function PremiacaoDoDia() {
     setErro("");
     const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", { body: { acao: "taxa_servico_dia", dia } });
     setBuscandoTaxa(false);
-    if (error) { setErro(error.message); return; }
+    if (error) { setErro(await extrairErroFuncao(error)); return; }
     if (data?.error) { setErro(data.error); return; }
     setTaxaServico(String(data.taxa_servico));
     setTaxaAutomatica(data.encontrado_automaticamente);

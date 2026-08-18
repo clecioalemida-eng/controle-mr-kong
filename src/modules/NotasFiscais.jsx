@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   ChevronLeft, Camera, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye,
 } from "lucide-react";
-import { supabase } from "../lib/supabaseClient";
+import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
 
@@ -67,7 +67,7 @@ export default function NotasFiscais() {
       const { data: resultado, error: erroFuncao } = await supabase.functions.invoke("processar-documento-compra", {
         body: { documento_id: doc.id },
       });
-      if (erroFuncao) throw erroFuncao;
+      if (erroFuncao) throw new Error(await extrairErroFuncao(erroFuncao));
       if (resultado?.error) throw new Error(resultado.error);
 
       carregar();

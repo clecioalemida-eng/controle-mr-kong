@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ChevronLeft, Loader2, AlertTriangle, RefreshCw, DollarSign } from "lucide-react";
-import { supabase } from "../lib/supabaseClient";
+import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import FichasTecnicas from "./FichasTecnicas";
 import NotasFiscais from "./NotasFiscais";
 import Estoque from "./Estoque";
@@ -64,7 +64,7 @@ export default function Financeiro({ onVoltar }) {
       },
     });
     setCarregando(false);
-    if (error) { setErro(error.message || "Erro ao consultar o CardápioWeb."); return; }
+    if (error) { setErro(await extrairErroFuncao(error)); return; }
     if (data?.error) { setErro(data.error); return; }
     setResumo(data);
   }, [dataInicio, dataFim]);

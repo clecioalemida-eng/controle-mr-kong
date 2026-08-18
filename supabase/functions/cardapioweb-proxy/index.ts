@@ -230,9 +230,21 @@ async function buscarPedidos(headersCW: Record<string, string>, data_inicio: str
 
   const aProcessar = resumoBasico.slice(0, LIMITE_PEDIDOS_DETALHADOS);
   const pedidosDetalhados: any[] = [];
-  for (const p of aProcessar) {
-    const res = await fetch(`${BASE_URL}/api/partner/v1/orders/${p.id}`, { headers: headersCW });
-    if (res.ok) pedidosDetalhados.push(await res.json());
+  // Busca os detalhes em lotes paralelos (não um por um em sequência) —
+  // muito mais rápido pra períodos com bastante pedido, e ainda respeita
+  // o limite de 300 requisições/3min do CardápioWeb (10 por vez é bem
+  // folgado dentro disso).
+  const TAMANHO_LOTE = 10;
+  for (let i = 0; i < aProcessar.length; i += TAMANHO_LOTE) {
+    const lote = aProcessar.slice(i, i + TAMANHO_LOTE);
+    const resultados = await Promise.all(
+      lote.map((p: any) =>
+        fetch(`${BASE_URL}/api/partner/v1/orders/${p.id}`, { headers: headersCW })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      )
+    );
+    for (const r of resultados) if (r) pedidosDetalhados.push(r);
   }
 
   return { resumoBasico, pedidosDetalhados };

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft,
 } from "lucide-react";
-import { supabase } from "../lib/supabaseClient";
+import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
 
@@ -66,7 +66,7 @@ export default function FichasTecnicas() {
       body: { acao: "importar_pratos", data_inicio: `${diasAtras(90)}T00:00:00-03:00`, data_fim: `${hoje()}T23:59:59-03:00` },
     });
     setImportando(false);
-    if (error) { setErro(error.message); return; }
+    if (error) { setErro(await extrairErroFuncao(error)); return; }
     if (data?.error) { setErro(data.error); return; }
     carregarPratos();
   };
