@@ -48,9 +48,10 @@ export default function FichasTecnicas() {
     const combinados = (pratosData || []).map((p) => {
       const temFicha = (custoPorPrato[p.id + ":n"] || 0) > 0;
       const custoTotal = custoPorPrato[p.id] || 0;
+      const custoZerado = temFicha && custoTotal === 0; // tem insumo(s) na ficha, mas nenhum com preço ainda
       const margem = p.preco_venda - custoTotal;
       const margemPct = p.preco_venda > 0 ? (margem / p.preco_venda) * 100 : 0;
-      return { ...p, temFicha, custoTotal, margem, margemPct };
+      return { ...p, temFicha, custoTotal, custoZerado, margem, margemPct };
     });
     setPratos(combinados);
     setCarregandoLista(false);
@@ -105,12 +106,14 @@ export default function FichasTecnicas() {
         <div className="list-grid">
           {pratos.map((p) => (
             <button key={p.id} onClick={() => { setPratoAtual(p); setTela("editor"); }}
-              style={{ ...itemRow, cursor: "pointer", textAlign: "left", border: p.temFicha ? "1px solid #E8E2D2" : "1px solid #F0D8CE" }}>
+              style={{ ...itemRow, cursor: "pointer", textAlign: "left", border: (p.temFicha && !p.custoZerado) ? "1px solid #E8E2D2" : "1px solid #F0D8CE" }}>
               <div>
                 <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{p.nome}</div>
                 <div style={{ fontSize: 12, color: "#8A8778" }}>{brl(p.preco_venda)}</div>
               </div>
-              {p.temFicha ? (
+              {p.custoZerado ? (
+                <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Custo pendente</span>
+              ) : p.temFicha ? (
                 <span style={{ ...pill, background: p.margemPct >= 50 ? "#2F8F5B22" : p.margemPct >= 30 ? "#FAC77555" : "#F0999522", color: p.margemPct >= 50 ? "#0F6E56" : p.margemPct >= 30 ? "#854F0B" : "#A32D2D" }}>
                   Margem {p.margemPct.toFixed(1)}%
                 </span>
@@ -310,17 +313,20 @@ function EditorFicha({ prato, onVoltar }) {
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
-          {linhas.map((l, idx) => (
-            <div key={l.insumo_id} style={cardStyle}>
+          {linhas.map((l, idx) => {
+            const semCusto = l.custo_medio_atual === 0;
+            return (
+            <div key={l.insumo_id} style={{ ...cardStyle, border: semCusto ? "1px solid #E24B4A" : "1px solid #E8E2D2" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{ flex: 1, fontSize: 13, color: "#22231F" }}>
                   {l.nome}
                   {l.composto && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#8A6A0F", background: "#FBF3D9", padding: "1px 6px", borderRadius: 999 }}>composto</span>}
+                  {semCusto && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#791F1F", background: "#FCEBEB", padding: "1px 6px", borderRadius: 999 }}>sem custo</span>}
                 </div>
                 <input type="number" value={l.quantidade} onChange={(e) => alterarQuantidade(idx, e.target.value)}
                   style={{ width: 60, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
                 <span style={{ fontSize: 12, color: "#8A8778", width: 20 }}>{l.unidade}</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F", width: 74, textAlign: "right" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: semCusto ? "#C4432B" : "#22231F", width: 74, textAlign: "right" }}>
                   {brl(l.quantidade * l.custo_medio_atual)}
                 </span>
                 <button onClick={() => abrirEdicaoInsumo(l)} style={ghostIconBtn} aria-label="Editar insumo"><Pencil size={15} /></button>
@@ -394,7 +400,7 @@ function EditorFicha({ prato, onVoltar }) {
                 </div>
               )}
             </div>
-          ))}
+          );})}
           {linhas.length === 0 && (
             <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum insumo adicionado ainda.</div>
           )}

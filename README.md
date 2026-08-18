@@ -212,6 +212,28 @@ evoluir isso depois porque o histórico de preços já fica registrado no
 extrato do estoque (`movimentacoes_estoque.preco_unitario`) — só falta
 trocar a fórmula.
 
+## Produtos do resto do cardápio (Petiscos, Bombons, Extras, Bebidas, Na Chapa, Fritas, Sorvetes, Açaí, Milkshake)
+
+`013_produtos_extras_cardapio.sql` cadastra 91 produtos que ainda não estavam
+no sistema. Cada um ganha um **insumo-espelho** (mesmo nome, quantidade 1),
+com custo R$0 até alguém preencher — que é exatamente o que fica **em
+vermelho** no app (tag "sem custo" dentro da ficha, e "Custo pendente" em
+vez da margem na lista) até ser corrigido.
+
+Isso é só o ponto de partida: pra pratos preparados de verdade (petiscos,
+Na Chapa, Fritas com adicionais, Açaí, etc.), o ideal é substituir esse
+insumo único por uma composição de vários ingredientes reais, do mesmo
+jeito que já fizemos com os hambúrgueres — a estrutura já está pronta pra
+isso, só falta a receita de cada um.
+
+Um detalhe de nomenclatura: nos itens da categoria **Extras** que têm o
+mesmo nome de um insumo já cadastrado em kg (Bacon, Alface, Ovo, Presunto,
+Salsicha, Tomate — usados dentro das fichas dos hambúrgueres), o produto e
+o insumo novo saíram com o sufixo **"(extra)"** — assim não colam sem
+querer no insumo em kg já existente (o que faria a conta bater errado por
+ordem de grandeza, tipo R$43/kg contra uma porção de R$6,99). Se precisar
+bater com o nome exato usado no CardápioWeb, é só renomear pelo lápis.
+
 ## Fichas técnicas, custo e margem
 
 Vive dentro do card **Financeiro**, como uma 5ª aba ("Fichas técnicas") —
