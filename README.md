@@ -285,6 +285,18 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Repasse para entregador de delivery
+
+Dentro da mesma Conferência de Caixa: separa as entregas do dia em duas
+janelas — até 22h (R$9,00 por entrega, editável) e após 22h (R$15,00 por
+entrega, editável). A quantidade de entregas de cada janela é calculada
+sozinha a partir do horário de cada pedido de Delivery; só o valor por
+entrega é digitável. Fica salvo junto com o resto da conferência do dia.
+
+### Migração
+
+`020_repasse_entregador.sql` — tabela `repasses_delivery`.
+
 ## Conferência de caixa por forma de pagamento
 
 9ª aba do Financeiro. Escolhe o dia, clica em "Buscar dados do sistema"

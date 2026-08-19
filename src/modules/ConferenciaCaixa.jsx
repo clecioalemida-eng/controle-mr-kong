@@ -68,11 +68,18 @@ export default function ConferenciaCaixa() {
   const [porCanal, setPorCanal] = useState([]);
   const [porAtendente, setPorAtendente] = useState([]);
   const [taxasDoDia, setTaxasDoDia] = useState(null); // { servico, entrega, adicional }
+  const [repasse, setRepasse] = useState({ valorAte22: "9.00", qtdAte22: 0, valorApos22: "15.00", qtdApos22: 0 });
 
   const carregarSalvo = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
-    const { data, error } = await supabase.from("conferencias_caixa").select("*").eq("dia", dia).order("forma_pagamento");
+    const [{ data, error }, { data: repasseData }] = await Promise.all([
+      supabase.from("conferencias_caixa").select("*").eq("dia", dia).order("forma_pagamento"),
+      supabase.from("repasses_delivery").select("*").eq("dia", dia).maybeSingle(),
+    ]);
+    if (repasseData) {
+      setRepasse((prev) => ({ ...prev, valorAte22: String(repasseData.valor_ate_22h), valorApos22: String(repasseData.valor_apos_22h) }));
+    }
     if (error) setErro(error.message);
     if (data && data.length > 0) {
       setLinhas(data.map((d) => ({ forma_pagamento: d.forma_pagamento, valor_sistema: d.valor_sistema, valor_conferido: d.valor_conferido })));
@@ -118,6 +125,8 @@ export default function ConferenciaCaixa() {
     const mapaCanal = {};
     const mapaAtendente = {};
     let somaServico = 0, somaEntrega = 0, somaAdicional = 0;
+    const marca22h = new Date(`${dia}T22:00:00-03:00`);
+    let qtdAte22 = 0, qtdApos22 = 0;
     for (const p of pedidos) {
       const cat = labelCategoria(p.order_type);
       if (!mapaCategoria[cat]) mapaCategoria[cat] = { categoria: cat, qtd: 0, total: 0 };
@@ -137,7 +146,16 @@ export default function ConferenciaCaixa() {
       somaServico += p.service_fee || 0;
       somaEntrega += p.delivery_fee || 0;
       somaAdicional += p.additional_fee || 0;
+
+      // Repasse ao entregador: só conta pedidos de Delivery, separados
+      // pelo horário real do pedido (não a hora do relógio sozinha —
+      // compara contra a data/hora de corte das 22h desse dia
+      // específico, senão um pedido de madrugada contaria errado).
+      if (cat === "Delivery") {
+        if (new Date(p.created_at) >= marca22h) qtdApos22 += 1; else qtdAte22 += 1;
+      }
     }
+    setRepasse((prev) => ({ ...prev, qtdAte22, qtdApos22 }));
     setPorCategoria(Object.values(mapaCategoria).sort((a, b) => b.total - a.total));
     setPorCanal(Object.values(mapaCanal).sort((a, b) => b.total - a.total));
     setPorAtendente(Object.values(mapaAtendente).sort((a, b) => b.total - a.total));
@@ -167,6 +185,15 @@ export default function ConferenciaCaixa() {
       }, { onConflict: "dia,forma_pagamento" });
       if (error) { setErro(error.message); setSalvando(false); return; }
     }
+    const { error: errRepasse } = await supabase.from("repasses_delivery").upsert({
+      dia,
+      valor_ate_22h: parseFloat(repasse.valorAte22) || 0,
+      qtd_ate_22h: repasse.qtdAte22,
+      valor_apos_22h: parseFloat(repasse.valorApos22) || 0,
+      qtd_apos_22h: repasse.qtdApos22,
+      criado_por: userData?.user?.id,
+    }, { onConflict: "dia" });
+    if (errRepasse) { setErro(errRepasse.message); setSalvando(false); return; }
     setSalvando(false);
     setMensagem("Conferência salva.");
   };
@@ -233,6 +260,46 @@ export default function ConferenciaCaixa() {
                 <span style={{ color: "#8A8778" }}>Taxas adicionais do dia</span><span style={{ fontWeight: 700 }}>{brl(taxasDoDia.adicional)}</span>
               </div>
             </div>
+          )}
+
+          {(repasse.qtdAte22 > 0 || repasse.qtdApos22 > 0) && (
+            <>
+              <div style={{ ...sectionLabel, marginTop: 20 }}>Repasse para entregador (delivery)</div>
+              <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Quantidade calculada automaticamente pelo horário do pedido — só o valor por entrega é editável.</div>
+
+              <div style={{ ...cardStyleBox, marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 13, color: "#22231F" }}>Entregas até 22h</span>
+                  <span style={{ fontSize: 12, color: "#8A8778" }}>{repasse.qtdAte22} entrega{repasse.qtdAte22 === 1 ? "" : "s"}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: "#8A8778" }}>Valor por entrega</span>
+                  <input type="number" step="0.01" value={repasse.valorAte22} onChange={(e) => setRepasse((p) => ({ ...p, valorAte22: e.target.value }))}
+                    style={{ width: 70, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
+                  <span style={{ flex: 1, textAlign: "right", fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(repasse.qtdAte22 * (parseFloat(repasse.valorAte22) || 0))}</span>
+                </div>
+              </div>
+
+              <div style={{ ...cardStyleBox, marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 13, color: "#22231F" }}>Entregas após 22h</span>
+                  <span style={{ fontSize: 12, color: "#8A8778" }}>{repasse.qtdApos22} entrega{repasse.qtdApos22 === 1 ? "" : "s"}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: "#8A8778" }}>Valor por entrega</span>
+                  <input type="number" step="0.01" value={repasse.valorApos22} onChange={(e) => setRepasse((p) => ({ ...p, valorApos22: e.target.value }))}
+                    style={{ width: 70, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
+                  <span style={{ flex: 1, textAlign: "right", fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(repasse.qtdApos22 * (parseFloat(repasse.valorApos22) || 0))}</span>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px 16px", fontSize: 13 }}>
+                <span style={{ color: "#8A8778" }}>Total do repasse</span>
+                <span style={{ fontWeight: 700, color: "#22231F" }}>
+                  {brl(repasse.qtdAte22 * (parseFloat(repasse.valorAte22) || 0) + repasse.qtdApos22 * (parseFloat(repasse.valorApos22) || 0))}
+                </span>
+              </div>
+            </>
           )}
 
           {porCategoria.length > 0 && (
