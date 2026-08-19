@@ -168,6 +168,7 @@ function TelaCarregando() {
 function TelaLogin() {
   const [modo, setModo] = useState("entrar"); // entrar | criar
   const [nome, setNome] = useState("");
+  const [cargo, setCargo] = useState("garcom");
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
   const [carregando, setCarregando] = useState(false);
@@ -189,7 +190,7 @@ function TelaLogin() {
     if (!email || senha.length < 6) { setErro("E-mail válido e senha com pelo menos 6 caracteres."); return; }
     setCarregando(true);
     const { error } = await supabase.auth.signUp({
-      email, password: senha, options: { data: { nome: nome.trim() } },
+      email, password: senha, options: { data: { nome: nome.trim(), cargo } },
     });
     setCarregando(false);
     if (error) { setErro(traduzErro(error.message)); return; }
@@ -214,7 +215,12 @@ function TelaLogin() {
 
         <div style={{ display: "grid", gap: 10 }}>
           {modo === "criar" && (
-            <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Seu nome" style={inputStyle} />
+            <>
+              <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Seu nome" style={inputStyle} />
+              <select value={cargo} onChange={(e) => setCargo(e.target.value)} style={inputStyle}>
+                {CARGOS_CADASTRO.map((c) => <option key={c.valor} value={c.valor}>{c.rotulo}</option>)}
+              </select>
+            </>
           )}
           <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="E-mail" type="email" style={inputStyle} />
           <input value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="Senha" type="password"
@@ -234,6 +240,16 @@ function TelaLogin() {
     </div>
   );
 }
+
+const CARGOS_CADASTRO = [
+  { valor: "administrador", rotulo: "Administrador" },
+  { valor: "gerente", rotulo: "Gerente" },
+  { valor: "garcom", rotulo: "Garçom" },
+  { valor: "chapa", rotulo: "Chapeiro" },
+  { valor: "bar", rotulo: "Bar" },
+  { valor: "cozinha", rotulo: "Cozinha" },
+  { valor: "caixa", rotulo: "Caixa" },
+];
 
 function traduzErro(msg) {
   if (/invalid login credentials/i.test(msg)) return "E-mail ou senha incorretos.";
@@ -320,20 +336,24 @@ function TelaInicio({ perfil, modulos, carregando, totalPendentes, onAbrirModulo
 // Painel Admin: aprovação de cadastros + acesso por módulo
 // ---------------------------------------------------------------------------
 function PainelAdmin({ onVoltar }) {
+  const [subaba, setSubaba] = useState("pendentes"); // pendentes | pessoas
   const [carregando, setCarregando] = useState(true);
   const [pendentes, setPendentes] = useState([]);
-  const [aprovados, setAprovados] = useState([]);
+  const [todosPerfis, setTodosPerfis] = useState([]);
   const [modulos, setModulos] = useState([]);
   const [acessosPorUsuario, setAcessosPorUsuario] = useState({}); // usuarioId -> Set(moduloId)
   const [erro, setErro] = useState("");
+  const [meuId, setMeuId] = useState(null);
 
   const carregarTudo = useCallback(async () => {
     setCarregando(true);
     setErro("");
-    const [{ data: perfisData, error: erroPerfis }, { data: modulosData }] = await Promise.all([
+    const [{ data: userData }, { data: perfisData, error: erroPerfis }, { data: modulosData }] = await Promise.all([
+      supabase.auth.getUser(),
       supabase.from("perfis").select("*").order("criado_em", { ascending: false }),
       supabase.from("modulos").select("*").order("nome"),
     ]);
+    setMeuId(userData?.user?.id || null);
 
     if (erroPerfis) {
       setErro("Erro ao carregar usuários: " + erroPerfis.message);
@@ -341,10 +361,9 @@ function PainelAdmin({ onVoltar }) {
       return;
     }
 
-    const todosPerfis = perfisData || [];
-    setPendentes(todosPerfis.filter((p) => p.status === "pendente"));
-    const aprovadosNaoAdmin = todosPerfis.filter((p) => p.status === "aprovado" && !p.is_admin);
-    setAprovados(aprovadosNaoAdmin);
+    const todos = perfisData || [];
+    setPendentes(todos.filter((p) => p.status === "pendente"));
+    setTodosPerfis(todos.filter((p) => p.status !== "pendente"));
     setModulos(modulosData || []);
 
     const { data: acessos } = await supabase.from("acessos_modulo").select("usuario_id, modulo_id");
@@ -367,6 +386,11 @@ function PainelAdmin({ onVoltar }) {
     await supabase.from("perfis").update({ status: "rejeitado" }).eq("id", id);
     carregarTudo();
   };
+  const alternarAdmin = async (id, souAdmin) => {
+    if (id === meuId) { alert("Não dá pra remover seu próprio acesso de administrador por aqui."); return; }
+    await supabase.from("perfis").update({ is_admin: !souAdmin }).eq("id", id);
+    carregarTudo();
+  };
 
   const alternarAcesso = async (usuarioId, moduloId, temAcesso) => {
     if (temAcesso) {
@@ -385,80 +409,101 @@ function PainelAdmin({ onVoltar }) {
           <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Painel Admin</div>
         </div>
 
+        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+          <button onClick={() => setSubaba("pendentes")} style={{ ...tabBtn, ...(subaba === "pendentes" ? tabBtnAtivo : {}) }}>
+            Aprovações pendentes{pendentes.length > 0 ? ` (${pendentes.length})` : ""}
+          </button>
+          <button onClick={() => setSubaba("pessoas")} style={{ ...tabBtn, ...(subaba === "pessoas" ? tabBtnAtivo : {}) }}>
+            Pessoas cadastradas
+          </button>
+        </div>
+
         {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 14 }}>{erro}</div>}
 
         {carregando ? (
           <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
+        ) : subaba === "pendentes" ? (
+          <div>
+            {pendentes.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum cadastro pendente.</div>}
+            <div className="list-grid">
+              {pendentes.map((p) => {
+                const meusAcessos = acessosPorUsuario[p.id] || new Set();
+                return (
+                  <div key={p.id} style={cardStyle}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>{p.nome}</div>
+                    <div style={{ fontSize: 12, color: "#8A8778" }}>{p.email}</div>
+                    {p.cargo && <div style={{ fontSize: 12, color: "#8A6A0F", marginBottom: 8 }}>Cargo informado: {CARGO_LABEL[p.cargo] || p.cargo}</div>}
+                    <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 6, marginTop: p.cargo ? 0 : 8 }}>Marque os módulos liberados antes de aprovar (ou depois, se preferir):</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                      {modulos.map((m) => {
+                        const tem = meusAcessos.has(m.id);
+                        return (
+                          <button key={m.id} onClick={() => alternarAcesso(p.id, m.id, tem)}
+                            style={{ ...pillBtn, ...(tem ? pillOk : {}) }}>
+                            {tem ? <CheckCircle2 size={13} /> : null} {m.nome}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={() => aprovar(p.id)} style={{ ...pillBtn, ...pillOk, flex: 1, justifyContent: "center" }}>
+                        <CheckCircle2 size={14} /> Aprovar
+                      </button>
+                      <button onClick={() => rejeitar(p.id)} style={{ ...pillBtn, ...pillNok, flex: 1, justifyContent: "center" }}>
+                        <XCircle size={14} /> Rejeitar
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         ) : (
-          <>
-            <div style={{ marginBottom: 22 }}>
-              <div style={sectionLabel}>Aguardando aprovação</div>
-              {pendentes.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum cadastro pendente.</div>}
-              <div className="list-grid">
-                {pendentes.map((p) => {
-                  const meusAcessos = acessosPorUsuario[p.id] || new Set();
-                  return (
-                    <div key={p.id} style={cardStyle}>
+          <div>
+            {todosPerfis.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhuma pessoa cadastrada ainda.</div>}
+            <div className="list-grid">
+              {todosPerfis.map((p) => {
+                const meusAcessos = acessosPorUsuario[p.id] || new Set();
+                return (
+                  <div key={p.id} style={cardStyle}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
                       <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>{p.nome}</div>
-                      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 10 }}>{p.email}</div>
-                      <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 6 }}>Marque os módulos liberados antes de aprovar (ou depois, se preferir):</div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-                        {modulos.map((m) => {
-                          const tem = meusAcessos.has(m.id);
-                          return (
-                            <button key={m.id} onClick={() => alternarAcesso(p.id, m.id, tem)}
-                              style={{ ...pillBtn, ...(tem ? pillOk : {}) }}>
-                              {tem ? <CheckCircle2 size={13} /> : null} {m.nome}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <button onClick={() => aprovar(p.id)} style={{ ...pillBtn, ...pillOk, flex: 1, justifyContent: "center" }}>
-                          <CheckCircle2 size={14} /> Aprovar
-                        </button>
-                        <button onClick={() => rejeitar(p.id)} style={{ ...pillBtn, ...pillNok, flex: 1, justifyContent: "center" }}>
-                          <XCircle size={14} /> Rejeitar
-                        </button>
-                      </div>
+                      {p.status === "rejeitado" && <span style={{ ...pillBtn, ...pillNok, cursor: "default" }}>Rejeitado</span>}
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div>
-              <div style={sectionLabel}>Usuários aprovados · acesso por módulo</div>
-              {aprovados.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum usuário aprovado ainda.</div>}
-              <div className="list-grid">
-                {aprovados.map((p) => {
-                  const meusAcessos = acessosPorUsuario[p.id] || new Set();
-                  return (
-                    <div key={p.id} style={cardStyle}>
-                      <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>{p.nome}</div>
-                      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 10 }}>{p.email}</div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {modulos.map((m) => {
-                          const tem = meusAcessos.has(m.id);
-                          return (
-                            <button key={m.id} onClick={() => alternarAcesso(p.id, m.id, tem)}
-                              style={{ ...pillBtn, ...(tem ? pillOk : {}) }}>
-                              {tem ? <CheckCircle2 size={13} /> : null} {m.nome}
-                            </button>
-                          );
-                        })}
-                      </div>
+                    <div style={{ fontSize: 12, color: "#8A8778" }}>{p.email}</div>
+                    {p.cargo && <div style={{ fontSize: 12, color: "#8A8778" }}>{CARGO_LABEL[p.cargo] || p.cargo}</div>}
+                    <div style={{ marginTop: 10, marginBottom: 10 }}>
+                      <button onClick={() => alternarAdmin(p.id, p.is_admin)}
+                        style={{ ...pillBtn, ...(p.is_admin ? pillOk : {}) }}>
+                        {p.is_admin ? <CheckCircle2 size={13} /> : null} {p.is_admin ? "Administrador" : "Tornar administrador"}
+                      </button>
                     </div>
-                  );
-                })}
-              </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {modulos.map((m) => {
+                        const tem = meusAcessos.has(m.id);
+                        return (
+                          <button key={m.id} onClick={() => alternarAcesso(p.id, m.id, tem)}
+                            style={{ ...pillBtn, ...(tem ? pillOk : {}) }}>
+                            {tem ? <CheckCircle2 size={13} /> : null} {m.nome}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>
   );
 }
+
+const CARGO_LABEL = {
+  administrador: "Administrador", gerente: "Gerente", garcom: "Garçom",
+  chapa: "Chapeiro", bar: "Bar", cozinha: "Cozinha", caixa: "Caixa",
+};
 
 // ---------------------------------------------------------------------------
 // Estilos

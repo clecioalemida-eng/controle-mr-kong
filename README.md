@@ -285,6 +285,35 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Cargo no cadastro, e Painel Admin reorganizado
+
+**No cadastro**, além de nome/e-mail/senha, agora tem um campo **Cargo**
+(Administrador, Gerente, Garçom, Chapeiro, Bar, Cozinha, Caixa) — é só
+informativo pro admin saber quem está pedindo acesso, **não dá acesso de
+administrador sozinho** (isso continua sendo uma decisão manual do admin,
+por segurança — ninguém vira admin só escolhendo essa opção no cadastro).
+
+**Painel Admin** agora tem duas abas:
+- **Aprovações pendentes** — igual antes, com os módulos pra liberar já
+  junto do cadastro pendente, mais o cargo que a pessoa informou.
+- **Pessoas cadastradas** — todo mundo que já passou pelo cadastro
+  (aprovado ou rejeitado), com um botão **"Tornar administrador"** — não
+  precisa mais de SQL direto no banco pra promover alguém.
+
+### Deixando a Cristiane administradora
+
+Agora que existe o botão, é só usar ele: Painel Admin > Pessoas
+cadastradas > ache a Cristiane > clique em "Tornar administrador".
+
+Se ela ainda não tiver se cadastrado no app, ela precisa criar a conta
+primeiro (Criar conta, com e-mail/senha) — só depois disso o nome dela
+aparece na lista pra você promover.
+
+### Migração
+
+`023_cargo_no_cadastro.sql` — coluna `cargo` em `perfis`, gatilho de
+criação de perfil atualizado pra capturar esse campo.
+
 ## Controle de acesso a valores (só administrador)
 
 Três mudanças de segurança e organização:
