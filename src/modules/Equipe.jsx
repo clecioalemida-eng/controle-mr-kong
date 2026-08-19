@@ -95,7 +95,6 @@ function MatrizCargos() {
     const mapa = Object.fromEntries((data || []).map((d) => [d.papel, d]));
     setLinhas(PAPEIS.map((p) => ({
       papel: p,
-      diaria_base: String(mapa[p]?.diaria_base ?? 0),
       valor_hora: String(mapa[p]?.valor_hora ?? 0),
     })));
     setCarregando(false);
@@ -112,7 +111,6 @@ function MatrizCargos() {
     for (const l of linhas) {
       const { error } = await supabase.from("matriz_cargos").upsert({
         papel: l.papel,
-        diaria_base: parseFloat(l.diaria_base) || 0,
         valor_hora: parseFloat(l.valor_hora) || 0,
       }, { onConflict: "papel" });
       if (error) { setErro(error.message); setSalvando(false); return; }
@@ -124,7 +122,7 @@ function MatrizCargos() {
   return (
     <div>
       <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
-        Vale pra todo diarista daquele cargo automaticamente — não precisa configurar pessoa por pessoa.
+        Valor da hora usado no método "por hora" do diarista — vale pra todo diarista daquele cargo automaticamente. A diária base (usada no método "por taxa de serviço") não aparece aqui — ela se edita direto na Escala do dia, na seção "Diária base por cargo" (mesmo valor, só outro lugar de editar).
       </div>
       {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
@@ -133,14 +131,12 @@ function MatrizCargos() {
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
-            <span>Cargo</span><span style={{ textAlign: "right" }}>Diária base</span><span style={{ textAlign: "right" }}>Valor hora</span>
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+            <span>Cargo</span><span style={{ textAlign: "right" }}>Valor hora</span>
           </div>
           {linhas.map((l, idx) => (
-            <div key={l.papel} style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center" }}>
+            <div key={l.papel} style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center" }}>
               <span style={{ fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[l.papel]}</span>
-              <input type="number" step="0.01" value={l.diaria_base} onChange={(e) => alterar(l.papel, "diaria_base", e.target.value)}
-                style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
               <input type="number" step="0.01" value={l.valor_hora} onChange={(e) => alterar(l.papel, "valor_hora", e.target.value)}
                 style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
             </div>
@@ -373,11 +369,14 @@ function PremiacaoDoDia({ isAdmin }) {
   const [dia, setDia] = useState(hoje());
   const [pessoas, setPessoas] = useState([]);
   const [participacao, setParticipacao] = useState({}); // pessoa_id -> { incluido, peso }
-  const [baseCategoria, setBaseCategoria] = useState({}); // papel -> valor (string do input)
+  const [baseCategoria, setBaseCategoria] = useState({}); // papel -> valor (persistente, vem da Matriz de cargos)
+  const [editandoBase, setEditandoBase] = useState(null); // papel sendo editado agora, ou null
+  const [editandoHora, setEditandoHora] = useState(null); // idem, pro valor da hora
+  const [valorHora, setValorHora] = useState({}); // papel -> valor (persistente, vem da Matriz de cargos)
   const [taxaServico, setTaxaServico] = useState("");
   const [buscandoTaxa, setBuscandoTaxa] = useState(false);
   const [taxaAutomatica, setTaxaAutomatica] = useState(null); // null | true | false
-  const [matriz, setMatriz] = useState({}); // papel -> { diaria_base, valor_hora }
+  const [matriz, setMatriz] = useState({}); // papel -> { valor_hora }
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState("");
@@ -399,12 +398,15 @@ function PremiacaoDoDia({ isAdmin }) {
     (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: false, horas: 0 }; });
     (presencasData || []).forEach((pr) => { mapaPart[pr.pessoa_id] = { incluido: true, horas: pr.horas_trabalhadas || 0 }; });
     setParticipacao(mapaPart);
+    // A diária base por cargo é persistente (vem da Matriz, coluna
+    // diaria_base) — não se retype todo dia, só edita via lápis quando
+    // precisar mudar (e aí passa a valer pros próximos dias também).
     const mapaBase = {};
-    (premiacoesData || []).forEach((pr) => {
-      const pessoa = (pessoasData || []).find((pp) => pp.id === pr.pessoa_id);
-      if (pessoa) mapaBase[pessoa.papel] = String(pr.base_categoria || 0);
-    });
+    (matrizData || []).forEach((m) => { mapaBase[m.papel] = String(m.diaria_base ?? 0); });
     setBaseCategoria(mapaBase);
+    const mapaHora = {};
+    (matrizData || []).forEach((m) => { mapaHora[m.papel] = String(m.valor_hora ?? 0); });
+    setValorHora(mapaHora);
     if (premiacoesData && premiacoesData.length > 0) {
       setTaxaServico(String(premiacoesData[0].taxa_servico_dia));
       setMensagem("Esse dia já tem premiação calculada e salva — recalcular vai substituir os valores.");
@@ -463,6 +465,24 @@ function PremiacaoDoDia({ isAdmin }) {
   };
   const pesoDe = (pessoaId) => (participacao[pessoaId]?.horas || 0) / HORAS_PADRAO_TURNO;
 
+  const salvarBaseCategoria = async (papel) => {
+    const valor = parseFloat(baseCategoria[papel]) || 0;
+    setBaseCategoria((prev) => ({ ...prev, [papel]: String(valor) }));
+    setMatriz((prev) => ({ ...prev, [papel]: { ...(prev[papel] || {}), diaria_base: valor } }));
+    setEditandoBase(null);
+    // Só atualiza diaria_base — valor_hora (já configurado na Matriz de
+    // cargos) fica intacto, o upsert só mexe nas colunas enviadas aqui.
+    await supabase.from("matriz_cargos").upsert({ papel, diaria_base: valor }, { onConflict: "papel" });
+  };
+
+  const salvarValorHora = async (papel) => {
+    const valor = parseFloat(valorHora[papel]) || 0;
+    setValorHora((prev) => ({ ...prev, [papel]: String(valor) }));
+    setMatriz((prev) => ({ ...prev, [papel]: { ...(prev[papel] || {}), valor_hora: valor } }));
+    setEditandoHora(null);
+    await supabase.from("matriz_cargos").upsert({ papel, valor_hora: valor }, { onConflict: "papel" });
+  };
+
   const selecionados = pessoas.filter((p) => participacao[p.id]?.incluido);
   const garcons = selecionados.filter((p) => categoriaComissao(p.papel) === "garcom");
   const internos = selecionados.filter((p) => categoriaComissao(p.papel) === "interno");
@@ -486,10 +506,10 @@ function PremiacaoDoDia({ isAdmin }) {
     const valorPorPeso = categoriaComissao(p.papel) === "garcom" ? valorPorPesoGarcom : valorPorPesoInterno;
     const comissao = peso * valorPorPeso;
     const baseCategoriaValor = peso * (parseFloat(baseCategoria[p.papel]) || 0);
-    const m = matriz[p.papel] || { diaria_base: 0, valor_hora: 0 };
+    const m = matriz[p.papel] || { valor_hora: 0 };
 
     if (p.tipo_contrato === "diarista") {
-      const valorMetodoComissao = comissao + baseCategoriaValor + (m.diaria_base || 0);
+      const valorMetodoComissao = comissao + baseCategoriaValor;
       const valorMetodoHora = horas * (m.valor_hora || 0);
       const metodoUsado = valorMetodoHora > valorMetodoComissao ? "hora" : "comissao";
       const total = Math.max(valorMetodoComissao, valorMetodoHora);
@@ -597,18 +617,52 @@ function PremiacaoDoDia({ isAdmin }) {
 
           {isAdmin && selecionados.length > 0 && (
             <>
-              <div style={sectionLabel}>Base por categoria (opcional)</div>
+              <div style={sectionLabel}>Valores por cargo</div>
               <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>
-                Valor extra somado à comissão de cada pessoa do cargo, proporcional ao peso do dia — como o "valor diária por categoria" que já era calculado antes.
+                Diária base e valor da hora — os dois ficam salvos, não precisa preencher de novo todo dia. Clique no lápis de cada um pra mudar (mesmos valores da aba "Matriz de cargos").
               </div>
               <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
                 {[...new Set(selecionados.map((p) => p.papel))].map((papel) => (
-                  <div key={papel} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ flex: 1, fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[papel]}</span>
-                    <span style={{ fontSize: 11, color: "#8A8778" }}>R$</span>
-                    <input type="number" step="0.01" value={baseCategoria[papel] || ""}
-                      onChange={(e) => setBaseCategoria((prev) => ({ ...prev, [papel]: e.target.value }))}
-                      placeholder="0,00" style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                  <div key={papel} style={{ ...cardStyle, padding: "10px 12px" }}>
+                    <div style={{ fontSize: 13, color: "#22231F", marginBottom: 8 }}>{PAPEL_LABEL[papel]}</div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                      <span style={{ flex: 1, fontSize: 11, color: "#8A8778" }}>Diária base</span>
+                      {editandoBase === papel ? (
+                        <>
+                          <span style={{ fontSize: 11, color: "#8A8778" }}>R$</span>
+                          <input type="number" step="0.01" value={baseCategoria[papel] || ""} autoFocus
+                            onChange={(e) => setBaseCategoria((prev) => ({ ...prev, [papel]: e.target.value }))}
+                            onKeyDown={(e) => e.key === "Enter" && salvarBaseCategoria(papel)}
+                            style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                          <button onClick={() => salvarBaseCategoria(papel)} style={ghostIconBtn} aria-label="Salvar diária base"><Check size={15} /></button>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(parseFloat(baseCategoria[papel]) || 0)}</span>
+                          <button onClick={() => setEditandoBase(papel)} style={ghostIconBtn} aria-label="Editar diária base"><Pencil size={15} /></button>
+                        </>
+                      )}
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ flex: 1, fontSize: 11, color: "#8A8778" }}>Valor da hora</span>
+                      {editandoHora === papel ? (
+                        <>
+                          <span style={{ fontSize: 11, color: "#8A8778" }}>R$</span>
+                          <input type="number" step="0.01" value={valorHora[papel] || ""} autoFocus
+                            onChange={(e) => setValorHora((prev) => ({ ...prev, [papel]: e.target.value }))}
+                            onKeyDown={(e) => e.key === "Enter" && salvarValorHora(papel)}
+                            style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                          <button onClick={() => salvarValorHora(papel)} style={ghostIconBtn} aria-label="Salvar valor da hora"><Check size={15} /></button>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(parseFloat(valorHora[papel]) || 0)}</span>
+                          <button onClick={() => setEditandoHora(papel)} style={ghostIconBtn} aria-label="Editar valor da hora"><Pencil size={15} /></button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -627,17 +681,17 @@ function PremiacaoDoDia({ isAdmin }) {
                     <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 6, fontSize: 12 }}>
                       <span>
                         {l.pessoa.nome}
-                        {l.baseCategoriaValor > 0 && <span style={{ fontSize: 10, color: "#185FA5" }}> + base</span>}
+                        {l.baseCategoriaValor > 0 && <span style={{ fontSize: 10, color: "#185FA5" }}> + diária base</span>}
                       </span>
                       <span style={{ textAlign: "right", color: "#8A8778", fontSize: 11 }}>
-                        {l.metodoUsado === "hora" ? "por hora" : l.metodoUsado === "comissao" ? "comissão" : "—"}
+                        {l.metodoUsado === "hora" ? "por hora" : l.metodoUsado === "comissao" ? "taxa de serviço" : "—"}
                       </span>
                       <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(l.total)}</span>
                     </div>
                     {l.metodoUsado && (
                       <div style={{ display: "flex", gap: 10, marginTop: 4, fontSize: 10, color: "#8A8778" }}>
                         <span style={{ fontWeight: l.metodoUsado === "comissao" ? 700 : 400, color: l.metodoUsado === "comissao" ? "#0F6E56" : "#8A8778" }}>
-                          Comissão: {brl(l.valorMetodoComissao)}
+                          Taxa de serviço + diária base: {brl(l.valorMetodoComissao)}
                         </span>
                         <span style={{ fontWeight: l.metodoUsado === "hora" ? 700 : 400, color: l.metodoUsado === "hora" ? "#0F6E56" : "#8A8778" }}>
                           Hora ({l.horas}h): {brl(l.valorMetodoHora)}
@@ -775,7 +829,7 @@ function FechamentoMensal() {
                 {e.metodo_usado ? (
                   <>
                     <span style={{ fontWeight: e.metodo_usado === "comissao" ? 700 : 400, color: e.metodo_usado === "comissao" ? "#0F6E56" : "#8A8778" }}>
-                      Comissão: {brl(e.valor_metodo_comissao)}
+                      Taxa de serviço + diária base: {brl(e.valor_metodo_comissao)}
                     </span>
                     {" · "}
                     <span style={{ fontWeight: e.metodo_usado === "hora" ? 700 : 400, color: e.metodo_usado === "hora" ? "#0F6E56" : "#8A8778" }}>
@@ -784,9 +838,9 @@ function FechamentoMensal() {
                   </>
                 ) : (
                   <>
-                    Comissão do dia: {brl(e.comissao)}
-                    {e.base_categoria > 0 && ` · base por categoria: ${brl(e.base_categoria)}`}
-                    {` · taxa de serviço do dia: ${brl(e.taxa_servico_dia)}`}
+                    Taxa de serviço (sua parte): {brl(e.comissao)}
+                    {e.base_categoria > 0 && ` · diária base: ${brl(e.base_categoria)}`}
+                    {` · taxa de serviço do dia (total): ${brl(e.taxa_servico_dia)}`}
                   </>
                 )}
               </div>
