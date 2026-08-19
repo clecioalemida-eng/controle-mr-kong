@@ -306,21 +306,29 @@ conferir ou ajustar.
 
 Você pediu um relatório completo (abertura/fechamento com responsável,
 sangria/suprimento, vendas por categoria — iFood/delivery/retirada/mesa —
-e por atendente). A parte de **conferência por forma de pagamento** já
-está pronta (seção acima). O resto depende de confirmar se a API do
-CardápioWeb expõe esses dados — não documentado publicamente (só os
-módulos Loja, Catálogo e Pedidos aparecem na doc oficial). Dois passos
-em andamento:
+e por atendente). Em 19/08/2026, o botão de debug em Pedidos revelou o
+retorno completo de um pedido real, o que **confirmou vários campos**:
 
-1. Um botão de debug em **Financeiro > Pedidos** (ícone `{ }` em cada
-   pedido) mostra o JSON bruto completo de um pedido — pode revelar campos
-   de atendente/categoria que já vêm na resposta sem a gente saber.
-2. E-mail enviado pra integracao@cardapioweb.com perguntando
-   especificamente sobre uma API de Caixa (abertura/fechamento, sangria,
-   suprimento, atendente).
+- `service_fee` — valor exato da taxa de serviço (não é mais chute).
+  Já corrigido tanto na busca automática da Equipe quanto na Conferência
+  de Caixa.
+- `order_type` / `sales_channel` — categoria do pedido (mesa confirmada
+  como `closed_table`; delivery/retirada/iFood ainda não vistos num
+  exemplo real, mas já têm mapeamento pronto pra quando aparecerem — e
+  qualquer valor novo aparece com o texto bruto, nunca escondido).
+- `user.name` — atendente responsável pelo pedido.
+- `delivery_fee`, `additional_fee` — taxas de entrega e adicionais.
 
-Assim que qualquer um dos dois confirmar algo, o relatório completo sai
-do papel.
+Isso já está implementado em **Financeiro > Conferência de Caixa**, que
+agora mostra, pra qualquer dia: forma de pagamento (sistema × conferido ×
+diferença), vendas por categoria, vendas por atendente, e o total das
+taxas do dia.
+
+**O que ainda falta confirmar**: abertura/fechamento de caixa com
+responsável, sangria e suprimento. Esse pedido de exemplo não trouxe nada
+sobre isso — parece ser um dado de outro tipo (evento de caixa, não de
+pedido individual), então continua esperando a resposta do e-mail enviado
+pra integracao@cardapioweb.com.
 
 ## Consultas ao CardápioWeb — sempre manuais
 

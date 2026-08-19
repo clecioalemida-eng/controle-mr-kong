@@ -290,7 +290,7 @@ function PremiacaoDoDia() {
     setTaxaServico(String(data.taxa_servico));
     setTaxaAutomatica(data.encontrado_automaticamente);
     if (!data.encontrado_automaticamente) {
-      setErro("Não encontrei um campo de taxa de serviço nos pedidos desse dia — confira/digite o valor manualmente.");
+      setErro("Não tem pedido fechado nesse dia (17h–03h) — confira a data ou digite o valor manualmente.");
     }
   };
 

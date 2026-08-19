@@ -5,6 +5,18 @@ import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function hoje() { return new Date().toISOString().slice(0, 10); }
 
+// Mapeamento conhecido até agora (confirmado em 19/08/2026 a partir de um
+// pedido de mesa real). Outros valores de order_type/sales_channel ainda
+// não vistos aparecem com o valor bruto mesmo, sem tentar adivinhar —
+// assim nada fica escondido atrás de um rótulo errado.
+const CATEGORIA_LABEL = { closed_table: "Mesas", table: "Mesas", open_table: "Mesas" };
+function labelCategoria(orderType, salesChannel) {
+  if (salesChannel && /ifood/i.test(salesChannel)) return "iFood";
+  if (orderType && /delivery/i.test(orderType)) return "Delivery";
+  if (orderType && /(takeout|pickup|retirada)/i.test(orderType)) return "Retirada";
+  return CATEGORIA_LABEL[orderType] || orderType || "Não identificado";
+}
+
 const NOMES_PAGAMENTO = {
   money: "Dinheiro",
   credit_card: "Cartão de crédito",
@@ -25,10 +37,13 @@ const NOMES_PAGAMENTO = {
 };
 
 // Aba embutível dentro do Financeiro — conferência de caixa por forma de
-// pagamento, dia a dia. Diferente do resumo_financeiro (que só olha o que
-// o CardápioWeb registrou), aqui a pessoa digita o que realmente conferiu
-// (extrato de cartão, PIX, contagem do dinheiro), pra ver ONDE apareceu
-// uma diferença — não só que ela existe.
+// pagamento, categoria (mesas/delivery/retirada/iFood) e atendente, dia a
+// dia. Diferente do resumo_financeiro puro (que só olha o que o
+// CardápioWeb registrou), aqui a pessoa digita o que realmente conferiu
+// em cartão/pix/dinheiro, pra ver ONDE apareceu uma diferença — não só
+// que ela existe. Categoria e atendente vêm de dentro de cada pedido
+// (order_type, sales_channel, user.name — confirmados em 19/08/2026 a
+// partir de um retorno real da API).
 export default function ConferenciaCaixa() {
   const [dia, setDia] = useState(hoje());
   const [buscando, setBuscando] = useState(false);
@@ -37,6 +52,9 @@ export default function ConferenciaCaixa() {
   const [erro, setErro] = useState("");
   const [mensagem, setMensagem] = useState("");
   const [linhas, setLinhas] = useState([]); // { forma_pagamento, valor_sistema, valor_conferido }
+  const [porCategoria, setPorCategoria] = useState([]);
+  const [porAtendente, setPorAtendente] = useState([]);
+  const [taxasDoDia, setTaxasDoDia] = useState(null); // { servico, entrega, adicional }
 
   const carregarSalvo = useCallback(async () => {
     setCarregando(true);
@@ -78,6 +96,31 @@ export default function ConferenciaCaixa() {
         valor_conferido: mapaConferido[f] ?? porForma[f] ?? 0,
       })).sort((a, b) => (NOMES_PAGAMENTO[a.forma_pagamento] || a.forma_pagamento).localeCompare(NOMES_PAGAMENTO[b.forma_pagamento] || b.forma_pagamento));
     });
+
+    // Categoria e atendente já vêm dentro de cada pedido (order_type,
+    // sales_channel, user.name) — calcula tudo aqui, sem chamada extra.
+    const pedidos = (data.pedidos || []).filter((p) => p.status === "closed");
+    const mapaCategoria = {};
+    const mapaAtendente = {};
+    let somaServico = 0, somaEntrega = 0, somaAdicional = 0;
+    for (const p of pedidos) {
+      const cat = labelCategoria(p.order_type, p.sales_channel);
+      if (!mapaCategoria[cat]) mapaCategoria[cat] = { categoria: cat, qtd: 0, total: 0 };
+      mapaCategoria[cat].qtd += 1;
+      mapaCategoria[cat].total += p.total || 0;
+
+      const nomeAtendente = p.user?.name || "Não identificado";
+      if (!mapaAtendente[nomeAtendente]) mapaAtendente[nomeAtendente] = { nome: nomeAtendente, qtd: 0, total: 0 };
+      mapaAtendente[nomeAtendente].qtd += 1;
+      mapaAtendente[nomeAtendente].total += p.total || 0;
+
+      somaServico += p.service_fee || 0;
+      somaEntrega += p.delivery_fee || 0;
+      somaAdicional += p.additional_fee || 0;
+    }
+    setPorCategoria(Object.values(mapaCategoria).sort((a, b) => b.total - a.total));
+    setPorAtendente(Object.values(mapaAtendente).sort((a, b) => b.total - a.total));
+    setTaxasDoDia({ servico: somaServico, entrega: somaEntrega, adicional: somaAdicional });
   };
 
   const alterarConferido = (forma, valor) => {
@@ -156,6 +199,56 @@ export default function ConferenciaCaixa() {
           <button onClick={salvar} disabled={salvando} style={{ ...btnPrimary, width: "100%" }}>
             {salvando ? <Loader2 size={16} /> : <Check size={16} />} Salvar conferência
           </button>
+
+          {taxasDoDia && (
+            <div style={{ ...cardStyleBox, marginTop: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: "#8A8778" }}>Taxa de serviço do dia</span><span style={{ fontWeight: 700 }}>{brl(taxasDoDia.servico)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: "#8A8778" }}>Taxa de entrega do dia</span><span style={{ fontWeight: 700 }}>{brl(taxasDoDia.entrega)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                <span style={{ color: "#8A8778" }}>Taxas adicionais do dia</span><span style={{ fontWeight: 700 }}>{brl(taxasDoDia.adicional)}</span>
+              </div>
+            </div>
+          )}
+
+          {porCategoria.length > 0 && (
+            <>
+              <div style={{ ...sectionLabel, marginTop: 20 }}>Vendas por categoria</div>
+              <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+                  <span>Categoria</span><span style={{ textAlign: "right" }}>Qtd.</span><span style={{ textAlign: "right" }}>Total</span>
+                </div>
+                {porCategoria.map((c, idx) => (
+                  <div key={c.categoria} style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
+                    <span style={{ color: "#22231F" }}>{c.categoria}</span>
+                    <span style={{ textAlign: "right", color: "#8A8778" }}>{c.qtd}</span>
+                    <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(c.total)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {porAtendente.length > 0 && (
+            <>
+              <div style={sectionLabel}>Vendas por atendente</div>
+              <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+                  <span>Atendente</span><span style={{ textAlign: "right" }}>Transações</span><span style={{ textAlign: "right" }}>Total</span>
+                </div>
+                {porAtendente.map((a, idx) => (
+                  <div key={a.nome} style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
+                    <span style={{ color: "#22231F" }}>{a.nome}</span>
+                    <span style={{ textAlign: "right", color: "#8A8778" }}>{a.qtd}</span>
+                    <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(a.total)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </>
       )}
     </div>
@@ -163,6 +256,8 @@ export default function ConferenciaCaixa() {
 }
 
 const inputStyle = { padding: "9px 10px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF", color: "#22231F" };
+const cardStyleBox = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
+const sectionLabel = { fontSize: 12, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#8A8778", marginBottom: 8 };
 const btnPrimary = { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
 const btnSecondary = { background: "#F6F1E7", border: "1px solid #E8E2D2", color: "#22231F", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" };
 const avisoStyle = { display: "flex", gap: 8, background: "#FBF3D9", border: "1px solid #E8D48A", color: "#7A6A1E", borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 };

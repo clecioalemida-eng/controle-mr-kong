@@ -82,25 +82,17 @@ Deno.serve(async (req) => {
       const fim = `${diaSeguinte.toISOString().slice(0, 10)}T03:00:00-03:00`;
 
       const { pedidosDetalhados } = await buscarPedidos(headersCW, inicio, fim);
-      // Tenta alguns nomes de campo plausíveis pra taxa de serviço — a
-      // documentação pública do CardápioWeb não confirma o nome exato.
-      // Se nada bater, volta 0 e a tela pede pra digitar manualmente.
+      // Campo confirmado em 19/08/2026 a partir do retorno real da API:
+      // cada pedido já traz "service_fee" com o valor em R$ da taxa de
+      // serviço daquele pedido (não precisa mais adivinhar nome de campo).
       let taxaTotal = 0;
-      let encontrouAutomaticamente = false;
       for (const p of pedidosDetalhados as any[]) {
-        for (const campo of ["service_charge", "taxa_servico", "service_fee", "tip", "gorjeta"]) {
-          const valor = p[campo];
-          if (typeof valor === "number" && valor > 0) {
-            taxaTotal += valor;
-            encontrouAutomaticamente = true;
-            break;
-          }
-        }
+        if (typeof p.service_fee === "number") taxaTotal += p.service_fee;
       }
       return json({
         dia, periodo: { inicio, fim },
         taxa_servico: round2(taxaTotal),
-        encontrado_automaticamente: encontrouAutomaticamente,
+        encontrado_automaticamente: pedidosDetalhados.length > 0,
         pedidos_no_periodo: pedidosDetalhados.length,
       }, 200, corsHeaders);
     }
