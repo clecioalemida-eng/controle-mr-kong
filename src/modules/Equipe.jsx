@@ -22,6 +22,11 @@ function categoriaComissao(papel) {
   if (papel === "gerente") return null;
   return papel === "garcom" ? "garcom" : "interno";
 }
+// Peso não é mais digitado à parte — é calculado a partir das horas
+// trabalhadas, considerando um turno padrão de 8h (6h trabalhadas =
+// peso 0,75, por exemplo). Simplifica pra só uma pergunta em vez de duas
+// pra mesma coisa.
+const HORAS_PADRAO_TURNO = 8;
 
 const SUBABAS = [
   { chave: "pessoas", label: "Pessoas" },
@@ -390,8 +395,8 @@ function PremiacaoDoDia({ isAdmin }) {
     setPessoas(pessoasData || []);
     setMatriz(Object.fromEntries((matrizData || []).map((m) => [m.papel, m])));
     const mapaPart = {};
-    (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: false, peso: 1, horas: 0 }; });
-    (presencasData || []).forEach((pr) => { mapaPart[pr.pessoa_id] = { incluido: true, peso: pr.peso, horas: pr.horas_trabalhadas || 0 }; });
+    (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: false, horas: 0 }; });
+    (presencasData || []).forEach((pr) => { mapaPart[pr.pessoa_id] = { incluido: true, horas: pr.horas_trabalhadas || 0 }; });
     setParticipacao(mapaPart);
     const mapaBase = {};
     (premiacoesData || []).forEach((pr) => {
@@ -424,20 +429,25 @@ function PremiacaoDoDia({ isAdmin }) {
   };
 
   const alternarIncluido = (pessoaId) => {
-    setParticipacao((prev) => ({ ...prev, [pessoaId]: { ...prev[pessoaId], incluido: !prev[pessoaId]?.incluido } }));
-  };
-  const alterarPeso = (pessoaId, peso) => {
-    setParticipacao((prev) => ({ ...prev, [pessoaId]: { ...prev[pessoaId], peso: parseFloat(peso) || 0 } }));
+    setParticipacao((prev) => {
+      const atual = prev[pessoaId] || {};
+      const incluidoNovo = !atual.incluido;
+      // Ao marcar como trabalhou, já sugere um turno padrão de horas —
+      // evita começar em 0 e a pessoa esquecer de preencher.
+      const horas = incluidoNovo && !atual.horas ? HORAS_PADRAO_TURNO : (atual.horas || 0);
+      return { ...prev, [pessoaId]: { ...atual, incluido: incluidoNovo, horas } };
+    });
   };
   const alterarHoras = (pessoaId, horas) => {
     setParticipacao((prev) => ({ ...prev, [pessoaId]: { ...prev[pessoaId], horas: parseFloat(horas) || 0 } }));
   };
+  const pesoDe = (pessoaId) => (participacao[pessoaId]?.horas || 0) / HORAS_PADRAO_TURNO;
 
   const selecionados = pessoas.filter((p) => participacao[p.id]?.incluido);
   const garcons = selecionados.filter((p) => categoriaComissao(p.papel) === "garcom");
   const internos = selecionados.filter((p) => categoriaComissao(p.papel) === "interno");
-  const pesoGarcons = garcons.reduce((s, p) => s + (participacao[p.id]?.peso || 0), 0);
-  const pesoInternos = internos.reduce((s, p) => s + (participacao[p.id]?.peso || 0), 0);
+  const pesoGarcons = garcons.reduce((s, p) => s + pesoDe(p.id), 0);
+  const pesoInternos = internos.reduce((s, p) => s + pesoDe(p.id), 0);
   const taxaNum = parseFloat(taxaServico) || 0;
   const poolGarcons = taxaNum * 0.5;
   const poolInternos = taxaNum * 0.5;
@@ -445,13 +455,14 @@ function PremiacaoDoDia({ isAdmin }) {
   const valorPorPesoInterno = pesoInternos > 0 ? poolInternos / pesoInternos : 0;
 
   // Diarista: dois métodos, vale o maior. Método comissão = rateio da
-  // taxa (pelo peso) + diária base do cargo (pela matriz). Método hora =
-  // horas trabalhadas × valor/hora do cargo (pela matriz). Registrado não
-  // entra nessa comparação — só recebe a comissão do dia (o salário dele
-  // é mensal, somado no Fechamento mensal).
+  // taxa (pelo peso, calculado a partir das horas ÷ 8) + diária base do
+  // cargo (pela matriz). Método hora = horas trabalhadas × valor/hora do
+  // cargo (pela matriz). Registrado não entra nessa comparação — só
+  // recebe a comissão do dia (o salário dele é mensal, somado no
+  // Fechamento mensal).
   const linhas = selecionados.map((p) => {
-    const peso = participacao[p.id]?.peso || 0;
     const horas = participacao[p.id]?.horas || 0;
+    const peso = pesoDe(p.id);
     const valorPorPeso = categoriaComissao(p.papel) === "garcom" ? valorPorPesoGarcom : valorPorPesoInterno;
     const comissao = peso * valorPorPeso;
     const baseCategoriaValor = peso * (parseFloat(baseCategoria[p.papel]) || 0);
@@ -466,7 +477,7 @@ function PremiacaoDoDia({ isAdmin }) {
     }
     // registrado: só a comissão do dia (+ base por categoria, se configurada)
     const total = comissao + baseCategoriaValor;
-    return { pessoa: p, peso, horas: 0, comissao, baseCategoriaValor, metodoUsado: null, valorMetodoComissao: total, valorMetodoHora: null, total };
+    return { pessoa: p, peso, horas, comissao, baseCategoriaValor, metodoUsado: null, valorMetodoComissao: total, valorMetodoHora: null, total };
   });
 
   const salvarPremiacao = async () => {
@@ -482,7 +493,7 @@ function PremiacaoDoDia({ isAdmin }) {
     for (const p of selecionados) {
       const part = participacao[p.id] || {};
       await supabase.from("presencas_diarias").upsert({
-        pessoa_id: p.id, dia, peso: part.peso || 0, horas_trabalhadas: part.horas || 0,
+        pessoa_id: p.id, dia, peso: pesoDe(p.id), horas_trabalhadas: part.horas || 0,
       }, { onConflict: "pessoa_id,dia" });
     }
     if (taxaNum > 0) {
@@ -538,7 +549,7 @@ function PremiacaoDoDia({ isAdmin }) {
           <div style={sectionLabel}>Quem trabalhou hoje</div>
           <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
             {pessoas.map((p) => {
-              const part = participacao[p.id] || { incluido: false, peso: 1, horas: 0 };
+              const part = participacao[p.id] || { incluido: false, horas: 0 };
               return (
                 <div key={p.id} style={{ ...cardStyle, padding: "10px 12px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -549,23 +560,19 @@ function PremiacaoDoDia({ isAdmin }) {
                     </div>
                     {part.incluido && (
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        <span style={{ fontSize: 11, color: "#8A8778" }}>peso</span>
-                        <input type="number" step="0.5" min="0" max="1" value={part.peso} onChange={(e) => alterarPeso(p.id, e.target.value)}
+                        <span style={{ fontSize: 11, color: "#8A8778" }}>horas trabalhadas</span>
+                        <input type="number" step="0.5" min="0" value={part.horas} onChange={(e) => alterarHoras(p.id, e.target.value)}
                           style={{ width: 50, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
                       </div>
                     )}
                   </div>
-                  {part.incluido && p.tipo_contrato === "diarista" && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 8, paddingLeft: 30 }}>
-                      <span style={{ fontSize: 11, color: "#8A8778" }}>horas trabalhadas</span>
-                      <input type="number" step="0.5" min="0" value={part.horas} onChange={(e) => alterarHoras(p.id, e.target.value)}
-                        style={{ width: 50, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                    </div>
-                  )}
                 </div>
               );
             })}
             {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Cadastre pessoas na aba "Pessoas" primeiro.</div>}
+          </div>
+          <div style={{ fontSize: 11, color: "#8A8778", marginTop: -10, marginBottom: 16 }}>
+            A divisão da comissão usa as horas como peso (turno padrão de {HORAS_PADRAO_TURNO}h = peso 1) — não precisa preencher nada além das horas.
           </div>
 
           {isAdmin && selecionados.length > 0 && (
