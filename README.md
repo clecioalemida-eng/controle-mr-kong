@@ -285,6 +285,43 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Conferência de caixa por forma de pagamento
+
+9ª aba do Financeiro. Escolhe o dia, clica em "Buscar dados do sistema"
+(usa a mesma janela 17h–03h de sempre) e o app traz o que o CardápioWeb
+registrou pra cada forma de pagamento daquele dia. Ao lado, você digita o
+que conferiu de verdade (extrato da maquininha de cartão, extrato do PIX,
+contagem do dinheiro) — a diferença aparece **forma por forma**, não só
+um total genérico. Isso responde a pergunta "a diferença foi no débito,
+no dinheiro, ou em outro lugar?" em vez de só saber que ela existe.
+
+Fica salva por dia (`conferencias_caixa`) — pode voltar depois pra
+conferir ou ajustar.
+
+### Migração
+
+`019_conferencia_caixa.sql` — tabela `conferencias_caixa`.
+
+## Relatório de conciliação de caixa (em andamento)
+
+Você pediu um relatório completo (abertura/fechamento com responsável,
+sangria/suprimento, vendas por categoria — iFood/delivery/retirada/mesa —
+e por atendente). A parte de **conferência por forma de pagamento** já
+está pronta (seção acima). O resto depende de confirmar se a API do
+CardápioWeb expõe esses dados — não documentado publicamente (só os
+módulos Loja, Catálogo e Pedidos aparecem na doc oficial). Dois passos
+em andamento:
+
+1. Um botão de debug em **Financeiro > Pedidos** (ícone `{ }` em cada
+   pedido) mostra o JSON bruto completo de um pedido — pode revelar campos
+   de atendente/categoria que já vêm na resposta sem a gente saber.
+2. E-mail enviado pra integracao@cardapioweb.com perguntando
+   especificamente sobre uma API de Caixa (abertura/fechamento, sangria,
+   suprimento, atendente).
+
+Assim que qualquer um dos dois confirmar algo, o relatório completo sai
+do papel.
+
 ## Consultas ao CardápioWeb — sempre manuais
 
 As abas Vendas, Pedidos, Pagamentos e Fechamento **não buscam dados

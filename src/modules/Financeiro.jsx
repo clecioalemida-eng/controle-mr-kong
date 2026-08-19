@@ -5,6 +5,7 @@ import FichasTecnicas from "./FichasTecnicas";
 import NotasFiscais from "./NotasFiscais";
 import Estoque from "./Estoque";
 import Equipe from "./Equipe";
+import ConferenciaCaixa from "./ConferenciaCaixa";
 
 const ABAS = [
   { chave: "vendas", label: "Vendas" },
@@ -15,6 +16,7 @@ const ABAS = [
   { chave: "notas", label: "Notas" },
   { chave: "estoque", label: "Estoque" },
   { chave: "equipe", label: "Equipe" },
+  { chave: "conferencia", label: "Conferência de caixa" },
 ];
 
 const NOMES_PAGAMENTO = {
@@ -98,6 +100,8 @@ export default function Financeiro({ onVoltar }) {
           <Estoque />
         ) : aba === "equipe" ? (
           <Equipe />
+        ) : aba === "conferencia" ? (
+          <ConferenciaCaixa />
         ) : (
           <>
             <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
@@ -184,17 +188,32 @@ function AbaVendas({ resumo }) {
 }
 
 function AbaPedidos({ resumo }) {
+  const [expandidoId, setExpandidoId] = useState(null);
   return (
     <div className="list-grid">
       {resumo.pedidos.map((p) => (
         <div key={p.id} style={itemRow}>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>Pedido #{p.display_id ?? p.id}</div>
-            <div style={{ fontSize: 11, color: "#8A8778" }}>
-              {new Date(p.created_at).toLocaleString("pt-BR")} · {p.status === "closed" ? "Fechado" : "Cancelado"}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>Pedido #{p.display_id ?? p.id}</div>
+              <div style={{ fontSize: 11, color: "#8A8778" }}>
+                {new Date(p.created_at).toLocaleString("pt-BR")} · {p.status === "closed" ? "Fechado" : "Cancelado"}
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{formatBRL(p.total)}</span>
+              <button onClick={() => setExpandidoId(expandidoId === p.id ? null : p.id)}
+                style={{ border: "1px solid #E8E2D2", background: "#F6F1E7", borderRadius: 6, padding: "3px 8px", fontSize: 11, color: "#8A8778", cursor: "pointer", fontFamily: "monospace" }}
+                title="Ver todos os campos que a API devolve pra esse pedido (temporário, pra investigar campos de caixa/atendente)">
+                {"{ }"}
+              </button>
             </div>
           </div>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{formatBRL(p.total)}</span>
+          {expandidoId === p.id && (
+            <pre style={{ marginTop: 8, padding: 10, background: "#22231F", color: "#D8D3C4", borderRadius: 8, fontSize: 11, overflowX: "auto", maxHeight: 400, overflowY: "auto" }}>
+              {JSON.stringify(p, null, 2)}
+            </pre>
+          )}
         </div>
       ))}
       {resumo.pedidos.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum pedido nesse período.</div>}
