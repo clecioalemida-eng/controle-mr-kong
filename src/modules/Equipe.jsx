@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload } from "lucide-react";
+import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload, Lock } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
@@ -383,6 +383,8 @@ function PremiacaoDoDia({ isAdmin }) {
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState("");
   const [mensagem, setMensagem] = useState("");
+  const [modoLeitura, setModoLeitura] = useState(false);
+  const [premiacoesSalvas, setPremiacoesSalvas] = useState([]);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -395,6 +397,10 @@ function PremiacaoDoDia({ isAdmin }) {
       supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle(),
     ]);
     setPessoas(pessoasData || []);
+    setPremiacoesSalvas(premiacoesData || []);
+    // Dia já preenchido (tem presença registrada) abre travado, em modo
+    // leitura — evita mexer sem querer no que já foi fechado.
+    setModoLeitura((presencasData || []).length > 0);
     setMatriz(Object.fromEntries((matrizData || []).map((m) => [m.papel, m])));
     const mapaPart = {};
     (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: false, horas: 0 }; });
@@ -541,7 +547,73 @@ function PremiacaoDoDia({ isAdmin }) {
     }
     setSalvando(false);
     setMensagem(taxaNum > 0 ? "Escala e valores do dia salvos." : "Escala do dia salva — falta um administrador definir a taxa de serviço pra calcular os valores.");
+    await carregar(); // recarrega já travado em modo leitura
   };
+
+  // Dia já preenchido: mostra um resumo travado (não a tela de marcação),
+  // com os valores calculados de verdade que foram salvos (não recalcula
+  // com a matriz atual, que pode ter mudado desde então). Só admin vê o
+  // botão de reabrir pra editar.
+  if (modoLeitura && !carregando) {
+    const linhasSalvas = premiacoesSalvas
+      .map((pr) => ({ ...pr, pessoa: pessoas.find((p) => p.id === pr.pessoa_id) }))
+      .filter((l) => l.pessoa);
+    const idsComPremiacao = new Set(premiacoesSalvas.map((pr) => pr.pessoa_id));
+    const pessoasSemPremiacao = pessoas.filter((p) => participacao[p.id]?.incluido && !idsComPremiacao.has(p.id));
+    const taxaNumSalva = parseFloat(taxaServico) || 0;
+
+    return (
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <input type="date" value={dia} onChange={(e) => setDia(e.target.value)} style={inputStyle} />
+        </div>
+        <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 14, display: "flex", alignItems: "center", gap: 4 }}>
+          <Lock size={13} /> Já preenchida — modo leitura
+        </div>
+        {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+
+        <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
+          {linhasSalvas.map((l, idx) => (
+            <div key={l.pessoa_id} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 13, color: "#22231F" }}>{l.pessoa.nome}</div>
+                  <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[l.pessoa.papel]}{l.pessoa.tipo_contrato === "diarista" ? " · diarista" : ""} · {participacao[l.pessoa_id]?.horas || 0}h</div>
+                </div>
+                {isAdmin && <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{brl(l.total_dia)}</div>}
+              </div>
+              {isAdmin && l.metodo_usado && (
+                <div style={{ fontSize: 10, color: "#0F6E56", marginTop: 4 }}>
+                  ✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}
+                </div>
+              )}
+            </div>
+          ))}
+          {pessoasSemPremiacao.map((p, idx) => (
+            <div key={p.id} style={{ padding: "10px 14px", borderTop: (linhasSalvas.length + idx) > 0 ? "1px solid #F0EBDD" : "none" }}>
+              <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
+              <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""} · {participacao[p.id]?.horas || 0}h</div>
+            </div>
+          ))}
+          {linhasSalvas.length === 0 && pessoasSemPremiacao.length === 0 && (
+            <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Ninguém marcado nesse dia.</div>
+          )}
+        </div>
+
+        {isAdmin && taxaNumSalva > 0 && (
+          <div style={{ background: "#F6F1E7", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#8A8778", marginBottom: 16, display: "flex", justifyContent: "space-between" }}>
+            <span>Taxa de serviço do dia</span><span style={{ color: "#22231F", fontWeight: 700 }}>{brl(taxaNumSalva)}</span>
+          </div>
+        )}
+
+        {isAdmin && (
+          <button onClick={() => setModoLeitura(false)} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
+            <Pencil size={15} /> Editar
+          </button>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div>
