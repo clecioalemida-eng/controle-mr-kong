@@ -49,6 +49,14 @@ export default function NotasFiscais() {
 
   useEffect(() => { carregar(); }, [carregar]);
 
+  const excluirDocumento = async (d) => {
+    if (!window.confirm(`Excluir a nota de "${d.fornecedor || "fornecedor não identificado"}"? Isso apaga o documento e os itens lidos — não dá pra desfazer.`)) return;
+    const { error } = await supabase.from("documentos_compra").delete().eq("id", d.id);
+    if (error) { setErro(error.message); return; }
+    await supabase.storage.from("notas-fiscais").remove([d.arquivo_path]);
+    carregar();
+  };
+
   const enviarArquivo = async (file) => {
     if (!file) return;
     setEnviando(true);
@@ -133,6 +141,11 @@ export default function NotasFiscais() {
               <button onClick={() => abrirPreview(d.arquivo_path)} style={ghostIconBtn} aria-label="Ver documento original">
                 <Eye size={16} />
               </button>
+              {d.status !== "confirmado" && (
+                <button onClick={() => excluirDocumento(d)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Excluir documento">
+                  <Trash2 size={16} />
+                </button>
+              )}
               <span style={{ ...pill, ...STATUS_ESTILO[d.status], whiteSpace: "nowrap", flexShrink: 0 }}>{STATUS_LABEL[d.status]}</span>
             </div>
           ))}
