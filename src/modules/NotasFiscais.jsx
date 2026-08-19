@@ -7,6 +7,7 @@ import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
+function round2(n) { return Math.round((n || 0) * 100) / 100; }
 function fmtData(d) { if (!d) return ""; return new Date(d).toLocaleDateString("pt-BR"); }
 
 async function abrirPreview(caminho) {
@@ -352,27 +353,56 @@ function Conferencia({ documento, onVoltar }) {
                 )}
 
                 {editandoId === item.id && (
-                  <div style={{ padding: "8px 10px", borderTop: "1px solid #E8E2D2" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                  <div style={{ padding: "10px", borderTop: "1px solid #E8E2D2", display: "grid", gap: 8 }}>
+                    <div>
+                      <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Descrição</label>
                       <input value={formEdicao.nome_lido} onChange={(e) => setFormEdicao((f) => ({ ...f, nome_lido: e.target.value }))}
-                        style={{ flex: 1, minWidth: 100, padding: "4px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                      <input type="number" value={formEdicao.quantidade} onChange={(e) => setFormEdicao((f) => ({ ...f, quantidade: e.target.value }))}
-                        style={{ width: 60, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                      <select value={formEdicao.unidade} onChange={(e) => setFormEdicao((f) => ({ ...f, unidade: e.target.value }))}
-                        style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }}>
-                        {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
-                      </select>
-                      <input type="number" step="0.01" value={formEdicao.preco_unitario} onChange={(e) => setFormEdicao((f) => ({ ...f, preco_unitario: e.target.value }))}
-                        style={{ width: 70, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                        style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 11, color: "#8A8778" }}>Vinculado a:</span>
-                      <select value={formEdicao.insumo_id} onChange={(e) => setFormEdicao((f) => ({ ...f, insumo_id: e.target.value }))}
-                        style={{ flex: 1, padding: "4px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
-                        <option value="">— nenhum insumo —</option>
-                        {insumos.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}
-                      </select>
-                      <button onClick={salvarEdicao} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Quantidade</label>
+                        <input type="number" value={formEdicao.quantidade} onChange={(e) => setFormEdicao((f) => ({ ...f, quantidade: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Unidade</label>
+                        <select value={formEdicao.unidade} onChange={(e) => setFormEdicao((f) => ({ ...f, unidade: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                          {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Valor unitário</label>
+                        <input type="number" step="0.01" value={formEdicao.preco_unitario}
+                          onChange={(e) => setFormEdicao((f) => ({ ...f, preco_unitario: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Valor total</label>
+                        <input type="number" step="0.01"
+                          value={round2((parseFloat(formEdicao.quantidade) || 0) * (parseFloat(formEdicao.preco_unitario) || 0))}
+                          onChange={(e) => {
+                            const novoTotal = parseFloat(e.target.value) || 0;
+                            const qtd = parseFloat(formEdicao.quantidade) || 0;
+                            setFormEdicao((f) => ({ ...f, preco_unitario: qtd > 0 ? novoTotal / qtd : 0 }));
+                          }}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 12 }} />
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 10, color: "#8A8778" }}>Preenche um dos dois — o outro calcula sozinho (baseado na quantidade).</div>
+                    <div>
+                      <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Vinculado a</label>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <select value={formEdicao.insumo_id} onChange={(e) => setFormEdicao((f) => ({ ...f, insumo_id: e.target.value }))}
+                          style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                          <option value="">— nenhum insumo —</option>
+                          {insumos.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}
+                        </select>
+                        <button onClick={salvarEdicao} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
+                      </div>
                     </div>
                   </div>
                 )}
