@@ -285,6 +285,44 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Fornecedores, e Compras (antes Estoque) com sugestão de compra
+
+Três frentes nessa entrega grande:
+
+**1. Fornecedores cadastrados.** Na tela de Conferência de uma nota, o
+fornecedor agora é editável (lápis do lado do nome) com autocompletar dos
+fornecedores já cadastrados — digitando um nome novo, cadastra ele
+automaticamente. Ao vincular um fornecedor, aparece um histórico de
+compras com ele logo abaixo (data + valor de cada nota anterior, e o
+total do período).
+
+**2. Aba "Estoque" virou "Compras".** Mesmo conteúdo de antes (saldo,
+extrato, ajuste manual, estoque mínimo), só que agora com um campo no
+topo pra escolher **quantos dias de estoque cobrir** (padrão 4, fica
+salvo) e um botão **"Calcular sugestão de compra"**.
+
+**3. Sugestão de compra por insumo.** Ao clicar em calcular, o sistema
+busca os pedidos fechados no CardápioWeb dos últimos 14 dias, cruza cada
+prato vendido com a Ficha Técnica dele (quantos gramas de cada insumo
+entra em cada prato) e descobre quanto foi consumido de cada insumo de
+verdade — separando a média de **dia útil** da média de **fim de semana**
+(sexta/sábado/domingo), já que o consumo não é igual todo dia. A sugestão
+= (dias úteis restantes × média útil + dias de fim de semana restantes ×
+média de fim de semana) − o que já tem em estoque. Insumos que precisam
+de compra ganham uma etiqueta vermelha "comprar" na lista.
+
+**Limitação importante**: essa conta só funciona bem pros insumos que já
+estão vinculados na Ficha Técnica de algum prato vendido pelo CardápioWeb
+— insumos usados só em pratos sem ficha ainda, ou vendidos fora do
+CardápioWeb, não entram nesse cálculo (não aparece sugestão pra eles,
+mas o resto da tela — saldo, ajuste — continua funcionando normal).
+
+### Migração
+
+`026_fornecedores_e_compras.sql` — tabela `fornecedores`,
+`documentos_compra.fornecedor_id`, tabela `configuracoes` (guarda o
+"dias de estoque" e serve pra outras configs futuras).
+
 ## Cache compartilhado da taxa de serviço
 
 Escala do dia (Equipe) e Conferência de Caixa (Financeiro) calculavam a

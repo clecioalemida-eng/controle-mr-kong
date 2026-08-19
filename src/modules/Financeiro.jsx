@@ -14,7 +14,7 @@ const ABAS = [
   { chave: "fechamento", label: "Fechamento" },
   { chave: "fichas", label: "Fichas técnicas" },
   { chave: "notas", label: "Notas" },
-  { chave: "estoque", label: "Estoque" },
+  { chave: "estoque", label: "Compras" },
   { chave: "equipe", label: "Equipe" },
   { chave: "conferencia", label: "Conferência de caixa" },
 ];

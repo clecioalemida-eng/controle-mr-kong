@@ -167,22 +167,59 @@ function Conferencia({ documento, onVoltar }) {
   const [erro, setErro] = useState("");
   const [editandoId, setEditandoId] = useState(null);
   const [formEdicao, setFormEdicao] = useState({ nome_lido: "", quantidade: 0, unidade: "un", preco_unitario: 0, insumo_id: "" });
+  const [calcPacotes, setCalcPacotes] = useState({ qtd: "", tamanho: "", unidade: "g" });
   const [criarInsumoAberto, setCriarInsumoAberto] = useState(null); // id do item pedindo criação de insumo
   const [novoInsumoNome, setNovoInsumoNome] = useState("");
   const [novoInsumoUnidade, setNovoInsumoUnidade] = useState("un");
+  const [fornecedores, setFornecedores] = useState([]);
+  const [fornecedorAtual, setFornecedorAtual] = useState({ nome: documento.fornecedor || "", id: documento.fornecedor_id || null });
+  const [editandoFornecedor, setEditandoFornecedor] = useState(false);
+  const [nomeFornecedorInput, setNomeFornecedorInput] = useState("");
+  const [historicoFornecedor, setHistoricoFornecedor] = useState([]);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
-    const [{ data: itensData }, { data: insumosData }] = await Promise.all([
+    const [{ data: itensData }, { data: insumosData }, { data: fornecedoresData }] = await Promise.all([
       supabase.from("itens_documento_compra").select("*").eq("documento_id", documento.id).order("criado_em"),
       supabase.from("insumos").select("id, nome, unidade").order("nome"),
+      supabase.from("fornecedores").select("*").order("nome"),
     ]);
     setItens(itensData || []);
     setInsumos(insumosData || []);
+    setFornecedores(fornecedoresData || []);
     setCarregando(false);
+    if (documento.fornecedor_id) carregarHistoricoFornecedor(documento.fornecedor_id);
   }, [documento.id]);
 
   useEffect(() => { carregar(); }, [carregar]);
+
+  const carregarHistoricoFornecedor = async (fornecedorId) => {
+    const { data } = await supabase
+      .from("documentos_compra")
+      .select("id, data_documento, criado_em, valor_total")
+      .eq("fornecedor_id", fornecedorId)
+      .neq("id", documento.id)
+      .order("criado_em", { ascending: false })
+      .limit(10);
+    setHistoricoFornecedor(data || []);
+  };
+
+  const salvarFornecedor = async () => {
+    const nome = nomeFornecedorInput.trim();
+    if (!nome) { setEditandoFornecedor(false); return; }
+    let fornecedor = fornecedores.find((f) => f.nome.toLowerCase() === nome.toLowerCase());
+    if (!fornecedor) {
+      const { data, error } = await supabase.from("fornecedores").insert({ nome }).select().single();
+      if (error) { setErro(error.message); return; }
+      fornecedor = data;
+      setFornecedores((prev) => [...prev, fornecedor].sort((a, b) => a.nome.localeCompare(b.nome)));
+    }
+    const { error: errDoc } = await supabase.from("documentos_compra").update({ fornecedor: nome, fornecedor_id: fornecedor.id }).eq("id", documento.id);
+    if (errDoc) { setErro(errDoc.message); return; }
+    setFornecedorAtual({ nome, id: fornecedor.id });
+    setEditandoFornecedor(false);
+    carregarHistoricoFornecedor(fornecedor.id);
+  };
 
   const removerItem = async (id) => {
     await supabase.from("itens_documento_compra").delete().eq("id", id);
@@ -192,6 +229,13 @@ function Conferencia({ documento, onVoltar }) {
   const abrirEdicao = (item) => {
     setEditandoId(item.id);
     setFormEdicao({ nome_lido: item.nome_lido, quantidade: item.quantidade, unidade: item.unidade, preco_unitario: item.preco_unitario, insumo_id: item.insumo_id || "" });
+    setCalcPacotes({ qtd: "", tamanho: "", unidade: item.unidade || "g" });
+  };
+
+  const aplicarCalculadoraPacotes = () => {
+    const qtd = parseFloat(calcPacotes.qtd) || 0;
+    const tamanho = parseFloat(calcPacotes.tamanho) || 0;
+    setFormEdicao((f) => ({ ...f, quantidade: round2(qtd * tamanho), unidade: calcPacotes.unidade }));
   };
 
   const salvarEdicao = async () => {
@@ -280,13 +324,44 @@ function Conferencia({ documento, onVoltar }) {
       <div style={{ ...cardStyle, marginBottom: 14, display: "flex", alignItems: "center", gap: 12 }}>
         <div style={iconBox}><FileText size={18} color="#8A8778" /></div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F" }}>{documento.fornecedor || "Fornecedor não identificado"}</div>
+          {editandoFornecedor ? (
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+              <input list="lista-fornecedores" value={nomeFornecedorInput} onChange={(e) => setNomeFornecedorInput(e.target.value)}
+                placeholder="Nome do fornecedor" autoFocus
+                style={{ flex: 1, minWidth: 0, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+              <datalist id="lista-fornecedores">
+                {fornecedores.map((f) => <option key={f.id} value={f.nome} />)}
+              </datalist>
+              <button onClick={salvarFornecedor} style={{ ...ghostIconBtn, color: "#2F8F5B", flexShrink: 0 }} aria-label="Salvar fornecedor"><Check size={16} /></button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F" }}>{fornecedorAtual.nome || "Fornecedor não identificado"}</div>
+              <button onClick={() => { setNomeFornecedorInput(fornecedorAtual.nome); setEditandoFornecedor(true); }} style={ghostIconBtn} aria-label="Editar fornecedor"><Pencil size={13} /></button>
+            </div>
+          )}
           <div style={{ fontSize: 12, color: "#8A8778" }}>{fmtData(documento.data_documento || documento.criado_em)} · {itens.length} itens lidos pela IA</div>
         </div>
         <button onClick={() => abrirPreview(documento.arquivo_path)} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
           <Eye size={14} /> Ver original
         </button>
       </div>
+
+      {fornecedorAtual.id && historicoFornecedor.length > 0 && (
+        <div style={{ ...cardStyle, marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Histórico com {fornecedorAtual.nome}</div>
+          {historicoFornecedor.map((h) => (
+            <div key={h.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderTop: "1px solid #F0EBDD" }}>
+              <span style={{ color: "#8A8778" }}>{fmtData(h.data_documento || h.criado_em)}</span>
+              <span style={{ color: "#22231F" }}>{brl(h.valor_total)}</span>
+            </div>
+          ))}
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, paddingTop: 6, marginTop: 4, borderTop: "1px solid #E8E2D2" }}>
+            <span>Total no período</span>
+            <span>{brl(historicoFornecedor.reduce((s, h) => s + (h.valor_total || 0), 0))}</span>
+          </div>
+        </div>
+      )}
 
       <div style={sectionLabel}>Itens encontrados</div>
       {carregando ? (
@@ -371,6 +446,33 @@ function Conferencia({ documento, onVoltar }) {
                       <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Descrição</label>
                       <input value={formEdicao.nome_lido} onChange={(e) => setFormEdicao((f) => ({ ...f, nome_lido: e.target.value }))}
                         style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                    </div>
+                    <div style={{ border: "1px dashed #37A0E5", borderRadius: 8, padding: 10 }}>
+                      <div style={{ fontSize: 11, color: "#185FA5", marginBottom: 8 }}>Veio em pacotes/potes? Calcule a quantidade total aqui</div>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 2 }}>Quantos pacotes</label>
+                          <input type="number" value={calcPacotes.qtd} onChange={(e) => setCalcPacotes((c) => ({ ...c, qtd: e.target.value }))}
+                            style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 2 }}>Tamanho de cada um</label>
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <input type="number" value={calcPacotes.tamanho} onChange={(e) => setCalcPacotes((c) => ({ ...c, tamanho: e.target.value }))}
+                              style={{ flex: 1, minWidth: 0, padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                            <select value={calcPacotes.unidade} onChange={(e) => setCalcPacotes((c) => ({ ...c, unidade: e.target.value }))}
+                              style={{ width: 55, padding: "5px 4px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                              {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 11, color: "#8A8778" }}>
+                          = {round2((parseFloat(calcPacotes.qtd) || 0) * (parseFloat(calcPacotes.tamanho) || 0))} {calcPacotes.unidade}
+                        </span>
+                        <button onClick={aplicarCalculadoraPacotes} style={{ ...btnSecondary, fontSize: 11, padding: "4px 10px" }}>Usar esse valor</button>
+                      </div>
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <div style={{ flex: 1 }}>

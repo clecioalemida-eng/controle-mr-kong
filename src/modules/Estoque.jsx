@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { ChevronLeft, AlertTriangle, Truck, SlidersHorizontal, Search } from "lucide-react";
-import { supabase } from "../lib/supabaseClient";
+import { ChevronLeft, AlertTriangle, Truck, SlidersHorizontal, Search, RefreshCw, Loader2 } from "lucide-react";
+import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function fmt(v, unidade) {
   const n = (v ?? 0).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
@@ -9,6 +9,12 @@ function fmt(v, unidade) {
 function fmtData(d) {
   if (!d) return "";
   return new Date(d).toLocaleDateString("pt-BR");
+}
+// Sexta, sábado e domingo contam como "fim de semana" pro cálculo de
+// consumo — costumam vender mais que os outros dias.
+function ehFimDeSemana(data) {
+  const dia = data.getDay();
+  return dia === 0 || dia === 5 || dia === 6;
 }
 
 const TIPO_LABEL = {
@@ -26,17 +32,118 @@ export default function Estoque() {
   const [erro, setErro] = useState("");
   const [insumoAtual, setInsumoAtual] = useState(null);
   const [busca, setBusca] = useState("");
+  const [diasEstoque, setDiasEstoque] = useState("4");
+  const [consumoPorInsumo, setConsumoPorInsumo] = useState({}); // insumo_id -> { mediaUtil, mediaFds }
+  const [buscandoConsumo, setBuscandoConsumo] = useState(false);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
     setErro("");
-    const { data, error } = await supabase.from("insumos").select("*").order("nome");
+    const [{ data, error }, { data: configData }] = await Promise.all([
+      supabase.from("insumos").select("*").order("nome"),
+      supabase.from("configuracoes").select("valor").eq("chave", "dias_estoque_compras").maybeSingle(),
+    ]);
     if (error) { setErro(error.message); setCarregando(false); return; }
     setInsumos(data || []);
+    if (configData) setDiasEstoque(configData.valor);
     setCarregando(false);
   }, []);
 
   useEffect(() => { carregar(); }, [carregar]);
+
+  const salvarDiasEstoque = async (valor) => {
+    setDiasEstoque(valor);
+    await supabase.from("configuracoes").upsert({ chave: "dias_estoque_compras", valor: String(valor) }, { onConflict: "chave" });
+  };
+
+  // Calcula quanto foi consumido de cada insumo nos últimos 14 dias,
+  // cruzando os pedidos fechados no CardápioWeb com a Ficha Técnica de
+  // cada prato vendido — separa a média por dia útil da média por dia de
+  // fim de semana, porque o consumo não é igual todo dia.
+  const buscarConsumo = async () => {
+    setBuscandoConsumo(true);
+    setErro("");
+    const hoje = new Date();
+    const inicio = new Date(hoje);
+    inicio.setDate(inicio.getDate() - 14);
+    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
+      body: {
+        data_inicio: `${inicio.toISOString().slice(0, 10)}T00:00:00-03:00`,
+        data_fim: `${hoje.toISOString().slice(0, 10)}T23:59:59-03:00`,
+      },
+    });
+    if (error) { setErro(await extrairErroFuncao(error)); setBuscandoConsumo(false); return; }
+    if (data?.error) { setErro(data.error); setBuscandoConsumo(false); return; }
+
+    const [{ data: pratosData }, { data: composicaoData }] = await Promise.all([
+      supabase.from("pratos").select("id, cardapioweb_item_id"),
+      supabase.from("prato_insumos").select("prato_id, insumo_id, quantidade"),
+    ]);
+    const mapaPratoPorItemId = new Map((pratosData || []).filter((p) => p.cardapioweb_item_id != null).map((p) => [p.cardapioweb_item_id, p.id]));
+    const composicaoPorPrato = {};
+    (composicaoData || []).forEach((c) => {
+      if (!composicaoPorPrato[c.prato_id]) composicaoPorPrato[c.prato_id] = [];
+      composicaoPorPrato[c.prato_id].push(c);
+    });
+
+    const consumoUtil = {};
+    const consumoFds = {};
+    const diasUteis = new Set();
+    const diasFds = new Set();
+
+    for (const pedido of data.pedidos || []) {
+      if (pedido.status !== "closed") continue;
+      const dataPedido = new Date(pedido.created_at);
+      const fds = ehFimDeSemana(dataPedido);
+      const diaChave = String(pedido.created_at).slice(0, 10);
+      (fds ? diasFds : diasUteis).add(diaChave);
+
+      for (const item of pedido.items || []) {
+        const pratoId = mapaPratoPorItemId.get(item.item_id);
+        if (!pratoId) continue;
+        for (const c of composicaoPorPrato[pratoId] || []) {
+          const alvo = fds ? consumoFds : consumoUtil;
+          alvo[c.insumo_id] = (alvo[c.insumo_id] || 0) + (item.quantity || 0) * (c.quantidade || 0);
+        }
+      }
+    }
+
+    const nUteis = diasUteis.size || 1;
+    const nFds = diasFds.size || 1;
+    const mapaConsumo = {};
+    new Set([...Object.keys(consumoUtil), ...Object.keys(consumoFds)]).forEach((id) => {
+      mapaConsumo[id] = { mediaUtil: (consumoUtil[id] || 0) / nUteis, mediaFds: (consumoFds[id] || 0) / nFds };
+    });
+    setConsumoPorInsumo(mapaConsumo);
+    setBuscandoConsumo(false);
+  };
+
+  // Quantos dos próximos N dias (a partir de amanhã) caem em dia útil vs
+  // fim de semana — usado pra ponderar a sugestão de compra certinha,
+  // não só multiplicar por uma média simples.
+  const proximosDias = (qtd) => {
+    let uteis = 0, fds = 0;
+    for (let i = 1; i <= qtd; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() + i);
+      (ehFimDeSemana(d) ? (fds++, null) : uteis++);
+    }
+    return { uteis, fds };
+  };
+
+  const sugestaoCompra = (insumoId, estoqueAtual) => {
+    const c = consumoPorInsumo[insumoId];
+    if (!c) return null;
+    const dias = parseFloat(diasEstoque) || 0;
+    const { uteis, fds } = proximosDias(dias);
+    const necessidade = uteis * c.mediaUtil + fds * c.mediaFds;
+    return Math.max(0, round2(necessidade - (estoqueAtual || 0)));
+  };
+  const consumoMedioDia = (insumoId) => {
+    const c = consumoPorInsumo[insumoId];
+    if (!c) return null;
+    return round2((c.mediaUtil * 5 + c.mediaFds * 2) / 7);
+  };
 
   if (tela === "extrato" && insumoAtual) {
     return <ExtratoInsumo insumo={insumoAtual} onVoltar={() => { setTela("lista"); setInsumoAtual(null); carregar(); }} />;
@@ -44,6 +151,20 @@ export default function Estoque() {
 
   return (
     <div>
+      <div style={{ ...cardStyle, marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 12, color: "#8A8778" }}>Cobrir estoque para quantos dias?</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <input type="number" min="1" value={diasEstoque} onChange={(e) => salvarDiasEstoque(e.target.value)}
+            style={{ width: 50, padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13, textAlign: "center" }} />
+          <span style={{ fontSize: 12, color: "#8A8778" }}>dias</span>
+        </div>
+      </div>
+
+      <button onClick={buscarConsumo} disabled={buscandoConsumo} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6, marginBottom: 14 }}>
+        {buscandoConsumo ? <Loader2 size={14} /> : <RefreshCw size={14} />}
+        {Object.keys(consumoPorInsumo).length > 0 ? "Atualizar sugestão de compra" : "Calcular sugestão de compra (últimos 14 dias)"}
+      </button>
+
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
       {insumos.length > 0 && (
         <div style={{ position: "relative", marginBottom: 14 }}>
@@ -58,14 +179,31 @@ export default function Estoque() {
         <div className="list-grid">
           {insumos.filter((i) => i.nome.toLowerCase().includes(busca.toLowerCase())).map((i) => {
             const abaixoMinimo = i.estoque_minimo != null && i.estoque_atual < i.estoque_minimo;
+            const sugestao = sugestaoCompra(i.id, i.estoque_atual);
+            const consumoDia = consumoMedioDia(i.id);
+            const precisaComprar = sugestao != null && sugestao > 0;
             return (
               <button key={i.id} onClick={() => { setInsumoAtual(i); setTela("extrato"); }}
-                style={{ ...itemRow, cursor: "pointer", textAlign: "left", border: abaixoMinimo ? "1px solid #F0D8CE" : "1px solid #E8E2D2" }}>
-                <span style={{ fontSize: 13, color: "#22231F" }}>{i.nome}</span>
-                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  {abaixoMinimo && <span style={pill}>abaixo do mínimo</span>}
-                  <span style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{fmt(i.estoque_atual, i.unidade)}</span>
-                </span>
+                style={{ ...itemRow, cursor: "pointer", textAlign: "left", flexDirection: "column", alignItems: "stretch", gap: 4, border: precisaComprar ? "1px solid #F0999599" : abaixoMinimo ? "1px solid #F0D8CE" : "1px solid #E8E2D2" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+                  <span style={{ fontSize: 13, color: "#22231F" }}>{i.nome}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {precisaComprar && <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>comprar</span>}
+                    {!precisaComprar && abaixoMinimo && <span style={pill}>abaixo do mínimo</span>}
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{fmt(i.estoque_atual, i.unidade)}</span>
+                  </span>
+                </div>
+                {consumoDia != null && (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", width: "100%", fontSize: 11, color: "#8A8778" }}>
+                      <span>Consumo/dia: ~{fmt(consumoDia, i.unidade)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", width: "100%", fontSize: 12 }}>
+                      <span style={{ color: "#8A8778" }}>Sugestão de compra</span>
+                      <span style={{ fontWeight: 700, color: precisaComprar ? "#A32D2D" : "#22231F" }}>{fmt(sugestao, i.unidade)}</span>
+                    </div>
+                  </>
+                )}
               </button>
             );
           })}
@@ -75,6 +213,9 @@ export default function Estoque() {
     </div>
   );
 }
+
+function round2(n) { return Math.round((n || 0) * 100) / 100; }
+
 
 function ExtratoInsumo({ insumo, onVoltar }) {
   const [movimentos, setMovimentos] = useState([]);
