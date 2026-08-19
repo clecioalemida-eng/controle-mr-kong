@@ -6,15 +6,27 @@ function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", c
 function hoje() { return new Date().toISOString().slice(0, 10); }
 
 // Mapeamento conhecido até agora (confirmado em 19/08/2026 a partir de um
-// pedido de mesa real). Outros valores de order_type/sales_channel ainda
-// não vistos aparecem com o valor bruto mesmo, sem tentar adivinhar —
-// assim nada fica escondido atrás de um rótulo errado.
+// pedido de mesa real). Outros valores de order_type ainda não vistos
+// aparecem com o valor bruto mesmo, sem tentar adivinhar — assim nada
+// fica escondido atrás de um rótulo errado.
+//
+// Importante: "tipo de pedido" (Mesa/Delivery/Retirada) e "canal"
+// (portal/iFood/app) são duas classificações INDEPENDENTES do mesmo
+// pedido no CardápioWeb — um pedido pode ser "Retirada" pelo tipo E
+// "iFood" pelo canal ao mesmo tempo. Misturar as duas numa tabela só
+// desalinha os números da tela oficial (foi o que aconteceu antes: um
+// pedido de retirada-via-iFood saiu do total de Retirada por engano).
+// Por isso ficam em duas tabelas separadas agora.
 const CATEGORIA_LABEL = { closed_table: "Mesas", table: "Mesas", open_table: "Mesas" };
-function labelCategoria(orderType, salesChannel) {
-  if (salesChannel && /ifood/i.test(salesChannel)) return "iFood";
+function labelCategoria(orderType) {
   if (orderType && /delivery/i.test(orderType)) return "Delivery";
   if (orderType && /(takeout|pickup|retirada)/i.test(orderType)) return "Retirada";
   return CATEGORIA_LABEL[orderType] || orderType || "Não identificado";
+}
+function labelCanal(salesChannel) {
+  if (salesChannel && /ifood/i.test(salesChannel)) return "iFood";
+  if (salesChannel && /portal/i.test(salesChannel)) return "Portal (site/app próprio)";
+  return salesChannel || "Não identificado";
 }
 
 const NOMES_PAGAMENTO = {
@@ -53,6 +65,7 @@ export default function ConferenciaCaixa() {
   const [mensagem, setMensagem] = useState("");
   const [linhas, setLinhas] = useState([]); // { forma_pagamento, valor_sistema, valor_conferido }
   const [porCategoria, setPorCategoria] = useState([]);
+  const [porCanal, setPorCanal] = useState([]);
   const [porAtendente, setPorAtendente] = useState([]);
   const [taxasDoDia, setTaxasDoDia] = useState(null); // { servico, entrega, adicional }
 
@@ -97,17 +110,24 @@ export default function ConferenciaCaixa() {
       })).sort((a, b) => (NOMES_PAGAMENTO[a.forma_pagamento] || a.forma_pagamento).localeCompare(NOMES_PAGAMENTO[b.forma_pagamento] || b.forma_pagamento));
     });
 
-    // Categoria e atendente já vêm dentro de cada pedido (order_type,
-    // sales_channel, user.name) — calcula tudo aqui, sem chamada extra.
+    // Categoria (tipo de pedido), canal e atendente já vêm dentro de cada
+    // pedido (order_type, sales_channel, user.name) — calcula tudo aqui,
+    // sem chamada extra.
     const pedidos = (data.pedidos || []).filter((p) => p.status === "closed");
     const mapaCategoria = {};
+    const mapaCanal = {};
     const mapaAtendente = {};
     let somaServico = 0, somaEntrega = 0, somaAdicional = 0;
     for (const p of pedidos) {
-      const cat = labelCategoria(p.order_type, p.sales_channel);
+      const cat = labelCategoria(p.order_type);
       if (!mapaCategoria[cat]) mapaCategoria[cat] = { categoria: cat, qtd: 0, total: 0 };
       mapaCategoria[cat].qtd += 1;
       mapaCategoria[cat].total += p.total || 0;
+
+      const canal = labelCanal(p.sales_channel);
+      if (!mapaCanal[canal]) mapaCanal[canal] = { categoria: canal, qtd: 0, total: 0 };
+      mapaCanal[canal].qtd += 1;
+      mapaCanal[canal].total += p.total || 0;
 
       const nomeAtendente = p.user?.name || "Não identificado";
       if (!mapaAtendente[nomeAtendente]) mapaAtendente[nomeAtendente] = { nome: nomeAtendente, qtd: 0, total: 0 };
@@ -119,6 +139,7 @@ export default function ConferenciaCaixa() {
       somaAdicional += p.additional_fee || 0;
     }
     setPorCategoria(Object.values(mapaCategoria).sort((a, b) => b.total - a.total));
+    setPorCanal(Object.values(mapaCanal).sort((a, b) => b.total - a.total));
     setPorAtendente(Object.values(mapaAtendente).sort((a, b) => b.total - a.total));
     setTaxasDoDia({ servico: somaServico, entrega: somaEntrega, adicional: somaAdicional });
   };
@@ -216,12 +237,32 @@ export default function ConferenciaCaixa() {
 
           {porCategoria.length > 0 && (
             <>
-              <div style={{ ...sectionLabel, marginTop: 20 }}>Vendas por categoria</div>
+              <div style={{ ...sectionLabel, marginTop: 20 }}>Vendas por categoria (tipo de pedido)</div>
+              <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Mesma classificação que a tela "Análise das vendas" do painel do CardápioWeb.</div>
               <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
                   <span>Categoria</span><span style={{ textAlign: "right" }}>Qtd.</span><span style={{ textAlign: "right" }}>Total</span>
                 </div>
                 {porCategoria.map((c, idx) => (
+                  <div key={c.categoria} style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
+                    <span style={{ color: "#22231F" }}>{c.categoria}</span>
+                    <span style={{ textAlign: "right", color: "#8A8778" }}>{c.qtd}</span>
+                    <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(c.total)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {porCanal.length > 0 && (
+            <>
+              <div style={sectionLabel}>Vendas por canal</div>
+              <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Classificação independente da anterior — um pedido pode ser "Retirada" no tipo e "iFood" no canal ao mesmo tempo.</div>
+              <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+                  <span>Canal</span><span style={{ textAlign: "right" }}>Qtd.</span><span style={{ textAlign: "right" }}>Total</span>
+                </div>
+                {porCanal.map((c, idx) => (
                   <div key={c.categoria} style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
                     <span style={{ color: "#22231F" }}>{c.categoria}</span>
                     <span style={{ textAlign: "right", color: "#8A8778" }}>{c.qtd}</span>
