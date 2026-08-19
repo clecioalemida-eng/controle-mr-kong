@@ -78,8 +78,15 @@ Deno.serve(async (req) => {
     for (let i = 0; i < bytes.length; i++) binario += String.fromCharCode(bytes[i]);
     const base64 = btoa(binario);
 
-    const ehPdf = documento.arquivo_path.toLowerCase().endsWith(".pdf");
-    const mediaType = ehPdf ? "application/pdf" : (documento.arquivo_path.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
+    // Detecta o tipo real pelos primeiros bytes do arquivo (assinatura),
+    // não pelo nome/extensão — o nome pode mentir (ex.: foto tirada direto
+    // da câmera do celular às vezes chega com um nome genérico que não
+    // bate com o formato real, e a IA rejeita se o tipo declarado for
+    // diferente do arquivo de verdade).
+    const ehPdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // "%PDF"
+    const ehPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47; // "\x89PNG"
+    const ehWebp = bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50; // "WEBP" (dentro do cabeçalho RIFF)
+    const mediaType = ehPdf ? "application/pdf" : ehPng ? "image/png" : ehWebp ? "image/webp" : "image/jpeg";
 
     // 2) Aprendizado: busca itens já confirmados antes, pra usar como
     // referência de nome/unidade/preço esperado nesta leitura. Isso não
