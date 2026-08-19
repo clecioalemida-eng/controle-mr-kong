@@ -4,6 +4,7 @@ import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function hoje() { return new Date().toISOString().slice(0, 10); }
+function round2(n) { return Math.round((n || 0) * 100) / 100; }
 
 // Mapeamento conhecido até agora (confirmado em 19/08/2026 a partir de um
 // pedido de mesa real). Outros valores de order_type ainda não vistos
@@ -167,6 +168,17 @@ export default function ConferenciaCaixa() {
     setPorCanal(Object.values(mapaCanal).sort((a, b) => b.total - a.total));
     setPorAtendente(Object.values(mapaAtendente).sort((a, b) => b.total - a.total));
     setTaxasDoDia({ servico: somaServico, entrega: somaEntrega, adicional: somaAdicional });
+
+    // Salva num cache compartilhado com a Escala do dia (Equipe) — assim
+    // quem for lá depois não precisa buscar essa mesma taxa de novo no
+    // CardápioWeb.
+    await supabase.from("taxas_do_dia").upsert({
+      dia,
+      taxa_servico: round2(somaServico),
+      taxa_entrega: round2(somaEntrega),
+      taxa_adicional: round2(somaAdicional),
+      atualizado_em: new Date().toISOString(),
+    }, { onConflict: "dia" });
   };
 
   const alterarConferido = (forma, valor) => {

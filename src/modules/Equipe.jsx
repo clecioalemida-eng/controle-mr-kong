@@ -386,11 +386,12 @@ function PremiacaoDoDia({ isAdmin }) {
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
-    const [{ data: pessoasData }, { data: presencasData }, { data: premiacoesData }, { data: matrizData }] = await Promise.all([
+    const [{ data: pessoasData }, { data: presencasData }, { data: premiacoesData }, { data: matrizData }, { data: cacheTaxa }] = await Promise.all([
       supabase.from("pessoas").select("*").eq("ativo", true).neq("papel", "gerente").order("nome"),
       supabase.from("presencas_diarias").select("*").eq("dia", dia),
       supabase.from("premiacoes_diarias").select("*").eq("dia", dia),
       supabase.from("matriz_cargos").select("*"),
+      supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle(),
     ]);
     setPessoas(pessoasData || []);
     setMatriz(Object.fromEntries((matrizData || []).map((m) => [m.papel, m])));
@@ -407,6 +408,12 @@ function PremiacaoDoDia({ isAdmin }) {
     if (premiacoesData && premiacoesData.length > 0) {
       setTaxaServico(String(premiacoesData[0].taxa_servico_dia));
       setMensagem("Esse dia já tem premiação calculada e salva — recalcular vai substituir os valores.");
+    } else if (cacheTaxa) {
+      // Já foi buscada antes (por essa tela ou pela Conferência de Caixa)
+      // — reaproveita em vez de consultar o CardápioWeb de novo.
+      setTaxaServico(String(cacheTaxa.taxa_servico));
+      setTaxaAutomatica(true);
+      setMensagem("Taxa de serviço reaproveitada da última busca (Escala do dia ou Conferência de Caixa) — clique em Buscar se quiser atualizar.");
     } else {
       setTaxaServico("");
     }
@@ -417,12 +424,25 @@ function PremiacaoDoDia({ isAdmin }) {
   const buscarTaxaAutomatica = async () => {
     setBuscandoTaxa(true);
     setErro("");
+    const { data: cacheTaxa } = await supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle();
+    if (cacheTaxa) {
+      setBuscandoTaxa(false);
+      setTaxaServico(String(cacheTaxa.taxa_servico));
+      setTaxaAutomatica(true);
+      setMensagem("Taxa de serviço reaproveitada do cache — não precisou consultar o CardápioWeb de novo.");
+      return;
+    }
     const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", { body: { acao: "taxa_servico_dia", dia } });
     setBuscandoTaxa(false);
     if (error) { setErro(await extrairErroFuncao(error)); return; }
     if (data?.error) { setErro(data.error); return; }
     setTaxaServico(String(data.taxa_servico));
     setTaxaAutomatica(data.encontrado_automaticamente);
+    if (data.encontrado_automaticamente) {
+      await supabase.from("taxas_do_dia").upsert({
+        dia, taxa_servico: data.taxa_servico, atualizado_em: new Date().toISOString(),
+      }, { onConflict: "dia" });
+    }
     if (!data.encontrado_automaticamente) {
       setErro("Não tem pedido fechado nesse dia (17h–03h) — confira a data ou digite o valor manualmente.");
     }

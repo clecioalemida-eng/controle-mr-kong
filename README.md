@@ -285,6 +285,21 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Cache compartilhado da taxa de serviço
+
+Escala do dia (Equipe) e Conferência de Caixa (Financeiro) calculavam a
+taxa de serviço do dia de forma independente, cada uma com sua própria
+consulta ao CardápioWeb — mesmo sendo o mesmo número. Agora as duas
+gravam e leem de um cache comum (`taxas_do_dia`): quem buscar primeiro
+(em qualquer uma das duas telas) salva o valor pra outra reaproveitar,
+sem gastar outra consulta do limite de 5/minuto do CardápioWeb à toa. O
+botão "Buscar" continua existindo pra forçar uma atualização quando
+precisar.
+
+### Migração
+
+`024_cache_taxas_do_dia.sql` — tabela `taxas_do_dia`.
+
 ## Cargo no cadastro, e Painel Admin reorganizado
 
 **No cadastro**, além de nome/e-mail/senha, agora tem um campo **Cargo**
