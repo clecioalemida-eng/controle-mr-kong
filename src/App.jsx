@@ -395,20 +395,35 @@ function PainelAdmin({ onVoltar }) {
               <div style={sectionLabel}>Aguardando aprovação</div>
               {pendentes.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum cadastro pendente.</div>}
               <div className="list-grid">
-                {pendentes.map((p) => (
-                  <div key={p.id} style={cardStyle}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>{p.nome}</div>
-                    <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 10 }}>{p.email}</div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button onClick={() => aprovar(p.id)} style={{ ...pillBtn, ...pillOk, flex: 1, justifyContent: "center" }}>
-                        <CheckCircle2 size={14} /> Aprovar
-                      </button>
-                      <button onClick={() => rejeitar(p.id)} style={{ ...pillBtn, ...pillNok, flex: 1, justifyContent: "center" }}>
-                        <XCircle size={14} /> Rejeitar
-                      </button>
+                {pendentes.map((p) => {
+                  const meusAcessos = acessosPorUsuario[p.id] || new Set();
+                  return (
+                    <div key={p.id} style={cardStyle}>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>{p.nome}</div>
+                      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 10 }}>{p.email}</div>
+                      <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 6 }}>Marque os módulos liberados antes de aprovar (ou depois, se preferir):</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                        {modulos.map((m) => {
+                          const tem = meusAcessos.has(m.id);
+                          return (
+                            <button key={m.id} onClick={() => alternarAcesso(p.id, m.id, tem)}
+                              style={{ ...pillBtn, ...(tem ? pillOk : {}) }}>
+                              {tem ? <CheckCircle2 size={13} /> : null} {m.nome}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={() => aprovar(p.id)} style={{ ...pillBtn, ...pillOk, flex: 1, justifyContent: "center" }}>
+                          <CheckCircle2 size={14} /> Aprovar
+                        </button>
+                        <button onClick={() => rejeitar(p.id)} style={{ ...pillBtn, ...pillNok, flex: 1, justifyContent: "center" }}>
+                          <XCircle size={14} /> Rejeitar
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 

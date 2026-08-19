@@ -285,6 +285,50 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Controle de acesso a valores (só administrador)
+
+Três mudanças de segurança e organização:
+
+**1. Aprovação de cadastro já mostra as permissões.** No Painel Admin, o
+card de "Aguardando aprovação" agora já tem os toggles de módulo junto
+com Aprovar/Rejeitar — não precisa mais aprovar primeiro pra só depois
+achar as permissões numa lista separada.
+
+**2. Salário e Matriz de cargos: só administrador.** Reforçado em duas
+camadas:
+- **No banco** (o que realmente importa pra segurança): um gatilho
+  impede qualquer não-admin de mudar `salario_base` de uma pessoa (o
+  valor volta pro que já estava, mesmo que a chamada tente mudar); a
+  Matriz de cargos só aceita escrita de admin via política de RLS —
+  leitura continua liberada pra todo aprovado, porque o cálculo da
+  comissão precisa dela pra qualquer pessoa ver o resultado.
+- **Na tela**: quem não é admin não vê as abas "Matriz de cargos" e
+  "Fechamento mensal" (somem da lista de abas), não vê o campo de
+  salário no cadastro de pessoa, e na Escala do dia só vê os campos de
+  presença (quem trabalhou, peso, horas) — a taxa de serviço, a base
+  por categoria e o resultado calculado ficam escondidos.
+
+**3. "Premiação do dia" virou "Escala do dia".** Mesmo conteúdo, nome
+mais preciso — reflete que qualquer pessoa aprovada pode preencher quem
+trabalhou e as horas, mesmo sem ver os valores calculados.
+
+Quem não é admin ainda consegue salvar a escala (presença) normalmente,
+mesmo sem taxa de serviço definida — os valores calculados só entram
+quando um admin completar a taxa depois.
+
+### Migração
+
+`022_acesso_a_valores.sql` — gatilho de proteção do salário, políticas de
+RLS da matriz de cargos.
+
+## Resumo da Escala do dia na Conferência de Caixa
+
+A Conferência de Caixa agora mostra, pra cada dia, um resumo de quem
+trabalhou (nome, cargo, horas, valor do dia) — preenchido na aba Equipe,
+só espelhado aqui pra fechar o dia inteiro (caixa + equipe) numa tela só.
+Não duplica dado nenhum, é a mesma informação de `presencas_diarias` e
+`premiacoes_diarias`.
+
 ## Equipe: matriz de cargos, dois métodos pro diarista, salário individual e gerência
 
 Reestruturação grande do módulo Equipe. 4 sub-abas agora (Pessoas, **Matriz

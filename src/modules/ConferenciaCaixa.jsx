@@ -69,16 +69,23 @@ export default function ConferenciaCaixa() {
   const [porAtendente, setPorAtendente] = useState([]);
   const [taxasDoDia, setTaxasDoDia] = useState(null); // { servico, entrega, adicional }
   const [repasse, setRepasse] = useState({ valorAte22: "9.00", qtdAte22: 0, valorApos22: "15.00", qtdApos22: 0 });
+  const [escalaDoDia, setEscalaDoDia] = useState([]);
 
   const carregarSalvo = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
-    const [{ data, error }, { data: repasseData }] = await Promise.all([
+    const [{ data, error }, { data: repasseData }, { data: escalaData }] = await Promise.all([
       supabase.from("conferencias_caixa").select("*").eq("dia", dia).order("forma_pagamento"),
       supabase.from("repasses_delivery").select("*").eq("dia", dia).maybeSingle(),
+      supabase.from("presencas_diarias").select("pessoa_id, peso, horas_trabalhadas, pessoa:pessoas(nome, papel)").eq("dia", dia),
     ]);
     if (repasseData) {
       setRepasse((prev) => ({ ...prev, valorAte22: String(repasseData.valor_ate_22h), valorApos22: String(repasseData.valor_apos_22h) }));
+    }
+    if (escalaData) {
+      const { data: premiacoesData } = await supabase.from("premiacoes_diarias").select("pessoa_id, total_dia").eq("dia", dia);
+      const mapaTotal = Object.fromEntries((premiacoesData || []).map((p) => [p.pessoa_id, p.total_dia]));
+      setEscalaDoDia(escalaData.map((e) => ({ ...e, total: mapaTotal[e.pessoa_id] })));
     }
     if (error) setErro(error.message);
     if (data && data.length > 0) {
@@ -260,6 +267,26 @@ export default function ConferenciaCaixa() {
                 <span style={{ color: "#8A8778" }}>Taxas adicionais do dia</span><span style={{ fontWeight: 700 }}>{brl(taxasDoDia.adicional)}</span>
               </div>
             </div>
+          )}
+
+          {escalaDoDia.length > 0 && (
+            <>
+              <div style={{ ...sectionLabel, marginTop: 20 }}>Escala do dia</div>
+              <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Preenchida na aba Equipe — aqui é só um resumo, pra ver o fechamento do dia completo num lugar só.</div>
+              <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.8fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+                  <span>Pessoa</span><span>Cargo</span><span style={{ textAlign: "right" }}>Horas</span><span style={{ textAlign: "right" }}>Valor do dia</span>
+                </div>
+                {escalaDoDia.map((e, idx) => (
+                  <div key={idx} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.8fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
+                    <span style={{ color: "#22231F" }}>{e.pessoa?.nome}</span>
+                    <span style={{ color: "#8A8778" }}>{e.pessoa?.papel}</span>
+                    <span style={{ textAlign: "right", color: "#8A8778" }}>{e.horas_trabalhadas || 0}h</span>
+                    <span style={{ textAlign: "right", fontWeight: 700 }}>{e.total != null ? brl(e.total) : "—"}</span>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
 
           {linhas.length > 0 && (

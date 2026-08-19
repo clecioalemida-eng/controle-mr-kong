@@ -25,27 +25,46 @@ function categoriaComissao(papel) {
 
 const SUBABAS = [
   { chave: "pessoas", label: "Pessoas" },
-  { chave: "matriz", label: "Matriz de cargos" },
-  { chave: "premiacao", label: "Premiação do dia" },
-  { chave: "mensal", label: "Fechamento mensal" },
+  { chave: "matriz", label: "Matriz de cargos", soAdmin: true },
+  { chave: "premiacao", label: "Escala do dia" },
+  { chave: "mensal", label: "Fechamento mensal", soAdmin: true },
 ];
+
+// Só admin vê valores (salário, matriz de cargos, comissão calculada,
+// fechamento mensal) — outras pessoas aprovadas só marcam quem trabalhou
+// e quantas horas (isso é registrado no banco de qualquer forma, mas as
+// telas de configuração de dinheiro ficam reforçadas no banco também —
+// ver 022_acesso_a_valores.sql).
+function useIsAdmin() {
+  const [isAdmin, setIsAdmin] = useState(null); // null = carregando
+  useEffect(() => {
+    supabase.auth.getUser().then(async ({ data }) => {
+      if (!data?.user) { setIsAdmin(false); return; }
+      const { data: perfil } = await supabase.from("perfis").select("is_admin").eq("id", data.user.id).maybeSingle();
+      setIsAdmin(perfil?.is_admin || false);
+    });
+  }, []);
+  return isAdmin;
+}
 
 export default function Equipe() {
   const [subaba, setSubaba] = useState("pessoas");
+  const isAdmin = useIsAdmin();
+  const subabasVisiveis = SUBABAS.filter((a) => !a.soAdmin || isAdmin);
   return (
     <div>
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-        {SUBABAS.map((a) => (
+        {subabasVisiveis.map((a) => (
           <button key={a.chave} onClick={() => setSubaba(a.chave)}
             style={{ ...tabBtn, ...(subaba === a.chave ? tabBtnAtivo : {}) }}>
             {a.label}
           </button>
         ))}
       </div>
-      {subaba === "pessoas" && <Pessoas />}
-      {subaba === "matriz" && <MatrizCargos />}
-      {subaba === "premiacao" && <PremiacaoDoDia />}
-      {subaba === "mensal" && <FechamentoMensal />}
+      {subaba === "pessoas" && <Pessoas isAdmin={isAdmin} />}
+      {subaba === "matriz" && isAdmin && <MatrizCargos />}
+      {subaba === "premiacao" && <PremiacaoDoDia isAdmin={isAdmin} />}
+      {subaba === "mensal" && isAdmin && <FechamentoMensal />}
     </div>
   );
 }
@@ -134,7 +153,7 @@ function MatrizCargos() {
 // ---------------------------------------------------------------------------
 // Pessoas
 // ---------------------------------------------------------------------------
-function Pessoas() {
+function Pessoas({ isAdmin }) {
   const [pessoas, setPessoas] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
@@ -233,7 +252,7 @@ function Pessoas() {
                   <div style={{ fontSize: 12, color: "#8A8778" }}>
                     {PAPEL_LABEL[p.papel]}
                     {p.tipo_contrato === "diarista" && " · base/hora pela Matriz de cargos"}
-                    {(p.tipo_contrato === "registrado" || p.papel === "gerente") && p.salario_base ? ` · salário ${brl(p.salario_base)}` : ""}
+                    {isAdmin && (p.tipo_contrato === "registrado" || p.papel === "gerente") && p.salario_base ? ` · salário ${brl(p.salario_base)}` : ""}
                   </div>
                 </div>
                 <span style={{ ...pill, background: p.tipo_contrato === "registrado" ? "#37A0E522" : "#FAC77555", color: p.tipo_contrato === "registrado" ? "#185FA5" : "#854F0B" }}>
@@ -257,7 +276,7 @@ function Pessoas() {
               )}
 
               {editandoId === p.id && (
-                <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} />
+                <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} isAdmin={isAdmin} />
               )}
             </div>
           ))}
@@ -271,14 +290,14 @@ function Pessoas() {
         </button>
       ) : (
         <div style={cardStyle}>
-          <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setNovoAberto(false)} />
+          <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setNovoAberto(false)} isAdmin={isAdmin} />
         </div>
       )}
     </div>
   );
 }
 
-function FormPessoa({ form, setForm, onSalvar, onCancelar }) {
+function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin }) {
   const fileRef = useRef(null);
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2", display: "grid", gap: 8 }}>
@@ -295,7 +314,7 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar }) {
           </select>
         )}
       </div>
-      {form.papel === "gerente" && (
+      {isAdmin && form.papel === "gerente" && (
         <>
           <input type="number" step="0.01" value={form.salario_base} onChange={(e) => setForm((f) => ({ ...f, salario_base: e.target.value }))}
             placeholder="Salário base (R$)" style={inputStyle} />
@@ -305,9 +324,12 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar }) {
       {form.papel !== "gerente" && form.tipo_contrato === "diarista" && (
         <div style={{ fontSize: 11, color: "#8A8778" }}>Base diária e valor da hora vêm da Matriz de cargos — não se digita aqui.</div>
       )}
-      {form.papel !== "gerente" && form.tipo_contrato === "registrado" && (
+      {isAdmin && form.papel !== "gerente" && form.tipo_contrato === "registrado" && (
         <input type="number" step="0.01" value={form.salario_base} onChange={(e) => setForm((f) => ({ ...f, salario_base: e.target.value }))}
           placeholder="Salário base individual (R$)" style={inputStyle} />
+      )}
+      {!isAdmin && (form.papel === "gerente" || form.tipo_contrato === "registrado") && (
+        <div style={{ fontSize: 11, color: "#8A8778" }}>Só administradores veem e editam o salário.</div>
       )}
       <div style={{ display: "flex", gap: 8 }}>
         <input value={form.cpf} onChange={(e) => setForm((f) => ({ ...f, cpf: e.target.value }))}
@@ -342,7 +364,7 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar }) {
 // ---------------------------------------------------------------------------
 // Premiação do dia
 // ---------------------------------------------------------------------------
-function PremiacaoDoDia() {
+function PremiacaoDoDia({ isAdmin }) {
   const [dia, setDia] = useState(hoje());
   const [pessoas, setPessoas] = useState([]);
   const [participacao, setParticipacao] = useState({}); // pessoa_id -> { incluido, peso }
@@ -448,34 +470,40 @@ function PremiacaoDoDia() {
   });
 
   const salvarPremiacao = async () => {
-    if (taxaNum <= 0) { setErro("Informe a taxa de serviço do dia."); return; }
     if (selecionados.length === 0) { setErro("Marque quem trabalhou hoje."); return; }
+    if (isAdmin && taxaNum <= 0) { setErro("Informe a taxa de serviço do dia."); return; }
     setSalvando(true);
     setErro("");
 
+    // A presença (quem trabalhou + horas) sempre salva, mesmo sem admin —
+    // é isso que qualquer pessoa aprovada pode registrar. Os valores
+    // calculados (comissão etc.) só entram quando tem taxa de serviço
+    // definida, o que só admin faz.
     for (const p of selecionados) {
       const part = participacao[p.id] || {};
       await supabase.from("presencas_diarias").upsert({
         pessoa_id: p.id, dia, peso: part.peso || 0, horas_trabalhadas: part.horas || 0,
       }, { onConflict: "pessoa_id,dia" });
     }
-    for (const l of linhas) {
-      const { error } = await supabase.from("premiacoes_diarias").upsert({
-        pessoa_id: l.pessoa.id,
-        dia,
-        taxa_servico_dia: taxaNum,
-        comissao: round2(l.comissao),
-        valor_diaria: 0, // mantido só por compatibilidade com dias já salvos antes da matriz existir
-        base_categoria: round2(l.baseCategoriaValor),
-        total_dia: round2(l.total),
-        metodo_usado: l.metodoUsado,
-        valor_metodo_comissao: l.metodoUsado ? round2(l.valorMetodoComissao) : null,
-        valor_metodo_hora: l.metodoUsado ? round2(l.valorMetodoHora) : null,
-      }, { onConflict: "pessoa_id,dia" });
-      if (error) { setErro(error.message); setSalvando(false); return; }
+    if (taxaNum > 0) {
+      for (const l of linhas) {
+        const { error } = await supabase.from("premiacoes_diarias").upsert({
+          pessoa_id: l.pessoa.id,
+          dia,
+          taxa_servico_dia: taxaNum,
+          comissao: round2(l.comissao),
+          valor_diaria: 0, // mantido só por compatibilidade com dias já salvos antes da matriz existir
+          base_categoria: round2(l.baseCategoriaValor),
+          total_dia: round2(l.total),
+          metodo_usado: l.metodoUsado,
+          valor_metodo_comissao: l.metodoUsado ? round2(l.valorMetodoComissao) : null,
+          valor_metodo_hora: l.metodoUsado ? round2(l.valorMetodoHora) : null,
+        }, { onConflict: "pessoa_id,dia" });
+        if (error) { setErro(error.message); setSalvando(false); return; }
+      }
     }
     setSalvando(false);
-    setMensagem("Premiação do dia salva.");
+    setMensagem(taxaNum > 0 ? "Escala e valores do dia salvos." : "Escala do dia salva — falta um administrador definir a taxa de serviço pra calcular os valores.");
   };
 
   return (
@@ -491,17 +519,21 @@ function PremiacaoDoDia() {
           {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
           {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
 
-          <div style={{ ...cardStyle, marginBottom: 14 }}>
-            <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 6 }}>Taxa de serviço do dia (janela 17h–03h)</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input type="number" step="0.01" value={taxaServico} onChange={(e) => { setTaxaServico(e.target.value); setTaxaAutomatica(null); }}
-                placeholder="R$ 0,00" style={{ ...inputStyle, flex: 1 }} />
-              <button onClick={buscarTaxaAutomatica} disabled={buscandoTaxa} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
-                {buscandoTaxa ? <Loader2 size={14} /> : <RefreshCw size={14} />} Buscar
-              </button>
+          {isAdmin ? (
+            <div style={{ ...cardStyle, marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 6 }}>Taxa de serviço do dia (janela 17h–03h)</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input type="number" step="0.01" value={taxaServico} onChange={(e) => { setTaxaServico(e.target.value); setTaxaAutomatica(null); }}
+                  placeholder="R$ 0,00" style={{ ...inputStyle, flex: 1 }} />
+                <button onClick={buscarTaxaAutomatica} disabled={buscandoTaxa} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
+                  {buscandoTaxa ? <Loader2 size={14} /> : <RefreshCw size={14} />} Buscar
+                </button>
+              </div>
+              {taxaAutomatica === true && <div style={{ fontSize: 11, color: "#0F6E56", marginTop: 6 }}>Encontrado automaticamente no CardápioWeb.</div>}
             </div>
-            {taxaAutomatica === true && <div style={{ fontSize: 11, color: "#0F6E56", marginTop: 6 }}>Encontrado automaticamente no CardápioWeb.</div>}
-          </div>
+          ) : (
+            <div style={{ ...avisoStyle }}>Só administradores veem e definem a taxa de serviço e os valores calculados. Marque abaixo quem trabalhou e as horas — um administrador completa o resto.</div>
+          )}
 
           <div style={sectionLabel}>Quem trabalhou hoje</div>
           <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
@@ -536,7 +568,7 @@ function PremiacaoDoDia() {
             {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Cadastre pessoas na aba "Pessoas" primeiro.</div>}
           </div>
 
-          {selecionados.length > 0 && (
+          {isAdmin && selecionados.length > 0 && (
             <>
               <div style={sectionLabel}>Base por categoria (opcional)</div>
               <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>
@@ -556,7 +588,7 @@ function PremiacaoDoDia() {
             </>
           )}
 
-          {selecionados.length > 0 && taxaNum > 0 && (
+          {isAdmin && selecionados.length > 0 && taxaNum > 0 && (
             <>
               <div style={sectionLabel}>Resultado</div>
               <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
@@ -681,7 +713,7 @@ function FechamentoMensal() {
     const { inicio, fim } = limitesDoMes();
     const { data } = await supabase
       .from("premiacoes_diarias")
-      .select("dia, comissao, total_dia, pessoa:pessoas!inner(nome)")
+      .select("dia, comissao, base_categoria, taxa_servico_dia, metodo_usado, valor_metodo_comissao, valor_metodo_hora, total_dia, pessoa:pessoas!inner(nome)")
       .eq("pessoa.nome", nome)
       .gte("dia", inicio).lte("dia", fim)
       .order("dia");
@@ -707,9 +739,30 @@ function FechamentoMensal() {
         <div style={{ fontSize: 15, fontWeight: 700, color: "#22231F", marginBottom: 12 }}>{pessoaAberta} — {nomeMes}</div>
         <div style={{ display: "grid", gap: 6 }}>
           {extrato.map((e, idx) => (
-            <div key={idx} style={itemRow}>
-              <span style={{ fontSize: 12, color: "#22231F" }}>{new Date(e.dia + "T12:00:00").toLocaleDateString("pt-BR")}</span>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(e.total_dia)}</span>
+            <div key={idx} style={{ ...cardStyle, padding: "10px 12px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 12, color: "#22231F" }}>{new Date(e.dia + "T12:00:00").toLocaleDateString("pt-BR")}</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(e.total_dia)}</span>
+              </div>
+              <div style={{ fontSize: 10, color: "#8A8778", marginTop: 3 }}>
+                {e.metodo_usado ? (
+                  <>
+                    <span style={{ fontWeight: e.metodo_usado === "comissao" ? 700 : 400, color: e.metodo_usado === "comissao" ? "#0F6E56" : "#8A8778" }}>
+                      Comissão: {brl(e.valor_metodo_comissao)}
+                    </span>
+                    {" · "}
+                    <span style={{ fontWeight: e.metodo_usado === "hora" ? 700 : 400, color: e.metodo_usado === "hora" ? "#0F6E56" : "#8A8778" }}>
+                      Hora: {brl(e.valor_metodo_hora)}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    Comissão do dia: {brl(e.comissao)}
+                    {e.base_categoria > 0 && ` · base por categoria: ${brl(e.base_categoria)}`}
+                    {` · taxa de serviço do dia: ${brl(e.taxa_servico_dia)}`}
+                  </>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -774,7 +827,7 @@ function FechamentoMensal() {
                     <span>Salário base</span><span>{brl(g.salarioBase)}</span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
-                    <span>2% do faturamento bruto</span><span>{brl(g.doisPorcento)}</span>
+                    <span>2% de {brl(g.faturamentoBruto)} (faturamento bruto)</span><span>{brl(g.doisPorcento)}</span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, color: "#22231F", marginTop: 4, paddingTop: 4, borderTop: "1px solid #F0EBDD" }}>
                     <span>Total do mês</span><span>{brl(g.total)}</span>
