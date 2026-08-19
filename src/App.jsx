@@ -63,7 +63,12 @@ export default function App() {
       setPerfil(null);
       setTela("login");
     }
-  }, [sessao, carregandoAuth, carregarPerfil]);
+    // Depende só do ID do usuário (não do objeto de sessão inteiro) —
+    // assim, uma renovação automática de token (que troca o objeto de
+    // sessão mas mantém o mesmo usuário) não recarrega o perfil nem
+    // manda a pessoa de volta pra tela inicial no meio do uso.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessao?.user?.id, carregandoAuth, carregarPerfil]);
 
   // ---- módulos (cards) disponíveis para o usuário --------------------------
   const carregarModulos = useCallback(async () => {

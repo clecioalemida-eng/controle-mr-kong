@@ -102,6 +102,22 @@ Deno.serve(async (req) => {
       return json({ error: "Informe data_inicio e data_fim (ISO 8601)." }, 400, corsHeaders);
     }
 
+    // Faturamento bruto de um período (pensado pro mês inteiro, usado no
+    // cálculo da gerente) — usa só a listagem básica do histórico, que já
+    // traz o total de cada pedido, sem precisar buscar o detalhe de cada
+    // um (evita o limite de 200 pedidos detalhados e é bem mais rápido).
+    if (acao === "faturamento_periodo") {
+      const resumoBasico = await buscarHistoricoBasico(headersCW, data_inicio, data_fim);
+      const fechados = resumoBasico.filter((o: any) => o.status === "closed");
+      const faturamento = fechados.reduce((soma: number, o: any) => soma + (o.total || 0), 0);
+      return json({
+        periodo: { data_inicio, data_fim },
+        pedidos_no_periodo: resumoBasico.length,
+        pedidos_fechados: fechados.length,
+        faturamento_bruto: round2(faturamento),
+      }, 200, corsHeaders);
+    }
+
     const { resumoBasico, pedidosDetalhados } = await buscarPedidos(headersCW, data_inicio, data_fim);
 
     if (acao === "importar_pratos") {
@@ -197,9 +213,12 @@ Deno.serve(async (req) => {
   }
 });
 
-// Busca o histórico de pedidos do período (fechados e cancelados, paginado)
-// e depois o detalhe de cada um (onde vêm itens, total e pagamentos).
-async function buscarPedidos(headersCW: Record<string, string>, data_inicio: string, data_fim: string) {
+// Busca só a listagem básica do histórico (paginada) — sem buscar o
+// detalhe de cada pedido. Usada quando só precisamos do total por pedido
+// (já vem na própria listagem), como no cálculo de faturamento de um mês
+// inteiro, onde buscar detalhe de centenas de pedidos estouraria o limite
+// e demoraria demais.
+async function buscarHistoricoBasico(headersCW: Record<string, string>, data_inicio: string, data_fim: string) {
   let pagina = 1;
   let totalPaginas = 1;
   const resumoBasico: any[] = [];
@@ -218,9 +237,6 @@ async function buscarPedidos(headersCW: Record<string, string>, data_inicio: str
     try {
       dados = JSON.parse(textoResposta);
     } catch {
-      // O CardápioWeb às vezes responde com texto puro (não JSON) quando
-      // limita a quantidade de consultas — o histórico de pedidos aceita
-      // só 5 consultas por minuto.
       if (res.status === 429 || /retry later/i.test(textoResposta)) {
         throw new Error(
           "O CardápioWeb limitou a quantidade de consultas por minuto nesse período (máximo de 5 consultas de histórico por minuto) — aguarde cerca de 1 minuto e tente de novo."
@@ -233,6 +249,13 @@ async function buscarPedidos(headersCW: Record<string, string>, data_inicio: str
     totalPaginas = dados.pagination?.total_pages ?? 1;
     pagina++;
   } while (pagina <= totalPaginas);
+  return resumoBasico;
+}
+
+// Busca o histórico de pedidos do período (fechados e cancelados, paginado)
+// e depois o detalhe de cada um (onde vêm itens, total e pagamentos).
+async function buscarPedidos(headersCW: Record<string, string>, data_inicio: string, data_fim: string) {
+  const resumoBasico = await buscarHistoricoBasico(headersCW, data_inicio, data_fim);
 
   const aProcessar = resumoBasico.slice(0, LIMITE_PEDIDOS_DETALHADOS);
   const pedidosDetalhados: any[] = [];

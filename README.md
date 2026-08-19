@@ -285,6 +285,43 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Equipe: matriz de cargos, dois métodos pro diarista, salário individual e gerência
+
+Reestruturação grande do módulo Equipe. 4 sub-abas agora (Pessoas, **Matriz
+de cargos** [nova], Premiação do dia, Fechamento mensal):
+
+- **Matriz de cargos** — diária base e valor/hora configurados **por
+  cargo** (Garçom, Caixa, Bar, Chapa, Cozinha, Limpeza), aplicados
+  automaticamente a todo diarista daquele cargo. Não se digita mais por
+  pessoa.
+- **Diarista** — todo dia, o sistema calcula os dois métodos (comissão +
+  diária da matriz vs. horas trabalhadas × valor/hora da matriz) e usa o
+  **maior**. Horas trabalhadas é um campo novo, separado do peso (peso
+  segue só pra dividir a comissão).
+- **Registrado** — ganha salário base **individual** (cada um o seu,
+  digitado no cadastro da pessoa) + a comissão diária acumulada, somados
+  no Fechamento mensal.
+- **Gerente** — cargo novo, não entra na divisão diária de comissão de
+  jeito nenhum. Ganha salário base + 2% do faturamento bruto do mês,
+  calculado só no Fechamento mensal.
+
+### Faturamento bruto do mês (pra gerência)
+
+Botão "Buscar" no Fechamento mensal consulta o CardápioWeb pro mês
+inteiro — mas usando só a **listagem básica** do histórico (que já traz
+o total de cada pedido), não o detalhe completo de cada um. Isso evita
+o limite de 200 pedidos detalhados por consulta, que um mês de movimento
+forte estouraria facilmente, e é bem mais rápido. Fica salvo em cache
+(`faturamento_mensal`), só busca de novo quando você clicar.
+
+### Migrações
+
+- `021_equipe_matriz_e_salarios.sql` — cargo "gerente", salário
+  individual, tabela `matriz_cargos`, horas trabalhadas, cache de
+  faturamento mensal.
+- `cardapioweb-proxy` ganhou a ação `faturamento_periodo` — precisa
+  republicar a função.
+
 ## Repasse para entregador de delivery
 
 Dentro da mesma Conferência de Caixa: separa as entregas do dia em duas

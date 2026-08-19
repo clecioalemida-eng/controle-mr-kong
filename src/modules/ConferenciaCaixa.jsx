@@ -262,15 +262,19 @@ export default function ConferenciaCaixa() {
             </div>
           )}
 
-          {(repasse.qtdAte22 > 0 || repasse.qtdApos22 > 0) && (
+          {linhas.length > 0 && (
             <>
               <div style={{ ...sectionLabel, marginTop: 20 }}>Repasse para entregador (delivery)</div>
-              <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Quantidade calculada automaticamente pelo horário do pedido — só o valor por entrega é editável.</div>
+              <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Quantidade já vem calculada pelo horário do pedido, mas pode corrigir na mão se precisar.</div>
 
               <div style={{ ...cardStyleBox, marginBottom: 8 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                   <span style={{ fontSize: 13, color: "#22231F" }}>Entregas até 22h</span>
-                  <span style={{ fontSize: 12, color: "#8A8778" }}>{repasse.qtdAte22} entrega{repasse.qtdAte22 === 1 ? "" : "s"}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <input type="number" min="0" step="1" value={repasse.qtdAte22} onChange={(e) => setRepasse((p) => ({ ...p, qtdAte22: parseInt(e.target.value) || 0 }))}
+                      style={{ width: 50, padding: "3px 5px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
+                    <span style={{ fontSize: 12, color: "#8A8778" }}>entrega{repasse.qtdAte22 === 1 ? "" : "s"}</span>
+                  </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontSize: 11, color: "#8A8778" }}>Valor por entrega</span>
@@ -283,7 +287,11 @@ export default function ConferenciaCaixa() {
               <div style={{ ...cardStyleBox, marginBottom: 8 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                   <span style={{ fontSize: 13, color: "#22231F" }}>Entregas após 22h</span>
-                  <span style={{ fontSize: 12, color: "#8A8778" }}>{repasse.qtdApos22} entrega{repasse.qtdApos22 === 1 ? "" : "s"}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <input type="number" min="0" step="1" value={repasse.qtdApos22} onChange={(e) => setRepasse((p) => ({ ...p, qtdApos22: parseInt(e.target.value) || 0 }))}
+                      style={{ width: 50, padding: "3px 5px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
+                    <span style={{ fontSize: 12, color: "#8A8778" }}>entrega{repasse.qtdApos22 === 1 ? "" : "s"}</span>
+                  </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontSize: 11, color: "#8A8778" }}>Valor por entrega</span>

@@ -10,15 +10,22 @@ async function abrirDocumento(path) {
   if (error || !data?.signedUrl) { alert("Não consegui abrir o documento: " + (error?.message || "")); return; }
   window.open(data.signedUrl, "_blank");
 }
-const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", cozinha: "Cozinha", limpeza: "Limpeza" };
+const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", cozinha: "Cozinha", limpeza: "Limpeza", gerente: "Gerente" };
 const PAPEIS = ["garcom", "caixa", "bar", "chapa", "cozinha", "limpeza"];
-// Regra de divisão da premiação: só garçom fica no bolo dos garçons — todo
-// o resto (caixa, bar, chapa, cozinha, e o "interno" genérico antigo) cai
-// junto no bolo da equipe interna.
-function categoriaComissao(papel) { return papel === "garcom" ? "garcom" : "interno"; }
+const PAPEIS_COM_GERENTE = [...PAPEIS, "gerente"];
+// Regra de divisão da premiação diária: só garçom fica no bolo dos
+// garçons — todo o resto (caixa, bar, chapa, cozinha, limpeza, e o
+// "interno" genérico antigo) cai junto no bolo da equipe interna.
+// Gerente não entra em nenhum bolo — o cargo dela não participa da
+// divisão diária de comissão de jeito nenhum (retorna null).
+function categoriaComissao(papel) {
+  if (papel === "gerente") return null;
+  return papel === "garcom" ? "garcom" : "interno";
+}
 
 const SUBABAS = [
   { chave: "pessoas", label: "Pessoas" },
+  { chave: "matriz", label: "Matriz de cargos" },
   { chave: "premiacao", label: "Premiação do dia" },
   { chave: "mensal", label: "Fechamento mensal" },
 ];
@@ -36,8 +43,90 @@ export default function Equipe() {
         ))}
       </div>
       {subaba === "pessoas" && <Pessoas />}
+      {subaba === "matriz" && <MatrizCargos />}
       {subaba === "premiacao" && <PremiacaoDoDia />}
       {subaba === "mensal" && <FechamentoMensal />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pessoas
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Matriz de cargos — diária base e valor hora, aplicados automaticamente
+// a todo diarista daquele cargo (não se digita mais por pessoa).
+// ---------------------------------------------------------------------------
+function MatrizCargos() {
+  const [linhas, setLinhas] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState("");
+  const [mensagem, setMensagem] = useState("");
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    const { data, error } = await supabase.from("matriz_cargos").select("*");
+    if (error) setErro(error.message);
+    const mapa = Object.fromEntries((data || []).map((d) => [d.papel, d]));
+    setLinhas(PAPEIS.map((p) => ({
+      papel: p,
+      diaria_base: String(mapa[p]?.diaria_base ?? 0),
+      valor_hora: String(mapa[p]?.valor_hora ?? 0),
+    })));
+    setCarregando(false);
+  }, []);
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const alterar = (papel, campo, valor) => {
+    setLinhas((prev) => prev.map((l) => l.papel === papel ? { ...l, [campo]: valor } : l));
+  };
+
+  const salvar = async () => {
+    setSalvando(true);
+    setErro("");
+    for (const l of linhas) {
+      const { error } = await supabase.from("matriz_cargos").upsert({
+        papel: l.papel,
+        diaria_base: parseFloat(l.diaria_base) || 0,
+        valor_hora: parseFloat(l.valor_hora) || 0,
+      }, { onConflict: "papel" });
+      if (error) { setErro(error.message); setSalvando(false); return; }
+    }
+    setSalvando(false);
+    setMensagem("Matriz salva.");
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
+        Vale pra todo diarista daquele cargo automaticamente — não precisa configurar pessoa por pessoa.
+      </div>
+      {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
+      {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+
+      {carregando ? (
+        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
+      ) : (
+        <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+            <span>Cargo</span><span style={{ textAlign: "right" }}>Diária base</span><span style={{ textAlign: "right" }}>Valor hora</span>
+          </div>
+          {linhas.map((l, idx) => (
+            <div key={l.papel} style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center" }}>
+              <span style={{ fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[l.papel]}</span>
+              <input type="number" step="0.01" value={l.diaria_base} onChange={(e) => alterar(l.papel, "diaria_base", e.target.value)}
+                style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
+              <input type="number" step="0.01" value={l.valor_hora} onChange={(e) => alterar(l.papel, "valor_hora", e.target.value)}
+                style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button onClick={salvar} disabled={salvando} style={{ ...btnPrimary, width: "100%" }}>
+        {salvando ? <Loader2 size={16} /> : <Check size={16} />} Salvar matriz
+      </button>
     </div>
   );
 }
@@ -53,7 +142,7 @@ function Pessoas() {
   const [novoAberto, setNovoAberto] = useState(false);
   const [expandidoId, setExpandidoId] = useState(null);
   const [busca, setBusca] = useState("");
-  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", valor_diaria: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null });
+  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null });
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -64,10 +153,10 @@ function Pessoas() {
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
 
-  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", valor_diaria: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null }); setNovoAberto(true); setEditandoId(null); };
+  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null }); setNovoAberto(true); setEditandoId(null); };
   const abrirEdicao = (p) => {
     setForm({
-      nome: p.nome, papel: p.papel, tipo_contrato: p.tipo_contrato, valor_diaria: p.valor_diaria ?? "",
+      nome: p.nome, papel: p.papel, tipo_contrato: p.tipo_contrato, salario_base: p.salario_base ?? "",
       cpf: p.cpf ?? "", telefone: p.telefone ?? "", email: p.email ?? "", data_nascimento: p.data_nascimento ?? "",
       documento_path: p.documento_path ?? null, arquivoDocumento: null,
     });
@@ -84,11 +173,13 @@ function Pessoas() {
       if (erroUpload) { setErro(erroUpload.message); return; }
       documentoPath = caminho;
     }
+    // Diarista: base e valor/hora vêm da Matriz de cargos, não se digita
+    // aqui. Registrado e Gerente: salário individual, cada um o seu.
     const payload = {
       nome: form.nome.trim(),
       papel: form.papel,
-      tipo_contrato: form.tipo_contrato,
-      valor_diaria: form.tipo_contrato === "diarista" ? (parseFloat(form.valor_diaria) || 0) : null,
+      tipo_contrato: form.papel === "gerente" ? "registrado" : form.tipo_contrato,
+      salario_base: form.papel !== "gerente" && form.tipo_contrato === "diarista" ? null : (parseFloat(form.salario_base) || 0),
       cpf: form.cpf.trim() || null,
       telefone: form.telefone.trim() || null,
       email: form.email.trim() || null,
@@ -141,11 +232,12 @@ function Pessoas() {
                   </div>
                   <div style={{ fontSize: 12, color: "#8A8778" }}>
                     {PAPEL_LABEL[p.papel]}
-                    {p.tipo_contrato === "diarista" && ` · base diária ${brl(p.valor_diaria)}`}
+                    {p.tipo_contrato === "diarista" && " · base/hora pela Matriz de cargos"}
+                    {(p.tipo_contrato === "registrado" || p.papel === "gerente") && p.salario_base ? ` · salário ${brl(p.salario_base)}` : ""}
                   </div>
                 </div>
                 <span style={{ ...pill, background: p.tipo_contrato === "registrado" ? "#37A0E522" : "#FAC77555", color: p.tipo_contrato === "registrado" ? "#185FA5" : "#854F0B" }}>
-                  {p.tipo_contrato === "registrado" ? "Registrado" : "Diarista"}
+                  {p.papel === "gerente" ? "Gerente" : p.tipo_contrato === "registrado" ? "Registrado" : "Diarista"}
                 </span>
                 <button onClick={() => setExpandidoId(expandidoId === p.id ? null : p.id)} style={ghostIconBtn} aria-label="Ver todos os dados">
                   {expandidoId === p.id ? <EyeOff size={15} /> : <Eye size={15} />}
@@ -194,16 +286,28 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar }) {
         placeholder="Nome" style={inputStyle} />
       <div style={{ display: "flex", gap: 8 }}>
         <select value={form.papel} onChange={(e) => setForm((f) => ({ ...f, papel: e.target.value }))} style={{ ...inputStyle, flex: 1 }}>
-          {PAPEIS.map((p) => <option key={p} value={p}>{PAPEL_LABEL[p]}</option>)}
+          {PAPEIS_COM_GERENTE.map((p) => <option key={p} value={p}>{PAPEL_LABEL[p]}</option>)}
         </select>
-        <select value={form.tipo_contrato} onChange={(e) => setForm((f) => ({ ...f, tipo_contrato: e.target.value }))} style={{ ...inputStyle, flex: 1 }}>
-          <option value="registrado">Registrado</option>
-          <option value="diarista">Diarista</option>
-        </select>
+        {form.papel !== "gerente" && (
+          <select value={form.tipo_contrato} onChange={(e) => setForm((f) => ({ ...f, tipo_contrato: e.target.value }))} style={{ ...inputStyle, flex: 1 }}>
+            <option value="registrado">Registrado</option>
+            <option value="diarista">Diarista</option>
+          </select>
+        )}
       </div>
-      {form.tipo_contrato === "diarista" && (
-        <input type="number" step="0.01" value={form.valor_diaria} onChange={(e) => setForm((f) => ({ ...f, valor_diaria: e.target.value }))}
-          placeholder="Valor da base diária (R$)" style={inputStyle} />
+      {form.papel === "gerente" && (
+        <>
+          <input type="number" step="0.01" value={form.salario_base} onChange={(e) => setForm((f) => ({ ...f, salario_base: e.target.value }))}
+            placeholder="Salário base (R$)" style={inputStyle} />
+          <div style={{ fontSize: 11, color: "#8A8778" }}>Gerente não entra na divisão diária de comissão — ganha esse salário + 2% do faturamento bruto do mês, calculado no Fechamento mensal.</div>
+        </>
+      )}
+      {form.papel !== "gerente" && form.tipo_contrato === "diarista" && (
+        <div style={{ fontSize: 11, color: "#8A8778" }}>Base diária e valor da hora vêm da Matriz de cargos — não se digita aqui.</div>
+      )}
+      {form.papel !== "gerente" && form.tipo_contrato === "registrado" && (
+        <input type="number" step="0.01" value={form.salario_base} onChange={(e) => setForm((f) => ({ ...f, salario_base: e.target.value }))}
+          placeholder="Salário base individual (R$)" style={inputStyle} />
       )}
       <div style={{ display: "flex", gap: 8 }}>
         <input value={form.cpf} onChange={(e) => setForm((f) => ({ ...f, cpf: e.target.value }))}
@@ -246,6 +350,7 @@ function PremiacaoDoDia() {
   const [taxaServico, setTaxaServico] = useState("");
   const [buscandoTaxa, setBuscandoTaxa] = useState(false);
   const [taxaAutomatica, setTaxaAutomatica] = useState(null); // null | true | false
+  const [matriz, setMatriz] = useState({}); // papel -> { diaria_base, valor_hora }
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState("");
@@ -254,15 +359,17 @@ function PremiacaoDoDia() {
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
-    const [{ data: pessoasData }, { data: presencasData }, { data: premiacoesData }] = await Promise.all([
-      supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
+    const [{ data: pessoasData }, { data: presencasData }, { data: premiacoesData }, { data: matrizData }] = await Promise.all([
+      supabase.from("pessoas").select("*").eq("ativo", true).neq("papel", "gerente").order("nome"),
       supabase.from("presencas_diarias").select("*").eq("dia", dia),
       supabase.from("premiacoes_diarias").select("*").eq("dia", dia),
+      supabase.from("matriz_cargos").select("*"),
     ]);
     setPessoas(pessoasData || []);
+    setMatriz(Object.fromEntries((matrizData || []).map((m) => [m.papel, m])));
     const mapaPart = {};
-    (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: false, peso: 1 }; });
-    (presencasData || []).forEach((pr) => { mapaPart[pr.pessoa_id] = { incluido: true, peso: pr.peso }; });
+    (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: false, peso: 1, horas: 0 }; });
+    (presencasData || []).forEach((pr) => { mapaPart[pr.pessoa_id] = { incluido: true, peso: pr.peso, horas: pr.horas_trabalhadas || 0 }; });
     setParticipacao(mapaPart);
     const mapaBase = {};
     (premiacoesData || []).forEach((pr) => {
@@ -300,6 +407,9 @@ function PremiacaoDoDia() {
   const alterarPeso = (pessoaId, peso) => {
     setParticipacao((prev) => ({ ...prev, [pessoaId]: { ...prev[pessoaId], peso: parseFloat(peso) || 0 } }));
   };
+  const alterarHoras = (pessoaId, horas) => {
+    setParticipacao((prev) => ({ ...prev, [pessoaId]: { ...prev[pessoaId], horas: parseFloat(horas) || 0 } }));
+  };
 
   const selecionados = pessoas.filter((p) => participacao[p.id]?.incluido);
   const garcons = selecionados.filter((p) => categoriaComissao(p.papel) === "garcom");
@@ -312,13 +422,29 @@ function PremiacaoDoDia() {
   const valorPorPesoGarcom = pesoGarcons > 0 ? poolGarcons / pesoGarcons : 0;
   const valorPorPesoInterno = pesoInternos > 0 ? poolInternos / pesoInternos : 0;
 
+  // Diarista: dois métodos, vale o maior. Método comissão = rateio da
+  // taxa (pelo peso) + diária base do cargo (pela matriz). Método hora =
+  // horas trabalhadas × valor/hora do cargo (pela matriz). Registrado não
+  // entra nessa comparação — só recebe a comissão do dia (o salário dele
+  // é mensal, somado no Fechamento mensal).
   const linhas = selecionados.map((p) => {
     const peso = participacao[p.id]?.peso || 0;
+    const horas = participacao[p.id]?.horas || 0;
     const valorPorPeso = categoriaComissao(p.papel) === "garcom" ? valorPorPesoGarcom : valorPorPesoInterno;
     const comissao = peso * valorPorPeso;
-    const valorDiaria = p.tipo_contrato === "diarista" ? (p.valor_diaria || 0) : 0;
     const baseCategoriaValor = peso * (parseFloat(baseCategoria[p.papel]) || 0);
-    return { pessoa: p, peso, comissao, valorDiaria, baseCategoriaValor, total: comissao + valorDiaria + baseCategoriaValor };
+    const m = matriz[p.papel] || { diaria_base: 0, valor_hora: 0 };
+
+    if (p.tipo_contrato === "diarista") {
+      const valorMetodoComissao = comissao + baseCategoriaValor + (m.diaria_base || 0);
+      const valorMetodoHora = horas * (m.valor_hora || 0);
+      const metodoUsado = valorMetodoHora > valorMetodoComissao ? "hora" : "comissao";
+      const total = Math.max(valorMetodoComissao, valorMetodoHora);
+      return { pessoa: p, peso, horas, comissao, baseCategoriaValor, metodoUsado, valorMetodoComissao, valorMetodoHora, total };
+    }
+    // registrado: só a comissão do dia (+ base por categoria, se configurada)
+    const total = comissao + baseCategoriaValor;
+    return { pessoa: p, peso, horas: 0, comissao, baseCategoriaValor, metodoUsado: null, valorMetodoComissao: total, valorMetodoHora: null, total };
   });
 
   const salvarPremiacao = async () => {
@@ -328,8 +454,10 @@ function PremiacaoDoDia() {
     setErro("");
 
     for (const p of selecionados) {
-      const peso = participacao[p.id]?.peso || 0;
-      await supabase.from("presencas_diarias").upsert({ pessoa_id: p.id, dia, peso }, { onConflict: "pessoa_id,dia" });
+      const part = participacao[p.id] || {};
+      await supabase.from("presencas_diarias").upsert({
+        pessoa_id: p.id, dia, peso: part.peso || 0, horas_trabalhadas: part.horas || 0,
+      }, { onConflict: "pessoa_id,dia" });
     }
     for (const l of linhas) {
       const { error } = await supabase.from("premiacoes_diarias").upsert({
@@ -337,9 +465,12 @@ function PremiacaoDoDia() {
         dia,
         taxa_servico_dia: taxaNum,
         comissao: round2(l.comissao),
-        valor_diaria: l.valorDiaria,
+        valor_diaria: 0, // mantido só por compatibilidade com dias já salvos antes da matriz existir
         base_categoria: round2(l.baseCategoriaValor),
         total_dia: round2(l.total),
+        metodo_usado: l.metodoUsado,
+        valor_metodo_comissao: l.metodoUsado ? round2(l.valorMetodoComissao) : null,
+        valor_metodo_hora: l.metodoUsado ? round2(l.valorMetodoHora) : null,
       }, { onConflict: "pessoa_id,dia" });
       if (error) { setErro(error.message); setSalvando(false); return; }
     }
@@ -375,18 +506,27 @@ function PremiacaoDoDia() {
           <div style={sectionLabel}>Quem trabalhou hoje</div>
           <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
             {pessoas.map((p) => {
-              const part = participacao[p.id] || { incluido: false, peso: 1 };
+              const part = participacao[p.id] || { incluido: false, peso: 1, horas: 0 };
               return (
-                <div key={p.id} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-                  <input type="checkbox" checked={part.incluido} onChange={() => alternarIncluido(p.id)} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
-                    <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""}</div>
+                <div key={p.id} style={{ ...cardStyle, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <input type="checkbox" checked={part.incluido} onChange={() => alternarIncluido(p.id)} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
+                      <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""}</div>
+                    </div>
+                    {part.incluido && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span style={{ fontSize: 11, color: "#8A8778" }}>peso</span>
+                        <input type="number" step="0.5" min="0" max="1" value={part.peso} onChange={(e) => alterarPeso(p.id, e.target.value)}
+                          style={{ width: 50, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                      </div>
+                    )}
                   </div>
-                  {part.incluido && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      <span style={{ fontSize: 11, color: "#8A8778" }}>peso</span>
-                      <input type="number" step="0.5" min="0" max="1" value={part.peso} onChange={(e) => alterarPeso(p.id, e.target.value)}
+                  {part.incluido && p.tipo_contrato === "diarista" && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 8, paddingLeft: 30 }}>
+                      <span style={{ fontSize: 11, color: "#8A8778" }}>horas trabalhadas</span>
+                      <input type="number" step="0.5" min="0" value={part.horas} onChange={(e) => alterarHoras(p.id, e.target.value)}
                         style={{ width: 50, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
                     </div>
                   )}
@@ -421,17 +561,30 @@ function PremiacaoDoDia() {
               <div style={sectionLabel}>Resultado</div>
               <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
-                  <span>Pessoa</span><span style={{ textAlign: "right" }}>Comissão</span><span style={{ textAlign: "right" }}>Total do dia</span>
+                  <span>Pessoa</span><span style={{ textAlign: "right" }}>Método</span><span style={{ textAlign: "right" }}>Total do dia</span>
                 </div>
                 {linhas.map((l, idx) => (
-                  <div key={l.pessoa.id} style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
-                    <span>
-                      {l.pessoa.nome}
-                      {l.valorDiaria > 0 && <span style={{ fontSize: 10, color: "#854F0B" }}> + diária</span>}
-                      {l.baseCategoriaValor > 0 && <span style={{ fontSize: 10, color: "#185FA5" }}> + base</span>}
-                    </span>
-                    <span style={{ textAlign: "right" }}>{brl(l.comissao)}</span>
-                    <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(l.total)}</span>
+                  <div key={l.pessoa.id} style={{ padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 6, fontSize: 12 }}>
+                      <span>
+                        {l.pessoa.nome}
+                        {l.baseCategoriaValor > 0 && <span style={{ fontSize: 10, color: "#185FA5" }}> + base</span>}
+                      </span>
+                      <span style={{ textAlign: "right", color: "#8A8778", fontSize: 11 }}>
+                        {l.metodoUsado === "hora" ? "por hora" : l.metodoUsado === "comissao" ? "comissão" : "—"}
+                      </span>
+                      <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(l.total)}</span>
+                    </div>
+                    {l.metodoUsado && (
+                      <div style={{ display: "flex", gap: 10, marginTop: 4, fontSize: 10, color: "#8A8778" }}>
+                        <span style={{ fontWeight: l.metodoUsado === "comissao" ? 700 : 400, color: l.metodoUsado === "comissao" ? "#0F6E56" : "#8A8778" }}>
+                          Comissão: {brl(l.valorMetodoComissao)}
+                        </span>
+                        <span style={{ fontWeight: l.metodoUsado === "hora" ? 700 : 400, color: l.metodoUsado === "hora" ? "#0F6E56" : "#8A8778" }}>
+                          Hora ({l.horas}h): {brl(l.valorMetodoHora)}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -453,38 +606,79 @@ function PremiacaoDoDia() {
 function FechamentoMensal() {
   const [mesRef, setMesRef] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; });
   const [linhas, setLinhas] = useState([]);
+  const [gerentes, setGerentes] = useState([]);
+  const [faturamentoMes, setFaturamentoMes] = useState(null); // { faturamento_bruto, atualizado_em } | null
+  const [buscandoFaturamento, setBuscandoFaturamento] = useState(false);
+  const [erro, setErro] = useState("");
   const [pessoaAberta, setPessoaAberta] = useState(null);
   const [extrato, setExtrato] = useState([]);
   const [carregando, setCarregando] = useState(true);
 
-  const carregar = useCallback(async () => {
-    setCarregando(true);
-    const [ano, mes] = mesRef.split("-").map(Number);
-    const inicio = `${mesRef}-01`;
-    const fimDate = new Date(ano, mes, 0); // último dia do mês
-    const fim = fimDate.toISOString().slice(0, 10);
-
-    const { data: premiacoes } = await supabase
-      .from("premiacoes_diarias")
-      .select("pessoa_id, dia, total_dia, pessoa:pessoas(nome, papel, tipo_contrato)")
-      .gte("dia", inicio).lte("dia", fim);
-
-    const porPessoa = {};
-    (premiacoes || []).forEach((pr) => {
-      if (pr.pessoa?.tipo_contrato !== "registrado") return; // diarista já recebeu por dia
-      if (!porPessoa[pr.pessoa_id]) porPessoa[pr.pessoa_id] = { nome: pr.pessoa.nome, papel: pr.pessoa.papel, dias: 0, total: 0 };
-      porPessoa[pr.pessoa_id].dias += 1;
-      porPessoa[pr.pessoa_id].total += pr.total_dia;
-    });
-    setLinhas(Object.values(porPessoa).sort((a, b) => a.nome.localeCompare(b.nome)));
-    setCarregando(false);
-  }, [mesRef]);
-  useEffect(() => { carregar(); }, [carregar]);
-
-  const abrirExtrato = async (nome) => {
+  const limitesDoMes = useCallback(() => {
     const [ano, mes] = mesRef.split("-").map(Number);
     const inicio = `${mesRef}-01`;
     const fim = new Date(ano, mes, 0).toISOString().slice(0, 10);
+    return { inicio, fim };
+  }, [mesRef]);
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    setErro("");
+    const { inicio, fim } = limitesDoMes();
+
+    const [{ data: premiacoes }, { data: pessoasData }, { data: faturamentoData }] = await Promise.all([
+      supabase.from("premiacoes_diarias").select("pessoa_id, dia, total_dia, pessoa:pessoas(nome, papel, tipo_contrato)").gte("dia", inicio).lte("dia", fim),
+      supabase.from("pessoas").select("*").eq("ativo", true),
+      supabase.from("faturamento_mensal").select("*").eq("mes_referencia", mesRef).maybeSingle(),
+    ]);
+    setFaturamentoMes(faturamentoData || null);
+
+    const mapaSalario = Object.fromEntries((pessoasData || []).map((p) => [p.id, p]));
+    const porPessoa = {};
+    (premiacoes || []).forEach((pr) => {
+      if (pr.pessoa?.tipo_contrato !== "registrado" || pr.pessoa?.papel === "gerente") return; // diarista já recebeu por dia; gerente é calculada à parte
+      if (!porPessoa[pr.pessoa_id]) porPessoa[pr.pessoa_id] = { nome: pr.pessoa.nome, papel: pr.pessoa.papel, dias: 0, comissao: 0 };
+      porPessoa[pr.pessoa_id].dias += 1;
+      porPessoa[pr.pessoa_id].comissao += pr.total_dia;
+    });
+    const listaRegistrados = Object.entries(porPessoa).map(([pessoaId, v]) => {
+      const salarioBase = mapaSalario[pessoaId]?.salario_base || 0;
+      return { ...v, salarioBase, total: v.comissao + salarioBase };
+    });
+    setLinhas(listaRegistrados.sort((a, b) => a.nome.localeCompare(b.nome)));
+
+    const listaGerentes = (pessoasData || []).filter((p) => p.papel === "gerente").map((p) => {
+      const faturamentoBruto = faturamentoData?.faturamento_bruto || 0;
+      const doisPorcento = faturamentoBruto * 0.02;
+      const salarioBase = p.salario_base || 0;
+      return { nome: p.nome, salarioBase, faturamentoBruto, doisPorcento, total: salarioBase + doisPorcento };
+    });
+    setGerentes(listaGerentes);
+    setCarregando(false);
+  }, [mesRef, limitesDoMes]);
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const buscarFaturamento = async () => {
+    setBuscandoFaturamento(true);
+    setErro("");
+    const { inicio, fim } = limitesDoMes();
+    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
+      body: { acao: "faturamento_periodo", data_inicio: `${inicio}T00:00:00-03:00`, data_fim: `${fim}T23:59:59-03:00` },
+    });
+    setBuscandoFaturamento(false);
+    if (error) { setErro(await extrairErroFuncao(error)); return; }
+    if (data?.error) { setErro(data.error); return; }
+    const { error: errSalvar } = await supabase.from("faturamento_mensal").upsert({
+      mes_referencia: mesRef,
+      faturamento_bruto: data.faturamento_bruto,
+      atualizado_em: new Date().toISOString(),
+    }, { onConflict: "mes_referencia" });
+    if (errSalvar) { setErro(errSalvar.message); return; }
+    carregar();
+  };
+
+  const abrirExtrato = async (nome) => {
+    const { inicio, fim } = limitesDoMes();
     const { data } = await supabase
       .from("premiacoes_diarias")
       .select("dia, comissao, total_dia, pessoa:pessoas!inner(nome)")
@@ -502,7 +696,7 @@ function FechamentoMensal() {
   };
 
   const nomeMes = new Date(`${mesRef}-01T12:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
-  const total = linhas.reduce((s, l) => s + l.total, 0);
+  const total = linhas.reduce((s, l) => s + l.total, 0) + gerentes.reduce((s, g) => s + g.total, 0);
 
   if (pessoaAberta) {
     return (
@@ -531,30 +725,71 @@ function FechamentoMensal() {
         <button onClick={() => mudarMes(1)} style={ghostIconBtn}><ChevronRight size={18} /></button>
       </div>
       <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 10 }}>Só pessoas registradas — diaristas já recebem por dia.</div>
+      {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
 
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
-        <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
-            <span>Pessoa</span><span>Papel</span><span style={{ textAlign: "right" }}>Dias</span><span style={{ textAlign: "right" }}>Acumulado</span>
+        <>
+          <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+              <span>Pessoa</span><span>Papel</span><span style={{ textAlign: "right" }}>Dias</span><span style={{ textAlign: "right" }}>Acumulado</span>
+            </div>
+            {linhas.map((l, idx) => (
+              <button key={l.nome} onClick={() => abrirExtrato(l.nome)}
+                style={{ display: "block", width: "100%", padding: "10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, fontSize: 13 }}>
+                  <span style={{ color: "#22231F" }}>{l.nome}</span>
+                  <span style={{ color: "#8A8778", fontSize: 12 }}>{PAPEL_LABEL[l.papel]}</span>
+                  <span style={{ textAlign: "right", color: "#8A8778" }}>{l.dias}</span>
+                  <span style={{ textAlign: "right", fontWeight: 700, color: "#22231F" }}>{brl(l.total)}</span>
+                </div>
+                {l.salarioBase > 0 && (
+                  <div style={{ fontSize: 10, color: "#8A8778", marginTop: 2 }}>salário {brl(l.salarioBase)} + comissão {brl(l.comissao)}</div>
+                )}
+              </button>
+            ))}
+            {linhas.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Nenhuma premiação registrada nesse mês ainda.</div>}
           </div>
-          {linhas.map((l, idx) => (
-            <button key={l.nome} onClick={() => abrirExtrato(l.nome)}
-              style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 13, width: "100%", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
-              <span style={{ color: "#22231F" }}>{l.nome}</span>
-              <span style={{ color: "#8A8778", fontSize: 12 }}>{PAPEL_LABEL[l.papel]}</span>
-              <span style={{ textAlign: "right", color: "#8A8778" }}>{l.dias}</span>
-              <span style={{ textAlign: "right", fontWeight: 700, color: "#22231F" }}>{brl(l.total)}</span>
-            </button>
-          ))}
-          {linhas.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Nenhuma premiação registrada nesse mês ainda.</div>}
-          {linhas.length > 0 && (
-            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "10px", borderTop: "1px solid #E8E2D2", fontSize: 13, color: "#8A8778" }}>
-              <span></span><span></span><span style={{ textAlign: "right" }}>Total</span><span style={{ textAlign: "right", fontWeight: 700, color: "#22231F" }}>{brl(total)}</span>
+
+          <div style={sectionLabel}>Gerência</div>
+          <div style={{ ...cardStyle, marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 12, color: "#8A8778" }}>Faturamento bruto do mês</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "#22231F" }}>{faturamentoMes ? brl(faturamentoMes.faturamento_bruto) : "—"}</div>
+              </div>
+              <button onClick={buscarFaturamento} disabled={buscandoFaturamento} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
+                {buscandoFaturamento ? <Loader2 size={14} /> : <RefreshCw size={14} />} Buscar
+              </button>
+            </div>
+          </div>
+
+          {gerentes.length > 0 && (
+            <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
+              {gerentes.map((g, idx) => (
+                <div key={g.nome} style={{ padding: "12px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F", marginBottom: 4 }}>{g.nome}</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
+                    <span>Salário base</span><span>{brl(g.salarioBase)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
+                    <span>2% do faturamento bruto</span><span>{brl(g.doisPorcento)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, color: "#22231F", marginTop: 4, paddingTop: 4, borderTop: "1px solid #F0EBDD" }}>
+                    <span>Total do mês</span><span>{brl(g.total)}</span>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
-        </div>
+
+          {(linhas.length > 0 || gerentes.length > 0) && (
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px", fontSize: 13, color: "#8A8778" }}>
+              <span>Total geral do mês</span><span style={{ fontWeight: 700, color: "#22231F" }}>{brl(total)}</span>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
