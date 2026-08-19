@@ -24,6 +24,7 @@ const TIPO_LABEL = {
   contagem: "Contagem",
 };
 const TIPO_ICONE = { compra: Truck, ajuste: SlidersHorizontal, perda: AlertTriangle, contagem: SlidersHorizontal };
+const UNIDADES = ["un", "g", "kg", "ml", "l"];
 
 export default function Estoque() {
   const [tela, setTela] = useState("lista"); // lista | extrato
@@ -222,6 +223,7 @@ function ExtratoInsumo({ insumo, onVoltar }) {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const [minimoForm, setMinimoForm] = useState(insumo.estoque_minimo ?? "");
+  const [unidadeForm, setUnidadeForm] = useState(insumo.unidade);
   const [ajusteForm, setAjusteForm] = useState({ aberto: false, tipo: "ajuste", quantidade: "", motivo: "" });
   const [salvando, setSalvando] = useState(false);
 
@@ -242,6 +244,12 @@ function ExtratoInsumo({ insumo, onVoltar }) {
 
   const salvarMinimo = async () => {
     const { error } = await supabase.from("insumos").update({ estoque_minimo: minimoForm === "" ? null : parseFloat(minimoForm) }).eq("id", insumo.id);
+    if (error) setErro(error.message);
+  };
+
+  const salvarUnidade = async (novaUnidade) => {
+    setUnidadeForm(novaUnidade);
+    const { error } = await supabase.from("insumos").update({ unidade: novaUnidade }).eq("id", insumo.id);
     if (error) setErro(error.message);
   };
 
@@ -273,13 +281,23 @@ function ExtratoInsumo({ insumo, onVoltar }) {
       <div style={{ ...cardStyle, textAlign: "center", marginBottom: 12 }}>
         <div style={{ fontSize: 16, fontWeight: 700, color: "#22231F", marginBottom: 6 }}>{insumo.nome}</div>
         <div style={{ fontSize: 11, color: "#8A8778" }}>Saldo atual</div>
-        <div style={{ fontSize: 24, fontWeight: 800, color: "#22231F" }}>{fmt(insumo.estoque_atual, insumo.unidade)}</div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 8 }}>
-          <span style={{ fontSize: 12, color: "#8A8778" }}>Estoque mínimo</span>
-          <input type="number" value={minimoForm} onChange={(e) => setMinimoForm(e.target.value)} onBlur={salvarMinimo}
-            placeholder="—" style={{ width: 60, padding: "3px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "center" }} />
-          <span style={{ fontSize: 12, color: "#8A8778" }}>{insumo.unidade}</span>
+        <div style={{ fontSize: 24, fontWeight: 800, color: "#22231F" }}>{fmt(insumo.estoque_atual, unidadeForm)}</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16, marginTop: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "#8A8778" }}>Unidade</span>
+            <select value={unidadeForm} onChange={(e) => salvarUnidade(e.target.value)}
+              style={{ padding: "3px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+              {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "#8A8778" }}>Estoque mínimo</span>
+            <input type="number" value={minimoForm} onChange={(e) => setMinimoForm(e.target.value)} onBlur={salvarMinimo}
+              placeholder="—" style={{ width: 60, padding: "3px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "center" }} />
+            <span style={{ fontSize: 12, color: "#8A8778" }}>{unidadeForm}</span>
+          </div>
         </div>
+        <div style={{ fontSize: 10, color: "#8A8778", marginTop: 8 }}>Mudar a unidade não converte números já usados em Ficha Técnica — confira as receitas que usam esse insumo depois de mudar.</div>
       </div>
 
       {!ajusteForm.aberto ? (
@@ -330,7 +348,7 @@ function ExtratoInsumo({ insumo, onVoltar }) {
                   </span>
                 </span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: positivo ? "#0F6E56" : "#791F1F", whiteSpace: "nowrap" }}>
-                  {positivo ? "+" : ""}{fmt(m.quantidade, insumo.unidade)}
+                  {positivo ? "+" : ""}{fmt(m.quantidade, unidadeForm)}
                 </span>
               </div>
             );
