@@ -253,6 +253,38 @@ se nenhum bater ela avisa e o campo fica pra digitar manualmente.
 - `cardapioweb-proxy` ganhou uma ação nova (`taxa_servico_dia`) — precisa
   republicar a função depois de rodar a migração 014.
 
+## Entrega: unidade de compra, busca, troca de insumo, e dados da equipe
+
+Quatro melhorias nessa leva:
+
+**1. Alerta de unidade divergente nas notas fiscais.** Se um item da nota
+vier numa unidade diferente da que o insumo já usa (ex.: nota em "un" mas
+o insumo é controlado em "kg"), a linha fica destacada em amarelo com um
+aviso, e **bloqueia a confirmação** até você corrigir pelo lápis — evita
+que uma compra entre errada no estoque por causa de unidade trocada.
+
+**2. Busca em listas grandes.** Campo de busca (com lupa) nas telas que
+têm lista: Fichas Técnicas, Notas, Estoque e Pessoas. Vendas/Pedidos/
+Pagamentos/Fechamento não ganharam busca porque são resumos agregados, não
+listas de itens.
+
+**3. Trocar o insumo de uma linha da ficha técnica.** Antes só dava pra
+editar os dados do insumo (nome, unidade, custo); agora tem um ícone de
+troca (setas) que deixa substituir por outro insumo já cadastrado, mantendo
+a mesma quantidade. Também deixei mais claro que o "custo unitário" do
+insumo reflete o valor da última compra confirmada.
+
+**4. Cadastro de pessoas mais completo.** Ícone de olho pra ver todos os
+dados da pessoa (CPF, telefone, e-mail, aniversário, documento) sem abrir
+o formulário de edição — o que estiver **faltando aparece em vermelho**.
+Também dá pra anexar um documento (RG, contrato…) no cadastro; um ícone de
+clipe ao lado do nome abre/baixa esse arquivo.
+
+### Migração nova
+
+`018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
+bucket privado `documentos-pessoas` no Storage.
+
 ## Consultas ao CardápioWeb — sempre manuais
 
 As abas Vendas, Pedidos, Pagamentos e Fechamento **não buscam dados

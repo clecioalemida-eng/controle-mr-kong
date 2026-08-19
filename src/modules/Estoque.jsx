@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { ChevronLeft, AlertTriangle, Truck, SlidersHorizontal } from "lucide-react";
+import { ChevronLeft, AlertTriangle, Truck, SlidersHorizontal, Search } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 function fmt(v, unidade) {
@@ -25,6 +25,7 @@ export default function Estoque() {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const [insumoAtual, setInsumoAtual] = useState(null);
+  const [busca, setBusca] = useState("");
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -44,11 +45,18 @@ export default function Estoque() {
   return (
     <div>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+      {insumos.length > 0 && (
+        <div style={{ position: "relative", marginBottom: 14 }}>
+          <Search size={15} color="#8A8778" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar insumo…"
+            style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
+        </div>
+      )}
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <div className="list-grid">
-          {insumos.map((i) => {
+          {insumos.filter((i) => i.nome.toLowerCase().includes(busca.toLowerCase())).map((i) => {
             const abaixoMinimo = i.estoque_minimo != null && i.estoque_atual < i.estoque_minimo;
             return (
               <button key={i.id} onClick={() => { setInsumoAtual(i); setTela("extrato"); }}

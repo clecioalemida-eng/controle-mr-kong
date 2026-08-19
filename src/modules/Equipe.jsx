@@ -1,9 +1,15 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function hoje() { return new Date().toISOString().slice(0, 10); }
+async function abrirDocumento(path) {
+  if (!path) return;
+  const { data, error } = await supabase.storage.from("documentos-pessoas").createSignedUrl(path, 300);
+  if (error || !data?.signedUrl) { alert("Não consegui abrir o documento: " + (error?.message || "")); return; }
+  window.open(data.signedUrl, "_blank");
+}
 const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", cozinha: "Cozinha", limpeza: "Limpeza" };
 const PAPEIS = ["garcom", "caixa", "bar", "chapa", "cozinha", "limpeza"];
 // Regra de divisão da premiação: só garçom fica no bolo dos garçons — todo
@@ -45,7 +51,9 @@ function Pessoas() {
   const [erro, setErro] = useState("");
   const [editandoId, setEditandoId] = useState(null);
   const [novoAberto, setNovoAberto] = useState(false);
-  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", valor_diaria: "", cpf: "", telefone: "", email: "", data_nascimento: "" });
+  const [expandidoId, setExpandidoId] = useState(null);
+  const [busca, setBusca] = useState("");
+  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", valor_diaria: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null });
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -56,17 +64,26 @@ function Pessoas() {
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
 
-  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", valor_diaria: "", cpf: "", telefone: "", email: "", data_nascimento: "" }); setNovoAberto(true); setEditandoId(null); };
+  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", valor_diaria: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null }); setNovoAberto(true); setEditandoId(null); };
   const abrirEdicao = (p) => {
     setForm({
       nome: p.nome, papel: p.papel, tipo_contrato: p.tipo_contrato, valor_diaria: p.valor_diaria ?? "",
       cpf: p.cpf ?? "", telefone: p.telefone ?? "", email: p.email ?? "", data_nascimento: p.data_nascimento ?? "",
+      documento_path: p.documento_path ?? null, arquivoDocumento: null,
     });
     setEditandoId(p.id); setNovoAberto(false);
   };
 
   const salvar = async () => {
     if (!form.nome.trim()) return;
+    setErro("");
+    let documentoPath = form.documento_path;
+    if (form.arquivoDocumento) {
+      const caminho = `${form.nome.trim().replace(/[^a-zA-Z0-9]/g, "_")}-${Date.now()}-${form.arquivoDocumento.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
+      const { error: erroUpload } = await supabase.storage.from("documentos-pessoas").upload(caminho, form.arquivoDocumento);
+      if (erroUpload) { setErro(erroUpload.message); return; }
+      documentoPath = caminho;
+    }
     const payload = {
       nome: form.nome.trim(),
       papel: form.papel,
@@ -76,6 +93,7 @@ function Pessoas() {
       telefone: form.telefone.trim() || null,
       email: form.email.trim() || null,
       data_nascimento: form.data_nascimento || null,
+      documento_path: documentoPath,
     };
     const { error } = editandoId
       ? await supabase.from("pessoas").update(payload).eq("id", editandoId)
@@ -90,19 +108,37 @@ function Pessoas() {
     carregar();
   };
 
+  const CAMPO_FALTANDO = { color: "#C4432B", fontStyle: "italic" };
+  const pessoasFiltradas = pessoas.filter((p) => p.nome.toLowerCase().includes(busca.toLowerCase()));
+
   return (
     <div>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+
+      {pessoas.length > 0 && (
+        <div style={{ position: "relative", marginBottom: 14 }}>
+          <Search size={15} color="#8A8778" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar pessoa…"
+            style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
+        </div>
+      )}
 
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <div style={{ display: "grid", gap: 8, marginBottom: 14 }}>
-          {pessoas.map((p) => (
+          {pessoasFiltradas.map((p) => (
             <div key={p.id} style={{ ...cardStyle, opacity: p.ativo ? 1 : 0.5 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{p.nome}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F", display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{p.nome}</span>
+                    {p.documento_path && (
+                      <button onClick={() => abrirDocumento(p.documento_path)} style={{ ...ghostIconBtn, flexShrink: 0 }} aria-label="Baixar documento anexado">
+                        <Paperclip size={14} />
+                      </button>
+                    )}
+                  </div>
                   <div style={{ fontSize: 12, color: "#8A8778" }}>
                     {PAPEL_LABEL[p.papel]}
                     {p.tipo_contrato === "diarista" && ` · base diária ${brl(p.valor_diaria)}`}
@@ -111,16 +147,29 @@ function Pessoas() {
                 <span style={{ ...pill, background: p.tipo_contrato === "registrado" ? "#37A0E522" : "#FAC77555", color: p.tipo_contrato === "registrado" ? "#185FA5" : "#854F0B" }}>
                   {p.tipo_contrato === "registrado" ? "Registrado" : "Diarista"}
                 </span>
+                <button onClick={() => setExpandidoId(expandidoId === p.id ? null : p.id)} style={ghostIconBtn} aria-label="Ver todos os dados">
+                  {expandidoId === p.id ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
                 <button onClick={() => abrirEdicao(p)} style={ghostIconBtn} aria-label="Editar pessoa"><Pencil size={15} /></button>
                 <button onClick={() => alternarAtivo(p)} style={{ ...linkBtn, fontSize: 11 }}>{p.ativo ? "Desativar" : "Ativar"}</button>
               </div>
+
+              {expandidoId === p.id && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2", display: "grid", gap: 5, fontSize: 12 }}>
+                  <div><span style={{ color: "#8A8778" }}>CPF: </span><span style={p.cpf ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.cpf || "não preenchido"}</span></div>
+                  <div><span style={{ color: "#8A8778" }}>Telefone: </span><span style={p.telefone ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.telefone || "não preenchido"}</span></div>
+                  <div><span style={{ color: "#8A8778" }}>E-mail: </span><span style={p.email ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.email || "não preenchido"}</span></div>
+                  <div><span style={{ color: "#8A8778" }}>Aniversário: </span><span style={p.data_nascimento ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.data_nascimento ? new Date(p.data_nascimento + "T12:00:00").toLocaleDateString("pt-BR") : "não preenchido"}</span></div>
+                  <div><span style={{ color: "#8A8778" }}>Documento anexado: </span><span style={p.documento_path ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.documento_path ? "sim" : "nenhum"}</span></div>
+                </div>
+              )}
 
               {editandoId === p.id && (
                 <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} />
               )}
             </div>
           ))}
-          {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhuma pessoa cadastrada ainda.</div>}
+          {pessoasFiltradas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>{busca ? "Nenhuma pessoa encontrada." : "Nenhuma pessoa cadastrada ainda."}</div>}
         </div>
       )}
 
@@ -138,6 +187,7 @@ function Pessoas() {
 }
 
 function FormPessoa({ form, setForm, onSalvar, onCancelar }) {
+  const fileRef = useRef(null);
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2", display: "grid", gap: 8 }}>
       <input value={form.nome} onChange={(e) => setForm((f) => ({ ...f, nome: e.target.value }))}
@@ -167,6 +217,15 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar }) {
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Data de aniversário</label>
         <input type="date" value={form.data_nascimento} onChange={(e) => setForm((f) => ({ ...f, data_nascimento: e.target.value }))}
           style={inputStyle} />
+      </div>
+      <div>
+        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Documento (RG, contrato…)</label>
+        <input ref={fileRef} type="file" style={{ display: "none" }}
+          onChange={(e) => setForm((f) => ({ ...f, arquivoDocumento: e.target.files?.[0] || null }))} />
+        <button onClick={() => fileRef.current?.click()} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6, width: "100%", justifyContent: "center" }}>
+          <Upload size={14} />
+          {form.arquivoDocumento ? form.arquivoDocumento.name : form.documento_path ? "Trocar documento anexado" : "Anexar documento"}
+        </button>
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={onSalvar} style={{ ...btnSecondary, flex: 1 }}>Salvar</button>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  ChevronLeft, Camera, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye,
+  ChevronLeft, Camera, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
@@ -35,6 +35,7 @@ export default function NotasFiscais() {
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState("");
   const [documentoAtual, setDocumentoAtual] = useState(null);
+  const [busca, setBusca] = useState("");
   const inputRef = useRef(null);
 
   const carregar = useCallback(async () => {
@@ -100,12 +101,20 @@ export default function NotasFiscais() {
 
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
 
+      {documentos.length > 0 && (
+        <div style={{ position: "relative", marginBottom: 14 }}>
+          <Search size={15} color="#8A8778" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar por fornecedor…"
+            style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
+        </div>
+      )}
+
       <div style={sectionLabel}>Documentos recebidos</div>
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <div className="list-grid">
-          {documentos.map((d) => (
+          {documentos.filter((d) => (d.fornecedor || "Fornecedor não identificado").toLowerCase().includes(busca.toLowerCase())).map((d) => (
             <div key={d.id} style={itemRow}>
               <button
                 onClick={() => { if (d.status === "aguardando_confirmacao") { setDocumentoAtual(d); setTela("conferencia"); } }}
@@ -203,9 +212,15 @@ function Conferencia({ documento, onVoltar }) {
   };
 
   const todosVinculados = itens.length > 0 && itens.every((it) => it.insumo_id);
+  const algumaUnidadeDivergente = itens.some((it) => {
+    const ins = insumos.find((i) => i.id === it.insumo_id);
+    return ins && ins.unidade !== it.unidade;
+  });
+  const podeConfirmar = todosVinculados && !algumaUnidadeDivergente;
 
   const confirmar = async () => {
     if (!todosVinculados) { setErro("Vincule todos os itens a um insumo antes de confirmar."); return; }
+    if (algumaUnidadeDivergente) { setErro("Tem item com unidade diferente da do insumo — corrija pelo lápis antes de confirmar."); return; }
     setSalvando(true);
     setErro("");
     const { data: userData } = await supabase.auth.getUser();
@@ -269,9 +284,11 @@ function Conferencia({ documento, onVoltar }) {
           </div>
           {itens.map((item, idx) => {
             const semInsumo = !item.insumo_id;
+            const insumoVinculadoRow = insumos.find((i) => i.id === item.insumo_id);
+            const unidadeDivergente = !semInsumo && insumoVinculadoRow && insumoVinculadoRow.unidade !== item.unidade;
             return (
               <div key={item.id} style={{
-                background: item.alerta_preco ? "#FCEBEB" : "#FFFFFF",
+                background: item.alerta_preco ? "#FCEBEB" : unidadeDivergente ? "#FBF3D9" : "#FFFFFF",
                 borderTop: idx > 0 ? "1px solid #F0EBDD" : "none",
               }}>
                 <div style={linhaTabela}>
@@ -279,7 +296,7 @@ function Conferencia({ documento, onVoltar }) {
                     {item.nome_lido}
                   </span>
                   <span style={{ fontSize: 12, color: "#22231F", textAlign: "right" }}>{item.quantidade}</span>
-                  <span style={{ fontSize: 12, color: "#8A8778" }}>{item.unidade}</span>
+                  <span style={{ fontSize: 12, color: unidadeDivergente ? "#854F0B" : "#8A8778", fontWeight: unidadeDivergente ? 700 : 400 }}>{item.unidade}</span>
                   <span style={{ fontSize: 12, color: "#22231F", textAlign: "right" }}>{brl(item.preco_unitario)}</span>
                   <span style={{ fontSize: 12, fontWeight: 700, color: "#22231F", textAlign: "right" }}>{brl(item.quantidade * item.preco_unitario)}</span>
                   <span style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
@@ -293,7 +310,14 @@ function Conferencia({ documento, onVoltar }) {
                 )}
                 {!semInsumo && (
                   <div style={{ fontSize: 11, color: item.alerta_preco ? "#791F1F" : "#8A8778", padding: "0 10px 8px" }}>
-                    → vinculado a: {insumos.find((i) => i.id === item.insumo_id)?.nome}
+                    → vinculado a: {insumoVinculadoRow?.nome}
+                  </div>
+                )}
+
+                {unidadeDivergente && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderTop: "1px solid #E8D48A", fontSize: 12, color: "#7A6A1E" }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+                    Essa nota veio em <strong>{item.unidade}</strong>, mas o insumo "{insumoVinculadoRow?.nome}" é controlado em <strong>{insumoVinculadoRow?.unidade}</strong> — ajuste a quantidade e a unidade pelo lápis antes de confirmar, ou o estoque fica errado.
                   </div>
                 )}
 
@@ -361,12 +385,15 @@ function Conferencia({ documento, onVoltar }) {
 
       {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 12 }}>{erro}</div>}
 
-      <button onClick={confirmar} disabled={salvando || !todosVinculados} style={{ ...btnPrimary, width: "100%" }}>
+      <button onClick={confirmar} disabled={salvando || !podeConfirmar} style={{ ...btnPrimary, width: "100%" }}>
         {salvando ? <Loader2 size={16} /> : <Check size={16} />}
         Confirmar e lançar no estoque
       </button>
       {!todosVinculados && !carregando && itens.length > 0 && (
         <div style={{ fontSize: 12, color: "#8A8778", marginTop: 8, textAlign: "center" }}>Vincule todos os itens a um insumo pra poder confirmar.</div>
+      )}
+      {todosVinculados && algumaUnidadeDivergente && !carregando && (
+        <div style={{ fontSize: 12, color: "#854F0B", marginTop: 8, textAlign: "center" }}>Corrija a unidade divergente (destacada em amarelo) pra poder confirmar.</div>
       )}
     </div>
   );

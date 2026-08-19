@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft,
+  Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, Search, ArrowLeftRight,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
@@ -26,6 +26,7 @@ export default function FichasTecnicas() {
   const [importando, setImportando] = useState(false);
   const [erro, setErro] = useState("");
   const [pratoAtual, setPratoAtual] = useState(null);
+  const [busca, setBusca] = useState("");
 
   const carregarPratos = useCallback(async () => {
     setCarregandoLista(true);
@@ -96,6 +97,14 @@ export default function FichasTecnicas() {
         <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>
       )}
 
+      {pratos.length > 0 && (
+        <div style={{ position: "relative", marginBottom: 14 }}>
+          <Search size={15} color="#8A8778" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar prato…"
+            style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
+        </div>
+      )}
+
       {carregandoLista ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : pratos.length === 0 ? (
@@ -104,7 +113,7 @@ export default function FichasTecnicas() {
         </div>
       ) : (
         <div className="list-grid">
-          {pratos.map((p) => (
+          {pratos.filter((p) => p.nome.toLowerCase().includes(busca.toLowerCase())).map((p) => (
             <button key={p.id} onClick={() => { setPratoAtual(p); setTela("editor"); }}
               style={{ ...itemRow, cursor: "pointer", textAlign: "left", border: (p.temFicha && !p.custoZerado) ? "1px solid #E8E2D2" : "1px solid #F0D8CE" }}>
               <div>
@@ -137,6 +146,8 @@ function EditorFicha({ prato, onVoltar }) {
   const [insumos, setInsumos] = useState([]);
   const [selecaoNova, setSelecaoNova] = useState("");
   const [editandoInsumoId, setEditandoInsumoId] = useState(null);
+  const [trocandoIdx, setTrocandoIdx] = useState(null);
+  const [novoInsumoTroca, setNovoInsumoTroca] = useState("");
   const [formEdicao, setFormEdicao] = useState({ nome: "", unidade: "un", custo: 0, composto: false, rendimento: "" });
   const [composicaoEdicao, setComposicaoEdicao] = useState([]); // sub-insumos de um insumo composto
   const [subInsumoSel, setSubInsumoSel] = useState("");
@@ -182,6 +193,17 @@ function EditorFicha({ prato, onVoltar }) {
   };
 
   const removerLinha = (idx) => setLinhas((prev) => prev.filter((_, i) => i !== idx));
+
+  const trocarInsumoDaLinha = (idx) => {
+    if (!novoInsumoTroca) return;
+    const novo = insumos.find((i) => i.id === novoInsumoTroca);
+    if (!novo) return;
+    setLinhas((prev) => prev.map((l, i) => i === idx
+      ? { ...l, insumo_id: novo.id, nome: novo.nome, unidade: novo.unidade, custo_medio_atual: novo.custo_medio_atual, composto: novo.composto }
+      : l));
+    setTrocandoIdx(null);
+    setNovoInsumoTroca("");
+  };
 
   const abrirEdicaoInsumo = async (linha) => {
     setEditandoInsumoId(linha.insumo_id);
@@ -329,9 +351,22 @@ function EditorFicha({ prato, onVoltar }) {
                 <span style={{ fontSize: 13, fontWeight: 700, color: semCusto ? "#C4432B" : "#22231F", width: 74, textAlign: "right" }}>
                   {brl(l.quantidade * l.custo_medio_atual)}
                 </span>
+                <button onClick={() => { setTrocandoIdx(trocandoIdx === idx ? null : idx); setNovoInsumoTroca(""); }} style={ghostIconBtn} aria-label="Trocar por outro insumo"><ArrowLeftRight size={15} /></button>
                 <button onClick={() => abrirEdicaoInsumo(l)} style={ghostIconBtn} aria-label="Editar insumo"><Pencil size={15} /></button>
                 <button onClick={() => removerLinha(idx)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Remover insumo"><Trash2 size={15} /></button>
               </div>
+              {trocandoIdx === idx && (
+                <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px dashed #E8E2D2" }}>
+                  <select value={novoInsumoTroca} onChange={(e) => setNovoInsumoTroca(e.target.value)}
+                    style={{ flex: 1, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                    <option value="">Trocar "{l.nome}" por…</option>
+                    {insumos.filter((i) => i.id !== l.insumo_id && !linhas.some((li) => li.insumo_id === i.id)).map((i) => (
+                      <option key={i.id} value={i.id}>{i.nome}</option>
+                    ))}
+                  </select>
+                  <button onClick={() => trocarInsumoDaLinha(idx)} disabled={!novoInsumoTroca} style={{ ...btnSecondary, padding: "5px 12px", fontSize: 12 }}>Trocar</button>
+                </div>
+              )}
               {editandoInsumoId === l.insumo_id && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
@@ -350,7 +385,7 @@ function EditorFicha({ prato, onVoltar }) {
 
                   {!formEdicao.composto ? (
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 12, color: "#8A8778" }}>Custo unitário</span>
+                      <span style={{ fontSize: 12, color: "#8A8778" }}>Custo unitário (valor da última compra)</span>
                       <input type="number" step="0.01" value={formEdicao.custo} onChange={(e) => setFormEdicao((f) => ({ ...f, custo: e.target.value }))}
                         style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
                       <button onClick={salvarEdicaoInsumo} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
