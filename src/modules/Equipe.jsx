@@ -193,13 +193,15 @@ function Pessoas({ isAdmin }) {
       if (erroUpload) { setErro(erroUpload.message); return; }
       documentoPath = caminho;
     }
+    // Cargo e tipo de contrato são coisas distintas — inclusive gerente
+    // pode ser registrado ou diarista, não força mais um valor.
     // Diarista: base e valor/hora vêm da Matriz de cargos, não se digita
     // aqui. Registrado e Gerente: salário individual, cada um o seu.
     const payload = {
       nome: form.nome.trim(),
       papel: form.papel,
-      tipo_contrato: form.papel === "gerente" ? "registrado" : form.tipo_contrato,
-      salario_base: form.papel !== "gerente" && form.tipo_contrato === "diarista" ? null : (parseFloat(form.salario_base) || 0),
+      tipo_contrato: form.tipo_contrato,
+      salario_base: form.tipo_contrato === "diarista" ? null : (parseFloat(form.salario_base) || 0),
       cpf: form.cpf.trim() || null,
       telefone: form.telefone.trim() || null,
       email: form.email.trim() || null,
@@ -308,18 +310,16 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin }) {
         <select value={form.papel} onChange={(e) => setForm((f) => ({ ...f, papel: e.target.value }))} style={{ ...inputStyle, flex: 1 }}>
           {PAPEIS_COM_GERENTE.map((p) => <option key={p} value={p}>{PAPEL_LABEL[p]}</option>)}
         </select>
-        {form.papel !== "gerente" && (
-          <select value={form.tipo_contrato} onChange={(e) => setForm((f) => ({ ...f, tipo_contrato: e.target.value }))} style={{ ...inputStyle, flex: 1 }}>
-            <option value="registrado">Registrado</option>
-            <option value="diarista">Diarista</option>
-          </select>
-        )}
+        <select value={form.tipo_contrato} onChange={(e) => setForm((f) => ({ ...f, tipo_contrato: e.target.value }))} style={{ ...inputStyle, flex: 1 }}>
+          <option value="registrado">Registrado</option>
+          <option value="diarista">Diarista</option>
+        </select>
       </div>
       {isAdmin && form.papel === "gerente" && (
         <>
           <input type="number" step="0.01" value={form.salario_base} onChange={(e) => setForm((f) => ({ ...f, salario_base: e.target.value }))}
             placeholder="Salário base (R$)" style={inputStyle} />
-          <div style={{ fontSize: 11, color: "#8A8778" }}>Gerente não entra na divisão diária de comissão — ganha esse salário + 2% do faturamento bruto do mês, calculado no Fechamento mensal.</div>
+          <div style={{ fontSize: 11, color: "#8A8778" }}>Gerente não entra na divisão diária de comissão — ganha esse salário + 2% do faturamento bruto do mês, calculado no Fechamento mensal (vale independente de ser registrada ou diarista).</div>
         </>
       )}
       {form.papel !== "gerente" && form.tipo_contrato === "diarista" && (
@@ -515,9 +515,11 @@ function PremiacaoDoDia({ isAdmin }) {
       const total = Math.max(valorMetodoComissao, valorMetodoHora);
       return { pessoa: p, peso, horas, comissao, baseCategoriaValor, metodoUsado, valorMetodoComissao, valorMetodoHora, total };
     }
-    // registrado: só a comissão do dia (+ base por categoria, se configurada)
-    const total = comissao + baseCategoriaValor;
-    return { pessoa: p, peso, horas, comissao, baseCategoriaValor, metodoUsado: null, valorMetodoComissao: total, valorMetodoHora: null, total };
+    // registrado: só a taxa de serviço proporcional do dia — sem diária
+    // base (isso é só pra diarista, já que registrado recebe salário fixo
+    // acumulado no mês seguinte, no Fechamento mensal).
+    const total = comissao;
+    return { pessoa: p, peso, horas, comissao, baseCategoriaValor: 0, metodoUsado: null, valorMetodoComissao: comissao, valorMetodoHora: null, total };
   });
 
   const salvarPremiacao = async () => {
@@ -853,9 +855,10 @@ function FechamentoMensal() {
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
         <button onClick={() => mudarMes(-1)} style={ghostIconBtn}><ChevronLeft size={18} /></button>
-        <span style={{ fontSize: 14, fontWeight: 700, color: "#22231F", textTransform: "capitalize" }}>{nomeMes}</span>
+        <input type="month" value={mesRef} onChange={(e) => setMesRef(e.target.value)}
+          style={{ ...inputStyle, flex: 1, textAlign: "center", textTransform: "capitalize" }} />
         <button onClick={() => mudarMes(1)} style={ghostIconBtn}><ChevronRight size={18} /></button>
       </div>
       <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 10 }}>Só pessoas registradas — diaristas já recebem por dia.</div>
