@@ -378,6 +378,7 @@ function PremiacaoDoDia({ isAdmin }) {
   const [taxaServico, setTaxaServico] = useState("");
   const [buscandoTaxa, setBuscandoTaxa] = useState(false);
   const [taxaAutomatica, setTaxaAutomatica] = useState(null); // null | true | false
+  const [faturamentoBrutoDia, setFaturamentoBrutoDia] = useState(0); // pra prévia do 2% da gerente
   const [matriz, setMatriz] = useState({}); // papel -> { valor_hora }
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
@@ -390,7 +391,7 @@ function PremiacaoDoDia({ isAdmin }) {
     setCarregando(true);
     setMensagem("");
     const [{ data: pessoasData }, { data: presencasData }, { data: premiacoesData }, { data: matrizData }, { data: cacheTaxa }] = await Promise.all([
-      supabase.from("pessoas").select("*").eq("ativo", true).neq("papel", "gerente").order("nome"),
+      supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
       supabase.from("presencas_diarias").select("*").eq("dia", dia),
       supabase.from("premiacoes_diarias").select("*").eq("dia", dia),
       supabase.from("matriz_cargos").select("*"),
@@ -415,6 +416,7 @@ function PremiacaoDoDia({ isAdmin }) {
     const mapaHora = {};
     (matrizData || []).forEach((m) => { mapaHora[m.papel] = String(m.valor_hora ?? 0); });
     setValorHora(mapaHora);
+    setFaturamentoBrutoDia(cacheTaxa?.faturamento_bruto || 0);
     if (premiacoesData && premiacoesData.length > 0) {
       setTaxaServico(String(premiacoesData[0].taxa_servico_dia));
       setMensagem("Esse dia já tem premiação calculada e salva — recalcular vai substituir os valores.");
@@ -434,26 +436,45 @@ function PremiacaoDoDia({ isAdmin }) {
   const buscarTaxaAutomatica = async () => {
     setBuscandoTaxa(true);
     setErro("");
+    const temGerente = pessoas.some((p) => p.papel === "gerente" && participacao[p.id]?.incluido);
     const { data: cacheTaxa } = await supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle();
-    if (cacheTaxa) {
+    if (cacheTaxa && (!temGerente || cacheTaxa.faturamento_bruto > 0)) {
       setBuscandoTaxa(false);
       setTaxaServico(String(cacheTaxa.taxa_servico));
+      setFaturamentoBrutoDia(cacheTaxa.faturamento_bruto || 0);
       setTaxaAutomatica(true);
       setMensagem("Taxa de serviço reaproveitada do cache — não precisou consultar o CardápioWeb de novo.");
       return;
     }
     const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", { body: { acao: "taxa_servico_dia", dia } });
-    setBuscandoTaxa(false);
-    if (error) { setErro(await extrairErroFuncao(error)); return; }
-    if (data?.error) { setErro(data.error); return; }
+    if (error) { setBuscandoTaxa(false); setErro(await extrairErroFuncao(error)); return; }
+    if (data?.error) { setBuscandoTaxa(false); setErro(data.error); return; }
     setTaxaServico(String(data.taxa_servico));
     setTaxaAutomatica(data.encontrado_automaticamente);
+
+    // Só busca o faturamento bruto (pra prévia da gerente) se ela estiver
+    // marcada como presente hoje — evita gastar consulta à toa.
+    let faturamentoBruto = cacheTaxa?.faturamento_bruto || 0;
+    if (temGerente) {
+      const diaSeguinte = new Date(`${dia}T12:00:00-03:00`);
+      diaSeguinte.setDate(diaSeguinte.getDate() + 1);
+      const { data: fatData, error: fatErr } = await supabase.functions.invoke("cardapioweb-proxy", {
+        body: {
+          acao: "faturamento_periodo",
+          data_inicio: `${dia}T17:00:00-03:00`,
+          data_fim: `${diaSeguinte.toISOString().slice(0, 10)}T03:00:00-03:00`,
+        },
+      });
+      if (!fatErr && !fatData?.error) faturamentoBruto = fatData.faturamento_bruto;
+    }
+    setFaturamentoBrutoDia(faturamentoBruto);
+    setBuscandoTaxa(false);
+
     if (data.encontrado_automaticamente) {
       await supabase.from("taxas_do_dia").upsert({
-        dia, taxa_servico: data.taxa_servico, atualizado_em: new Date().toISOString(),
+        dia, taxa_servico: data.taxa_servico, faturamento_bruto: faturamentoBruto, atualizado_em: new Date().toISOString(),
       }, { onConflict: "dia" });
-    }
-    if (!data.encontrado_automaticamente) {
+    } else {
       setErro("Não tem pedido fechado nesse dia (17h–03h) — confira a data ou digite o valor manualmente.");
     }
   };
@@ -489,9 +510,17 @@ function PremiacaoDoDia({ isAdmin }) {
   // cargo (pela matriz). Método hora = horas trabalhadas × valor/hora do
   // cargo (pela matriz). Registrado não entra nessa comparação — só
   // recebe a comissão do dia (o salário dele é mensal, somado no
-  // Fechamento mensal).
+  // Fechamento mensal). Gerente não entra na divisão da taxa de serviço
+  // de jeito nenhum — só mostra uma PRÉVIA do 2% do faturamento bruto do
+  // dia (o valor oficial dela é fechado por mês, no Fechamento mensal).
   const linhas = selecionados.map((p) => {
     const horas = participacao[p.id]?.horas || 0;
+
+    if (p.papel === "gerente") {
+      const total = round2(faturamentoBrutoDia * 0.02);
+      return { pessoa: p, peso: 0, horas, comissao: 0, baseCategoriaValor: 0, metodoUsado: "gerente_previa", valorMetodoComissao: total, valorMetodoHora: null, total };
+    }
+
     const peso = pesoDe(p.id);
     const valorPorPeso = categoriaComissao(p.papel) === "garcom" ? valorPorPesoGarcom : valorPorPesoInterno;
     const comissao = peso * valorPorPeso;
@@ -706,11 +735,16 @@ function PremiacaoDoDia({ isAdmin }) {
                         {l.baseCategoriaValor > 0 && <span style={{ fontSize: 10, color: "#185FA5" }}> + diária base</span>}
                       </span>
                       <span style={{ textAlign: "right", color: "#8A8778", fontSize: 11 }}>
-                        {l.metodoUsado === "hora" ? "por hora" : l.metodoUsado === "comissao" ? "taxa de serviço" : "—"}
+                        {l.metodoUsado === "hora" ? "por hora" : l.metodoUsado === "comissao" ? "taxa de serviço" : l.metodoUsado === "gerente_previa" ? "prévia 2%" : "—"}
                       </span>
                       <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(l.total)}</span>
                     </div>
-                    {l.metodoUsado && (
+                    {l.metodoUsado === "gerente_previa" && (
+                      <div style={{ fontSize: 10, color: "#8A8778", marginTop: 4 }}>
+                        2% de {brl(faturamentoBrutoDia)} (faturamento bruto do dia) — prévia informativa, o valor oficial fecha por mês
+                      </div>
+                    )}
+                    {(l.metodoUsado === "hora" || l.metodoUsado === "comissao") && (
                       <div style={{ display: "flex", gap: 10, marginTop: 4, fontSize: 10, color: "#8A8778" }}>
                         <span style={{ fontWeight: l.metodoUsado === "comissao" ? 700 : 400, color: l.metodoUsado === "comissao" ? "#0F6E56" : "#8A8778" }}>
                           Taxa de serviço + diária base: {brl(l.valorMetodoComissao)}

@@ -120,8 +120,12 @@ Deno.serve(async (req) => {
       }
     }
 
-    // 3) Manda pro Claude ler, com saída estruturada via tool use
-    const respostaClaude = await fetch("https://api.anthropic.com/v1/messages", {
+    // 3) Manda pro Claude ler, com saída estruturada via tool use.
+    // Função reaproveitável porque, se o tipo de imagem que detectamos
+    // pelos bytes estiver errado mesmo assim, tentamos de novo com o tipo
+    // que a própria resposta de erro da Anthropic informa (ela sempre diz
+    // qual é o tipo real da imagem quando rejeita por isso).
+    const chamarClaude = (tipoImagem: string) => fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "x-api-key": anthropicKey,
@@ -161,17 +165,25 @@ Deno.serve(async (req) => {
         messages: [{
           role: "user",
           content: [
-            { type: ehPdf ? "document" : "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+            { type: ehPdf ? "document" : "image", source: { type: "base64", media_type: tipoImagem, data: base64 } },
             { type: "text", text: "Leia esta nota fiscal ou recibo de compra de um restaurante e extraia fornecedor, data e cada item comprado (nome, quantidade, unidade, preço unitário). Regras importantes: (1) liste apenas itens que aparecem literalmente impressos no documento — nunca invente, deduza ou repita um item que não está lá; (2) se algum trecho da imagem estiver ilegível, borrado ou com reflexo de luz que impeça leitura confiante, NÃO invente um item para preencher essa lacuna — é preferível deixar de fora um item real do que incluir um que não existe; (3) leia cada linha inteira antes de passar pra próxima, sem misturar valores entre linhas diferentes; (4) depois de ler quantidade e preço unitário de cada item, confira se quantidade × preço_unitário bate (aproximadamente) com o valor total daquela linha impresso no documento — se não bater, releia os números com mais atenção antes de responder; (5) se o mesmo produto aparecer em várias linhas com o mesmo preço por unidade (ex.: vários pacotes pesados separadamente), some as quantidades e devolva como um único item." + referenciaTexto },
           ],
         }],
       }),
     });
 
+    let respostaClaude = await chamarClaude(mediaType);
     if (!respostaClaude.ok) {
       const detalhe = await respostaClaude.text();
-      await supabase.from("documentos_compra").update({ status: "erro", erro_mensagem: `Erro ao consultar a IA: ${detalhe.slice(0, 300)}` }).eq("id", documento_id);
-      return json({ error: "Erro ao consultar a IA.", detalhe }, 502, corsHeaders);
+      const tipoRealApontado = detalhe.match(/image\/(png|jpeg|webp|gif)/);
+      if (tipoRealApontado && `image/${tipoRealApontado[1]}` !== mediaType) {
+        respostaClaude = await chamarClaude(`image/${tipoRealApontado[1]}`);
+      }
+      if (!respostaClaude.ok) {
+        const detalheFinal = await respostaClaude.text();
+        await supabase.from("documentos_compra").update({ status: "erro", erro_mensagem: `Erro ao consultar a IA: ${detalheFinal.slice(0, 300)}` }).eq("id", documento_id);
+        return json({ error: "Erro ao consultar a IA.", detalhe: detalheFinal }, 502, corsHeaders);
+      }
     }
 
     const dadosClaude = await respostaClaude.json();

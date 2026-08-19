@@ -132,7 +132,7 @@ export default function ConferenciaCaixa() {
     const mapaCategoria = {};
     const mapaCanal = {};
     const mapaAtendente = {};
-    let somaServico = 0, somaEntrega = 0, somaAdicional = 0;
+    let somaServico = 0, somaEntrega = 0, somaAdicional = 0, faturamentoBruto = 0;
     const marca22h = new Date(`${dia}T22:00:00-03:00`);
     let qtdAte22 = 0, qtdApos22 = 0;
     for (const p of pedidos) {
@@ -154,6 +154,7 @@ export default function ConferenciaCaixa() {
       somaServico += p.service_fee || 0;
       somaEntrega += p.delivery_fee || 0;
       somaAdicional += p.additional_fee || 0;
+      faturamentoBruto += p.total || 0;
 
       // Repasse ao entregador: só conta pedidos de Delivery, separados
       // pelo horário real do pedido (não a hora do relógio sozinha —
@@ -177,6 +178,7 @@ export default function ConferenciaCaixa() {
       taxa_servico: round2(somaServico),
       taxa_entrega: round2(somaEntrega),
       taxa_adicional: round2(somaAdicional),
+      faturamento_bruto: round2(faturamentoBruto),
       atualizado_em: new Date().toISOString(),
     }, { onConflict: "dia" });
   };
