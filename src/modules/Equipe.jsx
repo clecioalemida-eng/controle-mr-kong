@@ -45,7 +45,7 @@ function Pessoas() {
   const [erro, setErro] = useState("");
   const [editandoId, setEditandoId] = useState(null);
   const [novoAberto, setNovoAberto] = useState(false);
-  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", valor_diaria: "" });
+  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", valor_diaria: "", cpf: "", telefone: "", email: "", data_nascimento: "" });
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -56,8 +56,14 @@ function Pessoas() {
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
 
-  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", valor_diaria: "" }); setNovoAberto(true); setEditandoId(null); };
-  const abrirEdicao = (p) => { setForm({ nome: p.nome, papel: p.papel, tipo_contrato: p.tipo_contrato, valor_diaria: p.valor_diaria ?? "" }); setEditandoId(p.id); setNovoAberto(false); };
+  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", valor_diaria: "", cpf: "", telefone: "", email: "", data_nascimento: "" }); setNovoAberto(true); setEditandoId(null); };
+  const abrirEdicao = (p) => {
+    setForm({
+      nome: p.nome, papel: p.papel, tipo_contrato: p.tipo_contrato, valor_diaria: p.valor_diaria ?? "",
+      cpf: p.cpf ?? "", telefone: p.telefone ?? "", email: p.email ?? "", data_nascimento: p.data_nascimento ?? "",
+    });
+    setEditandoId(p.id); setNovoAberto(false);
+  };
 
   const salvar = async () => {
     if (!form.nome.trim()) return;
@@ -66,6 +72,10 @@ function Pessoas() {
       papel: form.papel,
       tipo_contrato: form.tipo_contrato,
       valor_diaria: form.tipo_contrato === "diarista" ? (parseFloat(form.valor_diaria) || 0) : null,
+      cpf: form.cpf.trim() || null,
+      telefone: form.telefone.trim() || null,
+      email: form.email.trim() || null,
+      data_nascimento: form.data_nascimento || null,
     };
     const { error } = editandoId
       ? await supabase.from("pessoas").update(payload).eq("id", editandoId)
@@ -145,6 +155,19 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar }) {
         <input type="number" step="0.01" value={form.valor_diaria} onChange={(e) => setForm((f) => ({ ...f, valor_diaria: e.target.value }))}
           placeholder="Valor da base diária (R$)" style={inputStyle} />
       )}
+      <div style={{ display: "flex", gap: 8 }}>
+        <input value={form.cpf} onChange={(e) => setForm((f) => ({ ...f, cpf: e.target.value }))}
+          placeholder="CPF" style={{ ...inputStyle, flex: 1 }} />
+        <input value={form.telefone} onChange={(e) => setForm((f) => ({ ...f, telefone: e.target.value }))}
+          placeholder="Telefone" style={{ ...inputStyle, flex: 1 }} />
+      </div>
+      <input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+        placeholder="E-mail" style={inputStyle} />
+      <div>
+        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Data de aniversário</label>
+        <input type="date" value={form.data_nascimento} onChange={(e) => setForm((f) => ({ ...f, data_nascimento: e.target.value }))}
+          style={inputStyle} />
+      </div>
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={onSalvar} style={{ ...btnSecondary, flex: 1 }}>Salvar</button>
         <button onClick={onCancelar} style={linkBtn}>Cancelar</button>

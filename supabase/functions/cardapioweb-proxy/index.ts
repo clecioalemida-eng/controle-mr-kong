@@ -221,7 +221,21 @@ async function buscarPedidos(headersCW: Record<string, string>, data_inicio: str
     url.searchParams.set("per_page", "100");
 
     const res = await fetch(url.toString(), { headers: headersCW });
-    const dados = await res.json();
+    const textoResposta = await res.text();
+    let dados: any;
+    try {
+      dados = JSON.parse(textoResposta);
+    } catch {
+      // O CardápioWeb às vezes responde com texto puro (não JSON) quando
+      // limita a quantidade de consultas — o histórico de pedidos aceita
+      // só 5 consultas por minuto.
+      if (res.status === 429 || /retry later/i.test(textoResposta)) {
+        throw new Error(
+          "O CardápioWeb limitou a quantidade de consultas por minuto nesse período (máximo de 5 consultas de histórico por minuto) — aguarde cerca de 1 minuto e tente de novo."
+        );
+      }
+      throw new Error(`Resposta inesperada do CardápioWeb: ${textoResposta.slice(0, 200)}`);
+    }
     if (!res.ok) throw new Error(`Erro ao buscar histórico de pedidos: ${JSON.stringify(dados)}`);
     resumoBasico.push(...(dados.orders || []));
     totalPaginas = dados.pagination?.total_pages ?? 1;
