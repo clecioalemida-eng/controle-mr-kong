@@ -216,15 +216,22 @@ trocar a fórmula.
 
 8ª aba do Financeiro. Três telas:
 
-- **Pessoas** — cadastro de funcionários: nome, papel (Garçom ou Equipe
-  interna), e se é Registrado (comissão acumula pro fechamento do mês) ou
-  Diarista (soma uma base diária fixa em cima da comissão do dia).
+- **Pessoas** — cadastro de funcionários: nome, papel (Garçom, Caixa,
+  Bar, Chapa, Cozinha ou Limpeza), CPF, telefone, e-mail, data de
+  aniversário, e se é Registrado (comissão acumula pro fechamento do mês)
+  ou Diarista (soma uma base diária pessoal fixa em cima da comissão do
+  dia).
 - **Premiação do dia** — escolhe a data, busca (ou digita manualmente) a
   taxa de serviço do dia, marca quem trabalhou e o peso de cada um (1 =
   dia inteiro, 0.5 = meio período — igual ao jeito que já era calculado na
   planilha de vocês, que tinha um "6,5" de gente numa das contas). A taxa
   é dividida 50% para os garçons selecionados (pelo peso de cada um) e 50%
-  para a equipe interna selecionada, do mesmo jeito.
+  para o resto da equipe selecionada (caixa, bar, chapa, cozinha,
+  limpeza), do mesmo jeito. Também dá pra configurar uma **base por
+  categoria** naquele dia (ex.: R$70 pra todo Garçom, R$100 pra toda
+  Cozinha) — um valor extra somado à comissão de cada pessoa daquele
+  cargo, multiplicado pelo peso do dia dela, igual ao "valor diária" que
+  já existia na planilha de referência de vocês.
 - **Fechamento mensal** — soma o acumulado de cada pessoa **registrada**
   no mês (diaristas não entram aqui, porque já recebem por dia). Toca numa
   pessoa pra ver o extrato dia a dia.
@@ -234,17 +241,26 @@ até 03h do dia seguinte**. Uma ressalva importante: **não consegui
 confirmar na documentação pública do CardápioWeb o nome exato do campo de
 taxa de serviço** nos pedidos — a função tenta alguns nomes prováveis
 (`service_charge`, `taxa_servico`, `service_fee`, `tip`, `gorjeta`), mas
-se nenhum bater ela avisa e o campo fica pra digitar manualmente. Se um
-pedido de exemplo com taxa de serviço mostrar o nome certo do campo (dá
-pra ver usando o "Ver original" de uma nota, ou me mandando um print do
-retorno da API), o ajuste na função é rápido.
+se nenhum bater ela avisa e o campo fica pra digitar manualmente.
 
 ### Migração e Edge Function
 
 - `014_equipe_premiacao.sql` — tabelas `pessoas`, `presencas_diarias`,
   `premiacoes_diarias`.
+- `015_mais_cargos.sql` — cargos Caixa, Bar, Chapa, Cozinha.
+- `016_dados_pessoais_equipe.sql` — CPF, telefone, e-mail, aniversário.
+- `017_base_por_categoria.sql` — coluna pro valor extra por categoria.
 - `cardapioweb-proxy` ganhou uma ação nova (`taxa_servico_dia`) — precisa
-  republicar a função depois de rodar a migração.
+  republicar a função depois de rodar a migração 014.
+
+## Consultas ao CardápioWeb — sempre manuais
+
+As abas Vendas, Pedidos, Pagamentos e Fechamento **não buscam dados
+sozinhas** ao abrir ou trocar de data — é preciso escolher o período e
+clicar em "Atualizar" de propósito. Isso é intencional: o histórico de
+pedidos do CardápioWeb só aceita 5 consultas por minuto, e buscar
+automaticamente a cada clique de aba ou troca de data esgotava esse
+limite rápido demais.
 
 ## Produtos do resto do cardápio (Petiscos, Bombons, Extras, Bebidas, Na Chapa, Fritas, Sorvetes, Açaí, Milkshake)
 

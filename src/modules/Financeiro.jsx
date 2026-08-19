@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import { ChevronLeft, Loader2, AlertTriangle, RefreshCw, DollarSign } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import FichasTecnicas from "./FichasTecnicas";
@@ -69,7 +69,9 @@ export default function Financeiro({ onVoltar }) {
     setResumo(data);
   }, [dataInicio, dataFim]);
 
-  useEffect(() => { carregar(); }, [carregar]);
+  // Sem busca automática ao abrir ou trocar de aba/data — só busca quando
+  // a pessoa clica em "Atualizar" mesmo, de propósito. Isso evita bater
+  // sem querer no limite de 5 consultas por minuto do CardápioWeb.
 
   return (
     <div style={pageStyle}>
@@ -120,6 +122,10 @@ export default function Financeiro({ onVoltar }) {
                   <div style={{ fontSize: 13 }}>{erro}</div>
                 </div>
               </div>
+            )}
+
+            {!carregando && !erro && !resumo && (
+              <div style={{ fontSize: 13, color: "#8A8778" }}>Escolha o período e clique em "Atualizar" para consultar o CardápioWeb.</div>
             )}
 
             {!carregando && !erro && resumo && (

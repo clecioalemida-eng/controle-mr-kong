@@ -4,8 +4,8 @@ import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function hoje() { return new Date().toISOString().slice(0, 10); }
-const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", cozinha: "Cozinha" };
-const PAPEIS = ["garcom", "caixa", "bar", "chapa", "cozinha"];
+const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", cozinha: "Cozinha", limpeza: "Limpeza" };
+const PAPEIS = ["garcom", "caixa", "bar", "chapa", "cozinha", "limpeza"];
 // Regra de divisão da premiação: só garçom fica no bolo dos garçons — todo
 // o resto (caixa, bar, chapa, cozinha, e o "interno" genérico antigo) cai
 // junto no bolo da equipe interna.
@@ -183,6 +183,7 @@ function PremiacaoDoDia() {
   const [dia, setDia] = useState(hoje());
   const [pessoas, setPessoas] = useState([]);
   const [participacao, setParticipacao] = useState({}); // pessoa_id -> { incluido, peso }
+  const [baseCategoria, setBaseCategoria] = useState({}); // papel -> valor (string do input)
   const [taxaServico, setTaxaServico] = useState("");
   const [buscandoTaxa, setBuscandoTaxa] = useState(false);
   const [taxaAutomatica, setTaxaAutomatica] = useState(null); // null | true | false
@@ -204,6 +205,12 @@ function PremiacaoDoDia() {
     (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: false, peso: 1 }; });
     (presencasData || []).forEach((pr) => { mapaPart[pr.pessoa_id] = { incluido: true, peso: pr.peso }; });
     setParticipacao(mapaPart);
+    const mapaBase = {};
+    (premiacoesData || []).forEach((pr) => {
+      const pessoa = (pessoasData || []).find((pp) => pp.id === pr.pessoa_id);
+      if (pessoa) mapaBase[pessoa.papel] = String(pr.base_categoria || 0);
+    });
+    setBaseCategoria(mapaBase);
     if (premiacoesData && premiacoesData.length > 0) {
       setTaxaServico(String(premiacoesData[0].taxa_servico_dia));
       setMensagem("Esse dia já tem premiação calculada e salva — recalcular vai substituir os valores.");
@@ -251,7 +258,8 @@ function PremiacaoDoDia() {
     const valorPorPeso = categoriaComissao(p.papel) === "garcom" ? valorPorPesoGarcom : valorPorPesoInterno;
     const comissao = peso * valorPorPeso;
     const valorDiaria = p.tipo_contrato === "diarista" ? (p.valor_diaria || 0) : 0;
-    return { pessoa: p, peso, comissao, valorDiaria, total: comissao + valorDiaria };
+    const baseCategoriaValor = peso * (parseFloat(baseCategoria[p.papel]) || 0);
+    return { pessoa: p, peso, comissao, valorDiaria, baseCategoriaValor, total: comissao + valorDiaria + baseCategoriaValor };
   });
 
   const salvarPremiacao = async () => {
@@ -271,6 +279,7 @@ function PremiacaoDoDia() {
         taxa_servico_dia: taxaNum,
         comissao: round2(l.comissao),
         valor_diaria: l.valorDiaria,
+        base_categoria: round2(l.baseCategoriaValor),
         total_dia: round2(l.total),
       }, { onConflict: "pessoa_id,dia" });
       if (error) { setErro(error.message); setSalvando(false); return; }
@@ -328,6 +337,26 @@ function PremiacaoDoDia() {
             {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Cadastre pessoas na aba "Pessoas" primeiro.</div>}
           </div>
 
+          {selecionados.length > 0 && (
+            <>
+              <div style={sectionLabel}>Base por categoria (opcional)</div>
+              <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>
+                Valor extra somado à comissão de cada pessoa do cargo, proporcional ao peso do dia — como o "valor diária por categoria" que já era calculado antes.
+              </div>
+              <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
+                {[...new Set(selecionados.map((p) => p.papel))].map((papel) => (
+                  <div key={papel} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ flex: 1, fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[papel]}</span>
+                    <span style={{ fontSize: 11, color: "#8A8778" }}>R$</span>
+                    <input type="number" step="0.01" value={baseCategoria[papel] || ""}
+                      onChange={(e) => setBaseCategoria((prev) => ({ ...prev, [papel]: e.target.value }))}
+                      placeholder="0,00" style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
           {selecionados.length > 0 && taxaNum > 0 && (
             <>
               <div style={sectionLabel}>Resultado</div>
@@ -337,7 +366,11 @@ function PremiacaoDoDia() {
                 </div>
                 {linhas.map((l, idx) => (
                   <div key={l.pessoa.id} style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
-                    <span>{l.pessoa.nome}{l.valorDiaria > 0 && <span style={{ fontSize: 10, color: "#854F0B" }}> + diária</span>}</span>
+                    <span>
+                      {l.pessoa.nome}
+                      {l.valorDiaria > 0 && <span style={{ fontSize: 10, color: "#854F0B" }}> + diária</span>}
+                      {l.baseCategoriaValor > 0 && <span style={{ fontSize: 10, color: "#185FA5" }}> + base</span>}
+                    </span>
                     <span style={{ textAlign: "right" }}>{brl(l.comissao)}</span>
                     <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(l.total)}</span>
                   </div>
