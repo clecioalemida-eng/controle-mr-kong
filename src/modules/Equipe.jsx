@@ -95,6 +95,7 @@ function MatrizCargos() {
     const mapa = Object.fromEntries((data || []).map((d) => [d.papel, d]));
     setLinhas(PAPEIS.map((p) => ({
       papel: p,
+      diaria_base: String(mapa[p]?.diaria_base ?? 0),
       valor_hora: String(mapa[p]?.valor_hora ?? 0),
     })));
     setCarregando(false);
@@ -111,6 +112,7 @@ function MatrizCargos() {
     for (const l of linhas) {
       const { error } = await supabase.from("matriz_cargos").upsert({
         papel: l.papel,
+        diaria_base: parseFloat(l.diaria_base) || 0,
         valor_hora: parseFloat(l.valor_hora) || 0,
       }, { onConflict: "papel" });
       if (error) { setErro(error.message); setSalvando(false); return; }
@@ -122,7 +124,7 @@ function MatrizCargos() {
   return (
     <div>
       <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
-        Valor da hora usado no método "por hora" do diarista — vale pra todo diarista daquele cargo automaticamente. A diária base (usada no método "por taxa de serviço") não aparece aqui — ela se edita direto na Escala do dia, na seção "Diária base por cargo" (mesmo valor, só outro lugar de editar).
+        Único lugar de editar esses dois valores por cargo. Diária base é somada à taxa de serviço rateada (método "por taxa de serviço" do diarista); valor da hora é usado no método "por hora". A Escala do dia só mostra esses valores, não edita mais aqui.
       </div>
       {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
@@ -131,12 +133,14 @@ function MatrizCargos() {
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
-            <span>Cargo</span><span style={{ textAlign: "right" }}>Valor hora</span>
+          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+            <span>Cargo</span><span style={{ textAlign: "right" }}>Diária base</span><span style={{ textAlign: "right" }}>Valor hora</span>
           </div>
           {linhas.map((l, idx) => (
-            <div key={l.papel} style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center" }}>
+            <div key={l.papel} style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center" }}>
               <span style={{ fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[l.papel]}</span>
+              <input type="number" step="0.01" value={l.diaria_base} onChange={(e) => alterar(l.papel, "diaria_base", e.target.value)}
+                style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
               <input type="number" step="0.01" value={l.valor_hora} onChange={(e) => alterar(l.papel, "valor_hora", e.target.value)}
                 style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
             </div>
@@ -369,10 +373,8 @@ function PremiacaoDoDia({ isAdmin }) {
   const [dia, setDia] = useState(hoje());
   const [pessoas, setPessoas] = useState([]);
   const [participacao, setParticipacao] = useState({}); // pessoa_id -> { incluido, peso }
-  const [baseCategoria, setBaseCategoria] = useState({}); // papel -> valor (persistente, vem da Matriz de cargos)
-  const [editandoBase, setEditandoBase] = useState(null); // papel sendo editado agora, ou null
-  const [editandoHora, setEditandoHora] = useState(null); // idem, pro valor da hora
-  const [valorHora, setValorHora] = useState({}); // papel -> valor (persistente, vem da Matriz de cargos)
+  const [baseCategoria, setBaseCategoria] = useState({}); // papel -> valor (vem da Matriz de cargos, só leitura aqui)
+  const [valorHora, setValorHora] = useState({}); // papel -> valor (vem da Matriz de cargos, só leitura aqui)
   const [taxaServico, setTaxaServico] = useState("");
   const [buscandoTaxa, setBuscandoTaxa] = useState(false);
   const [taxaAutomatica, setTaxaAutomatica] = useState(null); // null | true | false
@@ -464,24 +466,6 @@ function PremiacaoDoDia({ isAdmin }) {
     setParticipacao((prev) => ({ ...prev, [pessoaId]: { ...prev[pessoaId], horas: parseFloat(horas) || 0 } }));
   };
   const pesoDe = (pessoaId) => (participacao[pessoaId]?.horas || 0) / HORAS_PADRAO_TURNO;
-
-  const salvarBaseCategoria = async (papel) => {
-    const valor = parseFloat(baseCategoria[papel]) || 0;
-    setBaseCategoria((prev) => ({ ...prev, [papel]: String(valor) }));
-    setMatriz((prev) => ({ ...prev, [papel]: { ...(prev[papel] || {}), diaria_base: valor } }));
-    setEditandoBase(null);
-    // Só atualiza diaria_base — valor_hora (já configurado na Matriz de
-    // cargos) fica intacto, o upsert só mexe nas colunas enviadas aqui.
-    await supabase.from("matriz_cargos").upsert({ papel, diaria_base: valor }, { onConflict: "papel" });
-  };
-
-  const salvarValorHora = async (papel) => {
-    const valor = parseFloat(valorHora[papel]) || 0;
-    setValorHora((prev) => ({ ...prev, [papel]: String(valor) }));
-    setMatriz((prev) => ({ ...prev, [papel]: { ...(prev[papel] || {}), valor_hora: valor } }));
-    setEditandoHora(null);
-    await supabase.from("matriz_cargos").upsert({ papel, valor_hora: valor }, { onConflict: "papel" });
-  };
 
   const selecionados = pessoas.filter((p) => participacao[p.id]?.incluido);
   const garcons = selecionados.filter((p) => categoriaComissao(p.papel) === "garcom");
@@ -621,50 +605,14 @@ function PremiacaoDoDia({ isAdmin }) {
             <>
               <div style={sectionLabel}>Valores por cargo</div>
               <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>
-                Diária base e valor da hora — os dois ficam salvos, não precisa preencher de novo todo dia. Clique no lápis de cada um pra mudar (mesmos valores da aba "Matriz de cargos").
+                Diária base e valor da hora — só leitura aqui. Pra mudar, vai em Equipe &gt; Matriz de cargos.
               </div>
               <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
                 {[...new Set(selecionados.map((p) => p.papel))].map((papel) => (
-                  <div key={papel} style={{ ...cardStyle, padding: "10px 12px" }}>
-                    <div style={{ fontSize: 13, color: "#22231F", marginBottom: 8 }}>{PAPEL_LABEL[papel]}</div>
-
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                      <span style={{ flex: 1, fontSize: 11, color: "#8A8778" }}>Diária base</span>
-                      {editandoBase === papel ? (
-                        <>
-                          <span style={{ fontSize: 11, color: "#8A8778" }}>R$</span>
-                          <input type="number" step="0.01" value={baseCategoria[papel] || ""} autoFocus
-                            onChange={(e) => setBaseCategoria((prev) => ({ ...prev, [papel]: e.target.value }))}
-                            onKeyDown={(e) => e.key === "Enter" && salvarBaseCategoria(papel)}
-                            style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                          <button onClick={() => salvarBaseCategoria(papel)} style={ghostIconBtn} aria-label="Salvar diária base"><Check size={15} /></button>
-                        </>
-                      ) : (
-                        <>
-                          <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(parseFloat(baseCategoria[papel]) || 0)}</span>
-                          <button onClick={() => setEditandoBase(papel)} style={ghostIconBtn} aria-label="Editar diária base"><Pencil size={15} /></button>
-                        </>
-                      )}
-                    </div>
-
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ flex: 1, fontSize: 11, color: "#8A8778" }}>Valor da hora</span>
-                      {editandoHora === papel ? (
-                        <>
-                          <span style={{ fontSize: 11, color: "#8A8778" }}>R$</span>
-                          <input type="number" step="0.01" value={valorHora[papel] || ""} autoFocus
-                            onChange={(e) => setValorHora((prev) => ({ ...prev, [papel]: e.target.value }))}
-                            onKeyDown={(e) => e.key === "Enter" && salvarValorHora(papel)}
-                            style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                          <button onClick={() => salvarValorHora(papel)} style={ghostIconBtn} aria-label="Salvar valor da hora"><Check size={15} /></button>
-                        </>
-                      ) : (
-                        <>
-                          <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(parseFloat(valorHora[papel]) || 0)}</span>
-                          <button onClick={() => setEditandoHora(papel)} style={ghostIconBtn} aria-label="Editar valor da hora"><Pencil size={15} /></button>
-                        </>
-                      )}
-                    </div>
+                  <div key={papel} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ flex: 1, fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[papel]}</span>
+                    <span style={{ fontSize: 11, color: "#8A8778" }}>Diária base <strong style={{ color: "#22231F" }}>{brl(parseFloat(baseCategoria[papel]) || 0)}</strong></span>
+                    <span style={{ fontSize: 11, color: "#8A8778" }}>Hora <strong style={{ color: "#22231F" }}>{brl(parseFloat(valorHora[papel]) || 0)}</strong></span>
                   </div>
                 ))}
               </div>
