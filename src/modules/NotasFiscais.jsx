@@ -263,7 +263,11 @@ function Conferencia({ documento, onVoltar }) {
       .select().single();
     if (error) { setErro(error.message); return; }
     await supabase.from("itens_documento_compra").update({ insumo_id: insumo.id }).eq("id", item.id);
-    setInsumos((prev) => [...prev, insumo]);
+    setInsumos((prev) => [...prev, insumo].sort((a, b) => a.nome.localeCompare(b.nome)));
+    // Se esse item estava com o formulário de edição aberto, sincroniza o
+    // vínculo ali também — senão, clicar em "Confirmar edição" logo
+    // depois desfaria a criação que acabou de acontecer.
+    if (editandoId === item.id) setFormEdicao((f) => ({ ...f, insumo_id: insumo.id }));
     setCriarInsumoAberto(null);
     setNovoInsumoNome("");
     carregar();
@@ -511,10 +515,20 @@ function Conferencia({ documento, onVoltar }) {
                     <div>
                       <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Vinculado a</label>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <select value={formEdicao.insumo_id} onChange={(e) => setFormEdicao((f) => ({ ...f, insumo_id: e.target.value }))}
+                        <select value={formEdicao.insumo_id}
+                          onChange={(e) => {
+                            if (e.target.value === "__criar__") {
+                              setCriarInsumoAberto(item.id);
+                              setNovoInsumoNome(formEdicao.nome_lido);
+                              setNovoInsumoUnidade(formEdicao.unidade);
+                              return;
+                            }
+                            setFormEdicao((f) => ({ ...f, insumo_id: e.target.value }));
+                          }}
                           style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
                           <option value="">— nenhum insumo —</option>
                           {insumos.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}
+                          <option value="__criar__">+ Criar novo insumo…</option>
                         </select>
                         <button onClick={salvarEdicao} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
                       </div>
