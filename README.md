@@ -285,6 +285,33 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Centro de custo, sincronização, e Pessoas no Plano de Contas
+
+**1. Centro de custo em cada conta.** Lista completa (baseada em pesquisa
+sobre gestão de hamburgueria + os cinco que você já tinha pedido):
+Pessoas, Insumos, Utensílios, Consertos e manutenção, Imobilizado,
+Ocupação, Utilidades, Impostos e taxas, Marketing e vendas,
+Administrativo. Editável junto com forma de pagamento e vencimento, tudo
+no mesmo lápis. Contas antigas ficam **sem centro de custo** até você
+classificar — tem um aviso no topo contando quantas ainda faltam.
+
+**2. Sincronização** — editar a forma de pagamento numa conta do Plano de
+Contas agora atualiza a movimentação de estoque correspondente também
+(em Compras), e vice-versa (via o mesmo `documento_compra_id` pra nota
+fiscal, ou o novo `movimentacao_estoque_id` pra compra manual).
+
+**3. Pessoas no Plano de Contas** — em Equipe > Fechamento mensal, cada
+pessoa (registrado ou gerente) ganhou um link "+ Lançar no Plano de
+Contas", que cria uma conta (centro de custo "Pessoas") com o valor
+fechado do mês. Uma vez lançado, mostra "✓ Já lançado" pra não duplicar.
+
+### Migração
+
+`031_centro_custo_e_sync_estoque.sql` — adiciona `centro_custo` e
+`movimentacao_estoque_id` em `contas_pagar`.
+
+Não mexe em Edge Function.
+
 ## Compra manual, forma de pagamento unificada, contas recorrentes e previsão
 
 **1. Compra manual** (Compras > "+ Compra manual") — dá entrada de estoque

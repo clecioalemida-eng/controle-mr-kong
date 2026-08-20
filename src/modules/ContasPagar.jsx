@@ -23,6 +23,7 @@ const CATEGORIAS_RECORRENTES = [
   { valor: "outro", rotulo: "Outra" },
 ];
 const CATEGORIA_LABEL = Object.fromEntries(CATEGORIAS_RECORRENTES.map((c) => [c.valor, c.rotulo]));
+const CATEGORIA_PARA_CENTRO_CUSTO = { agua: "utilidades", luz: "utilidades", internet: "utilidades", telefone: "utilidades", alvara: "impostos", aluguel: "ocupacao" };
 const FORMAS_PAGAMENTO = [
   { valor: "", rotulo: "Não informado" },
   { valor: "pix", rotulo: "Pix" },
@@ -30,6 +31,20 @@ const FORMAS_PAGAMENTO = [
   { valor: "credito", rotulo: "Cartão de crédito" },
   { valor: "boleto", rotulo: "Boleto" },
 ];
+const CENTROS_CUSTO = [
+  { valor: "", rotulo: "— pendente —" },
+  { valor: "pessoas", rotulo: "Pessoas" },
+  { valor: "insumos", rotulo: "Insumos" },
+  { valor: "utensilios", rotulo: "Utensílios" },
+  { valor: "manutencao", rotulo: "Consertos e manutenção" },
+  { valor: "imobilizado", rotulo: "Imobilizado" },
+  { valor: "ocupacao", rotulo: "Ocupação" },
+  { valor: "utilidades", rotulo: "Utilidades" },
+  { valor: "impostos", rotulo: "Impostos e taxas" },
+  { valor: "marketing", rotulo: "Marketing e vendas" },
+  { valor: "administrativo", rotulo: "Administrativo" },
+];
+const CENTRO_CUSTO_LABEL = Object.fromEntries(CENTROS_CUSTO.map((c) => [c.valor, c.rotulo]));
 
 // Contas a pagar, geradas ao confirmar uma nota fiscal (ver
 // src/modules/NotasFiscais.jsx) — organizadas por prazo de vencimento,
@@ -49,7 +64,7 @@ export default function ContasPagar() {
   const [novaConta, setNovaConta] = useState({ descricao: "", valor: "", vencimento: new Date().toISOString().slice(0, 10) });
   const [previsao, setPrevisao] = useState([]); // [{ categoria, media, meses }]
   const [editandoFormaId, setEditandoFormaId] = useState(null);
-  const [formaEdicao, setFormaEdicao] = useState("");
+  const [detalhesEdicao, setDetalhesEdicao] = useState({ forma: "", vencimento: "", centroCusto: "" });
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -90,6 +105,7 @@ export default function ContasPagar() {
       descricao: novaConta.descricao || CATEGORIA_LABEL[criandoCategoria],
       valor_total: round2(valor),
       categoria: criandoCategoria,
+      centro_custo: CATEGORIA_PARA_CENTRO_CUSTO[criandoCategoria] || null,
       data_vencimento: novaConta.vencimento,
       criado_por: userData?.user?.id,
     });
@@ -99,10 +115,26 @@ export default function ContasPagar() {
     carregar();
   };
 
-  const salvarFormaPagamento = async (contaId) => {
-    const { error } = await supabase.from("contas_pagar").update({ forma_pagamento: formaEdicao || null }).eq("id", contaId);
+  const salvarDetalhes = async (conta) => {
+    const patch = {
+      forma_pagamento: detalhesEdicao.forma || null,
+      data_vencimento: detalhesEdicao.vencimento || null,
+      centro_custo: detalhesEdicao.centroCusto || null,
+    };
+    const { error } = await supabase.from("contas_pagar").update(patch).eq("id", conta.id);
     if (error) { setErro(error.message); return; }
-    setContas((prev) => prev.map((c) => c.id === contaId ? { ...c, forma_pagamento: formaEdicao || null } : c));
+
+    // Sincroniza a forma de pagamento com a movimentação de estoque que
+    // gerou essa conta — tanto pra compra manual (movimentacao_estoque_id)
+    // quanto pra nota fiscal (documento_compra_id compartilhado entre as
+    // duas tabelas).
+    if (conta.movimentacao_estoque_id) {
+      await supabase.from("movimentacoes_estoque").update({ forma_pagamento: patch.forma_pagamento }).eq("id", conta.movimentacao_estoque_id);
+    } else if (conta.documento_compra_id) {
+      await supabase.from("movimentacoes_estoque").update({ forma_pagamento: patch.forma_pagamento }).eq("documento_compra_id", conta.documento_compra_id);
+    }
+
+    setContas((prev) => prev.map((c) => c.id === conta.id ? { ...c, ...patch } : c));
     setEditandoFormaId(null);
   };
 
@@ -136,10 +168,18 @@ export default function ContasPagar() {
   };
 
   const contasVisiveis = contas.filter((c) => mostrarPagas || c.status !== "pago");
+  const semCentroCusto = contas.filter((c) => !c.centro_custo).length;
 
   return (
     <div>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+
+      {semCentroCusto > 0 && (
+        <div style={avisoStyle}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+          <div style={{ fontSize: 13 }}>{semCentroCusto} conta{semCentroCusto > 1 ? "s" : ""} ainda sem centro de custo definido — clica no lápis de cada uma pra classificar.</div>
+        </div>
+      )}
 
       {previsao.length > 0 && (
         <div style={{ ...cardStyle, marginBottom: 14 }}>
@@ -214,23 +254,45 @@ export default function ContasPagar() {
                   )}
                 </div>
                 <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 4 }}>Vencimento {fmtData(conta.data_vencimento)} · Total {brl(conta.valor_total)}</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                  <span style={{ fontSize: 11, color: "#8A8778" }}>Forma de pagamento:</span>
-                  {editandoFormaId === conta.id ? (
-                    <>
-                      <select value={formaEdicao} onChange={(e) => setFormaEdicao(e.target.value)}
-                        style={{ fontSize: 12, padding: "2px 4px", borderRadius: 4, border: "1px solid #E8E2D2", background: "#FFFFFF" }}>
+
+                {editandoFormaId === conta.id ? (
+                  <div style={{ border: "1px dashed #37A0E5", borderRadius: 8, padding: 8, marginBottom: 6, display: "grid", gap: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 11, color: "#8A8778", width: 100, flexShrink: 0 }}>Forma:</span>
+                      <select value={detalhesEdicao.forma} onChange={(e) => setDetalhesEdicao((f) => ({ ...f, forma: e.target.value }))}
+                        style={{ fontSize: 12, padding: "3px 4px", borderRadius: 4, border: "1px solid #E8E2D2", background: "#FFFFFF", flex: 1 }}>
                         {FORMAS_PAGAMENTO.map((f) => <option key={f.valor} value={f.valor}>{f.rotulo}</option>)}
                       </select>
-                      <button onClick={() => salvarFormaPagamento(conta.id)} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Salvar forma de pagamento"><Check size={13} /></button>
-                    </>
-                  ) : (
-                    <>
-                      <span style={{ fontSize: 11, color: "#22231F" }}>{CONDICAO_LABEL[conta.forma_pagamento] || "Não informado"}</span>
-                      <button onClick={() => { setFormaEdicao(conta.forma_pagamento || ""); setEditandoFormaId(conta.id); }} style={ghostIconBtn} aria-label="Editar forma de pagamento"><Pencil size={12} /></button>
-                    </>
-                  )}
-                </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 11, color: "#8A8778", width: 100, flexShrink: 0 }}>Vencimento:</span>
+                      <input type="date" value={detalhesEdicao.vencimento} onChange={(e) => setDetalhesEdicao((f) => ({ ...f, vencimento: e.target.value }))}
+                        style={{ fontSize: 12, padding: "3px 4px", borderRadius: 4, border: "1px solid #E8E2D2", flex: 1 }} />
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 11, color: "#8A8778", width: 100, flexShrink: 0 }}>Centro de custo:</span>
+                      <select value={detalhesEdicao.centroCusto} onChange={(e) => setDetalhesEdicao((f) => ({ ...f, centroCusto: e.target.value }))}
+                        style={{ fontSize: 12, padding: "3px 4px", borderRadius: 4, border: "1px solid #E8E2D2", background: "#FFFFFF", flex: 1 }}>
+                        {CENTROS_CUSTO.map((c) => <option key={c.valor} value={c.valor}>{c.rotulo}</option>)}
+                      </select>
+                    </div>
+                    <button onClick={() => salvarDetalhes(conta)} style={{ ...btnSecondary, display: "flex", justifyContent: "center", gap: 6, marginTop: 2 }}>
+                      <Check size={13} /> Salvar
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 11, color: "#22231F" }}>{CONDICAO_LABEL[conta.forma_pagamento] || "Forma não informada"}</span>
+                    <span style={{ fontSize: 11, color: "#8A8778" }}>·</span>
+                    <span style={{ fontSize: 11, color: conta.centro_custo ? "#22231F" : "#A32D2D", fontWeight: conta.centro_custo ? 400 : 700 }}>
+                      {conta.centro_custo ? CENTRO_CUSTO_LABEL[conta.centro_custo] || conta.centro_custo : "Sem centro de custo"}
+                    </span>
+                    <button onClick={() => {
+                      setDetalhesEdicao({ forma: conta.forma_pagamento || "", vencimento: conta.data_vencimento || "", centroCusto: conta.centro_custo || "" });
+                      setEditandoFormaId(conta.id);
+                    }} style={ghostIconBtn} aria-label="Editar forma de pagamento, vencimento e centro de custo"><Pencil size={12} /></button>
+                  </div>
+                )}
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: conta.status === "pago" ? 0 : 8 }}>
                   <span style={{ color: "#8A8778" }}>Pago: {brl(conta.valor_pago)}</span>
                   {conta.status !== "pago" && <span style={{ fontWeight: 700, color: "#A32D2D" }}>Falta: {brl(restante)}</span>}

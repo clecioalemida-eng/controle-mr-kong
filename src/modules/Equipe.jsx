@@ -862,6 +862,8 @@ function FechamentoMensal() {
   const [pessoaAberta, setPessoaAberta] = useState(null);
   const [extrato, setExtrato] = useState([]);
   const [carregando, setCarregando] = useState(true);
+  const [lancados, setLancados] = useState(new Set()); // descrições já lançadas no Plano de Contas
+  const [lancando, setLancando] = useState(null); // nome sendo lançado agora
 
   const limitesDoMes = useCallback(() => {
     const [ano, mes] = mesRef.split("-").map(Number);
@@ -903,9 +905,29 @@ function FechamentoMensal() {
       return { nome: p.nome, salarioBase, faturamentoBruto, doisPorcento, total: salarioBase + doisPorcento };
     });
     setGerentes(listaGerentes);
+
+    const { data: contasPessoas } = await supabase.from("contas_pagar").select("descricao").eq("centro_custo", "pessoas");
+    setLancados(new Set((contasPessoas || []).map((c) => c.descricao)));
+
     setCarregando(false);
   }, [mesRef, limitesDoMes]);
   useEffect(() => { carregar(); }, [carregar]);
+
+  const lancarPessoa = async (nome, valor) => {
+    setLancando(nome);
+    setErro("");
+    const { data: userData } = await supabase.auth.getUser();
+    const [ano, mes] = mesRef.split("-").map(Number);
+    const fimMes = new Date(ano, mes, 0).toISOString().slice(0, 10);
+    const descricao = `${nome} — Fechamento ${mesRef}`;
+    const { error } = await supabase.from("contas_pagar").insert({
+      descricao, valor_total: round2(valor), categoria: "pessoas", centro_custo: "pessoas",
+      status: "pendente", data_vencimento: fimMes, criado_por: userData?.user?.id,
+    });
+    setLancando(null);
+    if (error) { setErro(error.message); return; }
+    setLancados((prev) => new Set(prev).add(descricao));
+  };
 
   const buscarFaturamento = async () => {
     setBuscandoFaturamento(true);
@@ -1006,20 +1028,36 @@ function FechamentoMensal() {
             <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
               <span>Pessoa</span><span>Papel</span><span style={{ textAlign: "right" }}>Dias</span><span style={{ textAlign: "right" }}>Acumulado</span>
             </div>
-            {linhas.map((l, idx) => (
-              <button key={l.nome} onClick={() => abrirExtrato(l.nome)}
-                style={{ display: "block", width: "100%", padding: "10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, fontSize: 13 }}>
-                  <span style={{ color: "#22231F" }}>{l.nome}</span>
-                  <span style={{ color: "#8A8778", fontSize: 12 }}>{PAPEL_LABEL[l.papel]}</span>
-                  <span style={{ textAlign: "right", color: "#8A8778" }}>{l.dias}</span>
-                  <span style={{ textAlign: "right", fontWeight: 700, color: "#22231F" }}>{brl(l.total)}</span>
+            {linhas.map((l, idx) => {
+              const descricaoLancamento = `${l.nome} — Fechamento ${mesRef}`;
+              const jaLancado = lancados.has(descricaoLancamento);
+              return (
+                <div key={l.nome} style={{ borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                  <button onClick={() => abrirExtrato(l.nome)}
+                    style={{ display: "block", width: "100%", padding: "10px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, fontSize: 13 }}>
+                      <span style={{ color: "#22231F" }}>{l.nome}</span>
+                      <span style={{ color: "#8A8778", fontSize: 12 }}>{PAPEL_LABEL[l.papel]}</span>
+                      <span style={{ textAlign: "right", color: "#8A8778" }}>{l.dias}</span>
+                      <span style={{ textAlign: "right", fontWeight: 700, color: "#22231F" }}>{brl(l.total)}</span>
+                    </div>
+                    {l.salarioBase > 0 && (
+                      <div style={{ fontSize: 10, color: "#8A8778", marginTop: 2 }}>salário {brl(l.salarioBase)} + comissão {brl(l.comissao)}</div>
+                    )}
+                  </button>
+                  <div style={{ padding: "0 10px 10px" }}>
+                    {jaLancado ? (
+                      <span style={{ fontSize: 11, color: "#2F8F5B" }}>✓ Já lançado no Plano de Contas</span>
+                    ) : (
+                      <button onClick={(e) => { e.stopPropagation(); lancarPessoa(l.nome, l.total); }} disabled={lancando === l.nome}
+                        style={{ ...linkBtn, fontSize: 11 }}>
+                        {lancando === l.nome ? "Lançando…" : "+ Lançar no Plano de Contas"}
+                      </button>
+                    )}
+                  </div>
                 </div>
-                {l.salarioBase > 0 && (
-                  <div style={{ fontSize: 10, color: "#8A8778", marginTop: 2 }}>salário {brl(l.salarioBase)} + comissão {brl(l.comissao)}</div>
-                )}
-              </button>
-            ))}
+              );
+            })}
             {linhas.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Nenhuma premiação registrada nesse mês ainda.</div>}
           </div>
 
@@ -1038,20 +1076,33 @@ function FechamentoMensal() {
 
           {gerentes.length > 0 && (
             <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
-              {gerentes.map((g, idx) => (
-                <div key={g.nome} style={{ padding: "12px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F", marginBottom: 4 }}>{g.nome}</div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
-                    <span>Salário base</span><span>{brl(g.salarioBase)}</span>
+              {gerentes.map((g, idx) => {
+                const descricaoLancamento = `${g.nome} — Fechamento ${mesRef}`;
+                const jaLancado = lancados.has(descricaoLancamento);
+                return (
+                  <div key={g.nome} style={{ padding: "12px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F", marginBottom: 4 }}>{g.nome}</div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
+                      <span>Salário base</span><span>{brl(g.salarioBase)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
+                      <span>2% de {brl(g.faturamentoBruto)} (faturamento bruto)</span><span>{brl(g.doisPorcento)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, color: "#22231F", marginTop: 4, paddingTop: 4, borderTop: "1px solid #F0EBDD" }}>
+                      <span>Total do mês</span><span>{brl(g.total)}</span>
+                    </div>
+                    <div style={{ marginTop: 6 }}>
+                      {jaLancado ? (
+                        <span style={{ fontSize: 11, color: "#2F8F5B" }}>✓ Já lançado no Plano de Contas</span>
+                      ) : (
+                        <button onClick={() => lancarPessoa(g.nome, g.total)} disabled={lancando === g.nome} style={{ ...linkBtn, fontSize: 11 }}>
+                          {lancando === g.nome ? "Lançando…" : "+ Lançar no Plano de Contas"}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
-                    <span>2% de {brl(g.faturamentoBruto)} (faturamento bruto)</span><span>{brl(g.doisPorcento)}</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, color: "#22231F", marginTop: 4, paddingTop: 4, borderTop: "1px solid #F0EBDD" }}>
-                    <span>Total do mês</span><span>{brl(g.total)}</span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 

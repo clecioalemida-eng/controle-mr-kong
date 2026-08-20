@@ -523,10 +523,10 @@ function CompraManual({ onVoltar }) {
       fornecedorObj = data;
     }
 
-    const { error: errMov } = await supabase.from("movimentacoes_estoque").insert({
+    const { data: movimentacao, error: errMov } = await supabase.from("movimentacoes_estoque").insert({
       insumo_id: insumo.id, tipo: "compra", quantidade: qtd, preco_unitario: preco,
       fornecedor, forma_pagamento: formaPagamento, criado_por: userData?.user?.id,
-    });
+    }).select().single();
     if (errMov) { setErro(errMov.message); setSalvando(false); return; }
 
     if (!insumo.composto) {
@@ -535,6 +535,9 @@ function CompraManual({ onVoltar }) {
 
     // Toda compra vira registro em Contas a Pagar — pago ou a pagar, mas
     // sempre lá. Boleto entra pendente; pix/débito/crédito entra já pago.
+    // Liga na movimentação (movimentacao_estoque_id) pra poder
+    // sincronizar a forma de pagamento se editar em qualquer um dos dois
+    // lugares depois.
     {
       const ehBoleto = formaPagamento === "boleto";
       const dias = ehBoleto ? (parseInt(prazoBoleto) || 0) : 0;
@@ -545,7 +548,8 @@ function CompraManual({ onVoltar }) {
         descricao: `Compra manual — ${nome}`, valor_total: valorTotal,
         valor_pago: ehBoleto ? 0 : valorTotal,
         status: ehBoleto ? "pendente" : "pago",
-        forma_pagamento: formaPagamento, categoria: "compra",
+        forma_pagamento: formaPagamento, categoria: "compra", centro_custo: "insumos",
+        movimentacao_estoque_id: movimentacao.id,
         data_vencimento: vencimento.toISOString().slice(0, 10), criado_por: userData?.user?.id,
       });
     }

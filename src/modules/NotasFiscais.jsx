@@ -365,6 +365,7 @@ function Conferencia({ documento, onVoltar }) {
         status: ehBoleto ? "pendente" : "pago",
         forma_pagamento: formaPagamento,
         categoria: "compra",
+        centro_custo: "insumos",
         data_vencimento: vencimento.toISOString().slice(0, 10),
         criado_por: userData?.user?.id,
       });
