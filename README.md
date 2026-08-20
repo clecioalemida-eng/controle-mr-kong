@@ -285,6 +285,42 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Renomear insumo, e Checklist Operacional editável (só admin)
+
+Três correções/adições nessa entrega:
+
+**1. Renomear insumo em Compras** — no topo da tela de um insumo, o nome
+agora tem um lápis do lado, editável.
+
+**2. Renomear insumo direto ao vincular em Notas** — no formulário de
+edição de item, quando já tem um insumo selecionado em "Vinculado a",
+aparece um lápis do lado que deixa renomear esse insumo ali mesmo (sem
+precisar ir em Compras) — corrige em todo lugar que usa esse insumo, e o
+aprendizado de sinônimo (explicado abaixo) passa a funcionar certo com o
+nome corrigido.
+
+**3. Checklist Operacional editável (só admin).** Os itens de cada
+checklist (Caixa, Bar, Chapa, Gerência × Abertura, Fechamento) eram fixos
+no código — agora vivem no banco (`checklist_itens`), e quem é
+administrador vê um botão **"Editar checklist"** na tela inicial do
+módulo, com edição, exclusão e adição de itens por departamento e turno.
+Quem não é admin continua só marcando os itens, sem opção de editar.
+
+### Lembrete sobre o aprendizado de sinônimo (já existia)
+
+Quando uma nota é **confirmada**, o sistema já grava automaticamente o
+texto lido (ex.: "Nutella 650g") como sinônimo do insumo vinculado — e
+usa isso pra reconhecer sozinho da próxima vez. Isso só funciona bem
+quando o insumo tem o nome *correto*; se um insumo foi criado com nome
+errado (ex.: "Nutella 650g" em vez de só "Nutella"), o item 2 acima
+resolve isso de vez.
+
+### Migração
+
+`027_checklist_editavel.sql` — tabela `checklist_itens`, semeada com os
+itens que já existiam fixos no código (só popula se a tabela estiver
+vazia, seguro rodar mais de uma vez).
+
 ## Fornecedores, e Compras (antes Estoque) com sugestão de compra
 
 Três frentes nessa entrega grande:

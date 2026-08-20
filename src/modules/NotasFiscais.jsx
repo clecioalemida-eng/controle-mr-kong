@@ -168,6 +168,8 @@ function Conferencia({ documento, onVoltar }) {
   const [editandoId, setEditandoId] = useState(null);
   const [formEdicao, setFormEdicao] = useState({ nome_lido: "", quantidade: 0, unidade: "un", preco_unitario: 0, insumo_id: "" });
   const [calcPacotes, setCalcPacotes] = useState({ qtd: "", tamanho: "", unidade: "g" });
+  const [renomeandoInsumo, setRenomeandoInsumo] = useState(false);
+  const [nomeInsumoInput, setNomeInsumoInput] = useState("");
   const [criarInsumoAberto, setCriarInsumoAberto] = useState(null); // id do item pedindo criação de insumo
   const [novoInsumoNome, setNovoInsumoNome] = useState("");
   const [novoInsumoUnidade, setNovoInsumoUnidade] = useState("un");
@@ -236,6 +238,15 @@ function Conferencia({ documento, onVoltar }) {
     const qtd = parseFloat(calcPacotes.qtd) || 0;
     const tamanho = parseFloat(calcPacotes.tamanho) || 0;
     setFormEdicao((f) => ({ ...f, quantidade: round2(qtd * tamanho), unidade: calcPacotes.unidade }));
+  };
+
+  const renomearInsumoVinculado = async () => {
+    const nome = nomeInsumoInput.trim();
+    if (!nome || !formEdicao.insumo_id) { setRenomeandoInsumo(false); return; }
+    const { error } = await supabase.from("insumos").update({ nome }).eq("id", formEdicao.insumo_id);
+    if (error) { setErro(error.message); return; }
+    setInsumos((prev) => prev.map((i) => i.id === formEdicao.insumo_id ? { ...i, nome } : i).sort((a, b) => a.nome.localeCompare(b.nome)));
+    setRenomeandoInsumo(false);
   };
 
   const salvarEdicao = async () => {
@@ -530,8 +541,22 @@ function Conferencia({ documento, onVoltar }) {
                           {insumos.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}
                           <option value="__criar__">+ Criar novo insumo…</option>
                         </select>
+                        {formEdicao.insumo_id && !renomeandoInsumo && (
+                          <button onClick={() => { setNomeInsumoInput(insumos.find((i) => i.id === formEdicao.insumo_id)?.nome || ""); setRenomeandoInsumo(true); }}
+                            style={ghostIconBtn} aria-label="Renomear insumo vinculado" title="Renomear esse insumo (corrige em todo lugar que usa ele)">
+                            <Pencil size={14} />
+                          </button>
+                        )}
                         <button onClick={salvarEdicao} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
                       </div>
+                      {renomeandoInsumo && (
+                        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                          <input value={nomeInsumoInput} onChange={(e) => setNomeInsumoInput(e.target.value)} autoFocus
+                            onKeyDown={(e) => e.key === "Enter" && renomearInsumoVinculado()}
+                            placeholder="Novo nome do insumo" style={{ flex: 1, padding: "5px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 12 }} />
+                          <button onClick={renomearInsumoVinculado} style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Salvar nome</button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

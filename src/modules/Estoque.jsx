@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { ChevronLeft, AlertTriangle, Truck, SlidersHorizontal, Search, RefreshCw, Loader2 } from "lucide-react";
+import { ChevronLeft, AlertTriangle, Truck, SlidersHorizontal, Search, RefreshCw, Loader2, Pencil, Check } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function fmt(v, unidade) {
@@ -224,6 +224,8 @@ function ExtratoInsumo({ insumo, onVoltar }) {
   const [erro, setErro] = useState("");
   const [minimoForm, setMinimoForm] = useState(insumo.estoque_minimo ?? "");
   const [unidadeForm, setUnidadeForm] = useState(insumo.unidade);
+  const [nomeForm, setNomeForm] = useState(insumo.nome);
+  const [editandoNome, setEditandoNome] = useState(false);
   const [ajusteForm, setAjusteForm] = useState({ aberto: false, tipo: "ajuste", quantidade: "", motivo: "" });
   const [salvando, setSalvando] = useState(false);
 
@@ -253,6 +255,14 @@ function ExtratoInsumo({ insumo, onVoltar }) {
     if (error) setErro(error.message);
   };
 
+  const salvarNome = async () => {
+    const nome = nomeForm.trim();
+    if (!nome) { setNomeForm(insumo.nome); setEditandoNome(false); return; }
+    const { error } = await supabase.from("insumos").update({ nome }).eq("id", insumo.id);
+    if (error) { setErro(error.message); return; }
+    setEditandoNome(false);
+  };
+
   const registrarAjuste = async () => {
     const qtd = parseFloat(ajusteForm.quantidade);
     if (!qtd) return;
@@ -279,7 +289,19 @@ function ExtratoInsumo({ insumo, onVoltar }) {
       </button>
 
       <div style={{ ...cardStyle, textAlign: "center", marginBottom: 12 }}>
-        <div style={{ fontSize: 16, fontWeight: 700, color: "#22231F", marginBottom: 6 }}>{insumo.nome}</div>
+        {editandoNome ? (
+          <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", marginBottom: 6 }}>
+            <input value={nomeForm} onChange={(e) => setNomeForm(e.target.value)} autoFocus
+              onKeyDown={(e) => e.key === "Enter" && salvarNome()}
+              style={{ fontSize: 14, padding: "4px 8px", borderRadius: 6, border: "1px solid #E8E2D2", textAlign: "center" }} />
+            <button onClick={salvarNome} style={ghostIconBtn} aria-label="Salvar nome"><Check size={16} /></button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", marginBottom: 6 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#22231F" }}>{insumo.nome}</div>
+            <button onClick={() => { setNomeForm(insumo.nome); setEditandoNome(true); }} style={ghostIconBtn} aria-label="Editar nome do insumo"><Pencil size={14} /></button>
+          </div>
+        )}
         <div style={{ fontSize: 11, color: "#8A8778" }}>Saldo atual</div>
         <div style={{ fontSize: 24, fontWeight: 800, color: "#22231F" }}>{fmt(insumo.estoque_atual, unidadeForm)}</div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16, marginTop: 8, flexWrap: "wrap" }}>

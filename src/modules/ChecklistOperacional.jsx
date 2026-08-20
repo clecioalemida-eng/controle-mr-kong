@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   CheckCircle2, XCircle, Clock, AlertTriangle, ChevronLeft,
   LayoutDashboard, Flame, Wine, CircleDollarSign,
-  ShieldCheck, Loader2,
+  ShieldCheck, Loader2, Pencil, Trash2, Plus, Check,
 } from "lucide-react";
 import { supabase, TABELA_CHECKLIST } from "../lib/supabaseClient";
 
@@ -112,6 +112,18 @@ function podePreencher(etapa) {
   return true;
 }
 
+function useIsAdmin() {
+  const [isAdmin, setIsAdmin] = useState(null);
+  useEffect(() => {
+    supabase.auth.getUser().then(async ({ data }) => {
+      if (!data?.user) { setIsAdmin(false); return; }
+      const { data: perfil } = await supabase.from("perfis").select("is_admin").eq("id", data.user.id).maybeSingle();
+      setIsAdmin(perfil?.is_admin || false);
+    });
+  }, []);
+  return isAdmin;
+}
+
 // ---------------------------------------------------------------------------
 // Componente principal
 // ---------------------------------------------------------------------------
@@ -125,8 +137,23 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
   const [jaEnviado, setJaEnviado] = useState(false);
   const [modoTeste, setModoTeste] = useState(false);
   const [erro, setErro] = useState("");
+  const [itensDb, setItensDb] = useState({}); // departamento -> turno -> [texto, ...] (ordenado)
+  const isAdmin = useIsAdmin();
 
   const opDate = diaOperacional();
+
+  const carregarItensDb = useCallback(async () => {
+    const { data } = await supabase.from("checklist_itens").select("*").eq("ativo", true).order("ordem");
+    const mapa = {};
+    DEPT_KEYS.forEach((k) => { mapa[k] = { abertura: [], fechamento: [] }; });
+    (data || []).forEach((it) => {
+      if (!mapa[it.departamento]) mapa[it.departamento] = { abertura: [], fechamento: [] };
+      mapa[it.departamento][it.turno].push(it.texto);
+    });
+    setItensDb(mapa);
+  }, []);
+
+  useEffect(() => { carregarItensDb(); }, [carregarItensDb]);
 
   const abrirChecklist = async (deptKey, etapa) => {
     setErro("");
@@ -158,7 +185,7 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
     setItens((prev) => ({ ...prev, [itemLabel]: status }));
   };
 
-  const listaItensAtual = deptAtual && etapaAtual ? DEPARTAMENTOS[deptAtual][etapaAtual] : [];
+  const listaItensAtual = deptAtual && etapaAtual ? (itensDb[deptAtual]?.[etapaAtual] || []) : [];
   const totalItens = listaItensAtual.length;
   const totalPreenchidos = listaItensAtual.filter((i) => itens[i]).length;
   const completo = totalItens > 0 && totalPreenchidos === totalItens;
@@ -224,6 +251,11 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
             <input type="checkbox" checked={modoTeste} onChange={(e) => setModoTeste(e.target.checked)} />
             Modo teste (ignorar horário de abertura/fechamento)
           </label>
+          {isAdmin && (
+            <button onClick={() => setTela("editar")} style={{ ...btnSecondary, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 4 }}>
+              <Pencil size={14} /> Editar checklist
+            </button>
+          )}
         </div>
       </Shell>
     );
@@ -284,7 +316,122 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
     return <Dashboard onBack={() => setTela("home")} opDateHoje={opDate} />;
   }
 
+  if (tela === "editar") {
+    return <EditarChecklist onBack={() => { setTela("home"); carregarItensDb(); }} />;
+  }
+
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Edição do checklist (só admin) — editar, excluir, acrescentar itens
+// ---------------------------------------------------------------------------
+function EditarChecklist({ onBack }) {
+  const [itens, setItens] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [editandoId, setEditandoId] = useState(null);
+  const [textoEdicao, setTextoEdicao] = useState("");
+  const [novoTexto, setNovoTexto] = useState({}); // `${dept}:${turno}` -> texto sendo digitado
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    const { data, error } = await supabase.from("checklist_itens").select("*").eq("ativo", true).order("ordem");
+    if (error) setErro(error.message);
+    setItens(data || []);
+    setCarregando(false);
+  }, []);
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const salvarEdicao = async (id) => {
+    const texto = textoEdicao.trim();
+    if (!texto) return;
+    const { error } = await supabase.from("checklist_itens").update({ texto }).eq("id", id);
+    if (error) { setErro(error.message); return; }
+    setEditandoId(null);
+    carregar();
+  };
+
+  const excluir = async (item) => {
+    if (!window.confirm(`Remover "${item.texto}" do checklist de ${DEPARTAMENTOS[item.departamento].label}?`)) return;
+    const { error } = await supabase.from("checklist_itens").update({ ativo: false }).eq("id", item.id);
+    if (error) { setErro(error.message); return; }
+    carregar();
+  };
+
+  const adicionar = async (departamento, turno) => {
+    const chave = `${departamento}:${turno}`;
+    const texto = (novoTexto[chave] || "").trim();
+    if (!texto) return;
+    const maiorOrdem = Math.max(0, ...itens.filter((i) => i.departamento === departamento && i.turno === turno).map((i) => i.ordem));
+    const { error } = await supabase.from("checklist_itens").insert({ departamento, turno, texto, ordem: maiorOrdem + 1 });
+    if (error) { setErro(error.message); return; }
+    setNovoTexto((prev) => ({ ...prev, [chave]: "" }));
+    carregar();
+  };
+
+  return (
+    <div style={pageStyle}>
+      <div className="app-shell">
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+          <button onClick={onBack} style={iconBtn}><ChevronLeft size={18} /></button>
+          <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Editar checklist</div>
+        </div>
+
+        {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 14 }}>{erro}</div>}
+
+        {carregando ? (
+          <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
+        ) : (
+          DEPT_KEYS.map((deptKey) => (
+            <div key={deptKey} style={{ marginBottom: 24 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#22231F", marginBottom: 10 }}>{DEPARTAMENTOS[deptKey].label}</div>
+              {["abertura", "fechamento"].map((turno) => {
+                const chave = `${deptKey}:${turno}`;
+                const itensDoGrupo = itens.filter((i) => i.departamento === deptKey && i.turno === turno);
+                return (
+                  <div key={turno} style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#8A8778", textTransform: "uppercase", marginBottom: 6 }}>
+                      {turno === "abertura" ? "Abertura" : "Fechamento"}
+                    </div>
+                    <div style={{ border: "1px solid #E8E2D2", borderRadius: 10, overflow: "hidden", background: "#FFFFFF", marginBottom: 6 }}>
+                      {itensDoGrupo.map((item, idx) => (
+                        <div key={item.id} style={{ padding: "8px 12px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", display: "flex", alignItems: "center", gap: 8 }}>
+                          {editandoId === item.id ? (
+                            <>
+                              <input value={textoEdicao} onChange={(e) => setTextoEdicao(e.target.value)} autoFocus
+                                onKeyDown={(e) => e.key === "Enter" && salvarEdicao(item.id)}
+                                style={{ flex: 1, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+                              <button onClick={() => salvarEdicao(item.id)} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Salvar"><Check size={16} /></button>
+                            </>
+                          ) : (
+                            <>
+                              <span style={{ flex: 1, fontSize: 13, color: "#22231F" }}>{item.texto}</span>
+                              <button onClick={() => { setEditandoId(item.id); setTextoEdicao(item.texto); }} style={ghostIconBtn} aria-label="Editar item"><Pencil size={14} /></button>
+                              <button onClick={() => excluir(item)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Excluir item"><Trash2 size={14} /></button>
+                            </>
+                          )}
+                        </div>
+                      ))}
+                      {itensDoGrupo.length === 0 && <div style={{ padding: 12, fontSize: 12, color: "#8A8778" }}>Nenhum item ainda.</div>}
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input value={novoTexto[chave] || ""} onChange={(e) => setNovoTexto((prev) => ({ ...prev, [chave]: e.target.value }))}
+                        onKeyDown={(e) => e.key === "Enter" && adicionar(deptKey, turno)}
+                        placeholder="Novo item…" style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+                      <button onClick={() => adicionar(deptKey, turno)} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 4, fontSize: 12, padding: "6px 10px" }}>
+                        <Plus size={13} /> Adicionar
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +716,7 @@ const iconBtn = {
   width: 34, height: 34, borderRadius: 8, border: "1px solid #E8E2D2", background: "#FFFFFF",
   display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#22231F",
 };
+const ghostIconBtn = { border: "none", background: "none", color: "#8A8778", cursor: "pointer", padding: 2, display: "flex" };
 const inputStyle = {
   width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 10,
   border: "1px solid #E8E2D2", fontSize: 14, background: "#FFFFFF", color: "#22231F",
