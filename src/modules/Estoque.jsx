@@ -533,14 +533,18 @@ function CompraManual({ onVoltar }) {
       await supabase.from("insumos").update({ custo_medio_atual: preco, atualizado_em: new Date().toISOString() }).eq("id", insumo.id);
     }
 
-    // só boleto vira conta a pagar — pix/débito/crédito já foi pago na hora
-    if (formaPagamento === "boleto") {
-      const dias = parseInt(prazoBoleto) || 0;
+    // Toda compra vira registro em Contas a Pagar — pago ou a pagar, mas
+    // sempre lá. Boleto entra pendente; pix/débito/crédito entra já pago.
+    {
+      const ehBoleto = formaPagamento === "boleto";
+      const dias = ehBoleto ? (parseInt(prazoBoleto) || 0) : 0;
       const vencimento = new Date();
       vencimento.setDate(vencimento.getDate() + dias);
       await supabase.from("contas_pagar").insert({
         fornecedor_id: fornecedorObj.id, fornecedor_nome: fornecedorObj.nome,
         descricao: `Compra manual — ${nome}`, valor_total: valorTotal,
+        valor_pago: ehBoleto ? 0 : valorTotal,
+        status: ehBoleto ? "pendente" : "pago",
         forma_pagamento: formaPagamento, categoria: "compra",
         data_vencimento: vencimento.toISOString().slice(0, 10), criado_por: userData?.user?.id,
       });
@@ -645,7 +649,7 @@ function CompraManual({ onVoltar }) {
           </div>
         )}
         <div style={{ fontSize: 10, color: "#8A8778", marginTop: 6 }}>
-          {formaPagamento === "boleto" ? "Gera uma conta a pagar com esse prazo." : "Pix/débito/crédito já é pago na hora — não gera conta a pagar."}
+          {formaPagamento === "boleto" ? "Gera uma conta a pagar com esse prazo." : "Pix/débito/crédito entra em Contas a Pagar já marcado como pago."}
         </div>
       </div>
 

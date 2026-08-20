@@ -345,19 +345,24 @@ function Conferencia({ documento, onVoltar }) {
 
     await supabase.from("documentos_compra").update({ status: "confirmado", confirmado_em: new Date().toISOString() }).eq("id", documento.id);
 
-    // Só boleto vira conta a pagar de verdade (é a única forma que fica
-    // devendo) — pix/débito/crédito já foram pagos na hora da compra.
-    if (formaPagamento === "boleto") {
-      const dias = parseInt(prazoBoleto) || 0;
+    // Toda nota confirmada vira um registro em Contas a Pagar — pago ou a
+    // pagar, mas sempre lá, pra ter o valor de toda compra num lugar só.
+    // Boleto entra como pendente (com vencimento); pix/débito/crédito
+    // entra já como pago (foi pago na hora da compra).
+    {
+      const ehBoleto = formaPagamento === "boleto";
+      const dias = ehBoleto ? (parseInt(prazoBoleto) || 0) : 0;
       const vencimento = new Date();
       vencimento.setDate(vencimento.getDate() + dias);
-      const valorTotal = itens.reduce((s, it) => s + it.quantidade * it.preco_unitario, 0);
+      const valorTotal = round2(itens.reduce((s, it) => s + it.quantidade * it.preco_unitario, 0));
       await supabase.from("contas_pagar").insert({
         documento_compra_id: documento.id,
         fornecedor_id: fornecedorAtual.id,
         fornecedor_nome: fornecedorAtual.nome,
         descricao: `Nota fiscal — ${fornecedorAtual.nome || "fornecedor não identificado"}`,
-        valor_total: round2(valorTotal),
+        valor_total: valorTotal,
+        valor_pago: ehBoleto ? 0 : valorTotal,
+        status: ehBoleto ? "pendente" : "pago",
         forma_pagamento: formaPagamento,
         categoria: "compra",
         data_vencimento: vencimento.toISOString().slice(0, 10),
@@ -623,7 +628,7 @@ function Conferencia({ documento, onVoltar }) {
           </div>
         )}
         <div style={{ fontSize: 10, color: "#8A8778", marginTop: 6 }}>
-          {formaPagamento === "boleto" ? "Gera uma conta a pagar com esse prazo, no valor total da nota." : "Pix/débito/crédito já é pago na hora — não gera conta a pagar."}
+          {formaPagamento === "boleto" ? "Gera uma conta a pagar com esse prazo, no valor total da nota." : "Pix/débito/crédito entra em Contas a Pagar já marcado como pago."}
         </div>
       </div>
 

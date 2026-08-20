@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { AlertTriangle, Check, Loader2, ChevronDown, ChevronUp } from "lucide-react";
+import { AlertTriangle, Check, Loader2, ChevronDown, ChevronUp, Pencil } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
@@ -23,6 +23,13 @@ const CATEGORIAS_RECORRENTES = [
   { valor: "outro", rotulo: "Outra" },
 ];
 const CATEGORIA_LABEL = Object.fromEntries(CATEGORIAS_RECORRENTES.map((c) => [c.valor, c.rotulo]));
+const FORMAS_PAGAMENTO = [
+  { valor: "", rotulo: "Não informado" },
+  { valor: "pix", rotulo: "Pix" },
+  { valor: "debito", rotulo: "Débito" },
+  { valor: "credito", rotulo: "Cartão de crédito" },
+  { valor: "boleto", rotulo: "Boleto" },
+];
 
 // Contas a pagar, geradas ao confirmar uma nota fiscal (ver
 // src/modules/NotasFiscais.jsx) — organizadas por prazo de vencimento,
@@ -31,7 +38,7 @@ export default function ContasPagar() {
   const [contas, setContas] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
-  const [mostrarPagas, setMostrarPagas] = useState(false);
+  const [mostrarPagas, setMostrarPagas] = useState(true);
   const [pagandoId, setPagandoId] = useState(null);
   const [valorPagamento, setValorPagamento] = useState("");
   const [dataPagamento, setDataPagamento] = useState(() => new Date().toISOString().slice(0, 10));
@@ -41,6 +48,8 @@ export default function ContasPagar() {
   const [criandoCategoria, setCriandoCategoria] = useState(null); // categoria sendo criada, ou null
   const [novaConta, setNovaConta] = useState({ descricao: "", valor: "", vencimento: new Date().toISOString().slice(0, 10) });
   const [previsao, setPrevisao] = useState([]); // [{ categoria, media, meses }]
+  const [editandoFormaId, setEditandoFormaId] = useState(null);
+  const [formaEdicao, setFormaEdicao] = useState("");
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -88,6 +97,13 @@ export default function ContasPagar() {
     if (error) { setErro(error.message); return; }
     setCriandoCategoria(null);
     carregar();
+  };
+
+  const salvarFormaPagamento = async (contaId) => {
+    const { error } = await supabase.from("contas_pagar").update({ forma_pagamento: formaEdicao || null }).eq("id", contaId);
+    if (error) { setErro(error.message); return; }
+    setContas((prev) => prev.map((c) => c.id === contaId ? { ...c, forma_pagamento: formaEdicao || null } : c));
+    setEditandoFormaId(null);
   };
 
   const abrirHistorico = async (contaId) => {
@@ -155,7 +171,7 @@ export default function ContasPagar() {
             placeholder="Descrição" style={{ width: "100%", boxSizing: "border-box", marginBottom: 6, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
           <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
             <input type="number" step="0.01" value={novaConta.valor} onChange={(e) => setNovaConta((f) => ({ ...f, valor: e.target.value }))}
-              placeholder="Valor" style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+              placeholder="Valor (pode ser uma estimativa)" style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
             <input type="date" value={novaConta.vencimento} onChange={(e) => setNovaConta((f) => ({ ...f, vencimento: e.target.value }))}
               style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
           </div>
@@ -197,7 +213,24 @@ export default function ContasPagar() {
                     <span style={{ ...pill, background: "#F6F1E7", color: "#8A8778" }}>{CONDICAO_LABEL[conta.forma_pagamento] || CONDICAO_LABEL[conta.condicao_pagamento] || "—"}</span>
                   )}
                 </div>
-                <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 6 }}>Vencimento {fmtData(conta.data_vencimento)} · Total {brl(conta.valor_total)}</div>
+                <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 4 }}>Vencimento {fmtData(conta.data_vencimento)} · Total {brl(conta.valor_total)}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <span style={{ fontSize: 11, color: "#8A8778" }}>Forma de pagamento:</span>
+                  {editandoFormaId === conta.id ? (
+                    <>
+                      <select value={formaEdicao} onChange={(e) => setFormaEdicao(e.target.value)}
+                        style={{ fontSize: 12, padding: "2px 4px", borderRadius: 4, border: "1px solid #E8E2D2", background: "#FFFFFF" }}>
+                        {FORMAS_PAGAMENTO.map((f) => <option key={f.valor} value={f.valor}>{f.rotulo}</option>)}
+                      </select>
+                      <button onClick={() => salvarFormaPagamento(conta.id)} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Salvar forma de pagamento"><Check size={13} /></button>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ fontSize: 11, color: "#22231F" }}>{CONDICAO_LABEL[conta.forma_pagamento] || "Não informado"}</span>
+                      <button onClick={() => { setFormaEdicao(conta.forma_pagamento || ""); setEditandoFormaId(conta.id); }} style={ghostIconBtn} aria-label="Editar forma de pagamento"><Pencil size={12} /></button>
+                    </>
+                  )}
+                </div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: conta.status === "pago" ? 0 : 8 }}>
                   <span style={{ color: "#8A8778" }}>Pago: {brl(conta.valor_pago)}</span>
                   {conta.status !== "pago" && <span style={{ fontWeight: 700, color: "#A32D2D" }}>Falta: {brl(restante)}</span>}
@@ -253,6 +286,7 @@ export default function ContasPagar() {
 
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
 const sectionLabel = { fontSize: 12, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#8A8778", marginBottom: 8 };
+const ghostIconBtn = { border: "none", background: "none", color: "#8A8778", cursor: "pointer", padding: 2, display: "flex" };
 const btnSecondary = { background: "#F6F1E7", border: "1px solid #E8E2D2", color: "#22231F", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" };
 const linkBtn = { background: "none", border: "none", color: "#8A6A0F", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0, textAlign: "left" };
 const pill = { fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 999, whiteSpace: "nowrap" };
