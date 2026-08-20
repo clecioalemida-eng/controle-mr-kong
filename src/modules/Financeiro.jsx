@@ -6,6 +6,8 @@ import NotasFiscais from "./NotasFiscais";
 import Estoque from "./Estoque";
 import Equipe from "./Equipe";
 import ConferenciaCaixa from "./ConferenciaCaixa";
+import ContasPagar from "./ContasPagar";
+import RelatorioFiado from "./RelatorioFiado";
 
 const ABAS = [
   { chave: "vendas", label: "Vendas" },
@@ -17,6 +19,8 @@ const ABAS = [
   { chave: "estoque", label: "Compras" },
   { chave: "equipe", label: "Equipe" },
   { chave: "conferencia", label: "Conferência de caixa" },
+  { chave: "contaspagar", label: "Contas a pagar" },
+  { chave: "fiado", label: "Fiado" },
 ];
 
 const NOMES_PAGAMENTO = {
@@ -102,6 +106,10 @@ export default function Financeiro({ onVoltar }) {
           <Equipe />
         ) : aba === "conferencia" ? (
           <ConferenciaCaixa />
+        ) : aba === "contaspagar" ? (
+          <ContasPagar />
+        ) : aba === "fiado" ? (
+          <RelatorioFiado />
         ) : (
           <>
             <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>

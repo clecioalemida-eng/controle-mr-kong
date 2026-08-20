@@ -285,6 +285,38 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Previsão de escala, item manual em notas, contas a pagar, e fiado
+
+Cinco coisas grandes nessa entrega:
+
+**1. Previsão de Escala** (nova sub-aba em Equipe) — planejamento pra
+dias futuros, sem taxa de serviço nem cálculo nenhum. Marca quem está
+previsto pra trabalhar, e quando o dia chegar, a Escala do dia já abre
+com essas pessoas pré-marcadas (só falta confirmar horas e taxa).
+
+**2. Adicionar item manual em Notas** — link "+ Adicionar item
+manualmente" na Conferência de nota, pra itens que a IA não leu.
+
+**3. Condição de pagamento + Contas a Pagar** — ao confirmar uma nota,
+escolhe a condição (à vista / 7 / 14 / 21 / 28 dias / outro prazo), e o
+sistema já gera uma conta a pagar com vencimento calculado. Nova aba
+**Contas a Pagar** em Financeiro, ordenada por vencimento, com etiqueta de
+vencida/próxima, e opção de registrar pagamento (inclusive parcial, com
+histórico de cada pagamento feito).
+
+**4. Relatório de Fiado** — nova aba em Financeiro, busca pedidos pagos
+como fiado num período. Mostra o **nome do cliente** quando o CardápioWeb
+manda esse dado; se não mandar, cai pro número do pedido (com aviso na
+tela avisando que não veio o nome).
+
+### Migração
+
+`028_previsao_contas_pagar.sql` — tabelas `previsoes_escala`,
+`contas_pagar`, `pagamentos_conta`.
+
+Não precisa mexer em Edge Function — tudo reaproveita o `resumo_financeiro`
+que já existia.
+
 ## Renomear insumo, e Checklist Operacional editável (só admin)
 
 Três correções/adições nessa entrega:

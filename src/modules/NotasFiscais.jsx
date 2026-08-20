@@ -5,6 +5,14 @@ import {
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
+const CONDICOES_PAGAMENTO = [
+  { valor: "a_vista", rotulo: "À vista", dias: 0 },
+  { valor: "7_dias", rotulo: "7 dias", dias: 7 },
+  { valor: "14_dias", rotulo: "14 dias", dias: 14 },
+  { valor: "21_dias", rotulo: "21 dias", dias: 21 },
+  { valor: "28_dias", rotulo: "28 dias", dias: 28 },
+  { valor: "outro", rotulo: "Outro prazo…", dias: null },
+];
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
@@ -164,6 +172,8 @@ function Conferencia({ documento, onVoltar }) {
   const [insumos, setInsumos] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
+  const [condicaoPagamento, setCondicaoPagamento] = useState("a_vista");
+  const [prazoCustom, setPrazoCustom] = useState("");
   const [erro, setErro] = useState("");
   const [editandoId, setEditandoId] = useState(null);
   const [formEdicao, setFormEdicao] = useState({ nome_lido: "", quantidade: 0, unidade: "un", preco_unitario: 0, insumo_id: "" });
@@ -226,6 +236,15 @@ function Conferencia({ documento, onVoltar }) {
   const removerItem = async (id) => {
     await supabase.from("itens_documento_compra").delete().eq("id", id);
     setItens((prev) => prev.filter((it) => it.id !== id));
+  };
+
+  const adicionarItemManual = async () => {
+    const { data, error } = await supabase.from("itens_documento_compra")
+      .insert({ documento_id: documento.id, nome_lido: "Novo item", quantidade: 1, unidade: "un", preco_unitario: 0 })
+      .select().single();
+    if (error) { setErro(error.message); return; }
+    setItens((prev) => [...prev, data]);
+    abrirEdicao(data);
   };
 
   const abrirEdicao = (item) => {
@@ -326,6 +345,25 @@ function Conferencia({ documento, onVoltar }) {
     }
 
     await supabase.from("documentos_compra").update({ status: "confirmado", confirmado_em: new Date().toISOString() }).eq("id", documento.id);
+
+    // Gera a conta a pagar dessa compra, com vencimento calculado pela
+    // condição de pagamento escolhida.
+    const opcao = CONDICOES_PAGAMENTO.find((c) => c.valor === condicaoPagamento);
+    const dias = condicaoPagamento === "outro" ? (parseInt(prazoCustom) || 0) : (opcao?.dias || 0);
+    const vencimento = new Date();
+    vencimento.setDate(vencimento.getDate() + dias);
+    const valorTotal = itens.reduce((s, it) => s + it.quantidade * it.preco_unitario, 0);
+    await supabase.from("contas_pagar").insert({
+      documento_compra_id: documento.id,
+      fornecedor_id: fornecedorAtual.id,
+      fornecedor_nome: fornecedorAtual.nome,
+      descricao: `Nota fiscal — ${fornecedorAtual.nome || "fornecedor não identificado"}`,
+      valor_total: round2(valorTotal),
+      condicao_pagamento: condicaoPagamento,
+      data_vencimento: vencimento.toISOString().slice(0, 10),
+      criado_por: userData?.user?.id,
+    });
+
     setSalvando(false);
     onVoltar();
   };
@@ -378,7 +416,10 @@ function Conferencia({ documento, onVoltar }) {
         </div>
       )}
 
-      <div style={sectionLabel}>Itens encontrados</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={sectionLabel}>Itens encontrados</div>
+        <button onClick={adicionarItemManual} style={{ ...linkBtn, fontSize: 12 }}>+ Adicionar item manualmente</button>
+      </div>
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
@@ -566,6 +607,19 @@ function Conferencia({ documento, onVoltar }) {
           {itens.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum item lido nesse documento.</div>}
         </div>
       )}
+
+      <div style={{ ...cardStyle, marginBottom: 14 }}>
+        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Condição de pagamento</label>
+        <select value={condicaoPagamento} onChange={(e) => setCondicaoPagamento(e.target.value)}
+          style={{ width: "100%", boxSizing: "border-box", padding: "7px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }}>
+          {CONDICOES_PAGAMENTO.map((c) => <option key={c.valor} value={c.valor}>{c.rotulo}</option>)}
+        </select>
+        {condicaoPagamento === "outro" && (
+          <input type="number" value={prazoCustom} onChange={(e) => setPrazoCustom(e.target.value)} placeholder="Quantos dias?"
+            style={{ width: "100%", boxSizing: "border-box", marginTop: 6, padding: "7px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+        )}
+        <div style={{ fontSize: 10, color: "#8A8778", marginTop: 6 }}>Gera uma conta a pagar com esse prazo, no valor total da nota.</div>
+      </div>
 
       {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 12 }}>{erro}</div>}
 

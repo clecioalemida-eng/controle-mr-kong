@@ -31,6 +31,7 @@ const HORAS_PADRAO_TURNO = 8;
 const SUBABAS = [
   { chave: "pessoas", label: "Pessoas" },
   { chave: "matriz", label: "Matriz de cargos", soAdmin: true },
+  { chave: "previsao", label: "Previsão de escala" },
   { chave: "premiacao", label: "Escala do dia" },
   { chave: "mensal", label: "Fechamento mensal", soAdmin: true },
 ];
@@ -68,8 +69,85 @@ export default function Equipe() {
       </div>
       {subaba === "pessoas" && <Pessoas isAdmin={isAdmin} />}
       {subaba === "matriz" && isAdmin && <MatrizCargos />}
+      {subaba === "previsao" && <PrevisaoDeEscala />}
       {subaba === "premiacao" && <PremiacaoDoDia isAdmin={isAdmin} />}
       {subaba === "mensal" && isAdmin && <FechamentoMensal />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Previsão de Escala — planejamento de dias futuros, sem nenhum cálculo
+// de valor (isso só acontece na Escala do dia, quando o dia chegar).
+// Serve pra organizar quem está previsto pra trabalhar em cada dia.
+// ---------------------------------------------------------------------------
+function PrevisaoDeEscala() {
+  const [dia, setDia] = useState(() => {
+    const amanha = new Date();
+    amanha.setDate(amanha.getDate() + 1);
+    return amanha.toISOString().slice(0, 10);
+  });
+  const [pessoas, setPessoas] = useState([]);
+  const [previstos, setPrevistos] = useState(new Set());
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [mensagem, setMensagem] = useState("");
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    setMensagem("");
+    const [{ data: pessoasData, error }, { data: previsoesData }] = await Promise.all([
+      supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
+      supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
+    ]);
+    if (error) setErro(error.message);
+    setPessoas(pessoasData || []);
+    setPrevistos(new Set((previsoesData || []).map((p) => p.pessoa_id)));
+    setCarregando(false);
+  }, [dia]);
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const alternar = async (pessoaId) => {
+    const jaPrevisto = previstos.has(pessoaId);
+    if (jaPrevisto) {
+      await supabase.from("previsoes_escala").delete().eq("pessoa_id", pessoaId).eq("dia", dia);
+    } else {
+      await supabase.from("previsoes_escala").insert({ pessoa_id: pessoaId, dia });
+    }
+    setPrevistos((prev) => {
+      const novo = new Set(prev);
+      jaPrevisto ? novo.delete(pessoaId) : novo.add(pessoaId);
+      return novo;
+    });
+    setMensagem("Previsão salva.");
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
+        Só planejamento — sem taxa de serviço, sem cálculo de valor. Quando o dia chegar, marque de novo (ou confirme) na Escala do dia pra calcular os valores de verdade.
+      </div>
+      <input type="date" value={dia} onChange={(e) => setDia(e.target.value)} style={{ ...inputStyle, marginBottom: 14 }} />
+
+      {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
+      {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+
+      {carregando ? (
+        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
+      ) : (
+        <div style={{ display: "grid", gap: 6 }}>
+          {pessoas.map((p) => (
+            <div key={p.id} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
+              <input type="checkbox" checked={previstos.has(p.id)} onChange={() => alternar(p.id)} />
+              <div>
+                <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
+                <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}</div>
+              </div>
+            </div>
+          ))}
+          {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Cadastre pessoas na aba "Pessoas" primeiro.</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -396,6 +474,7 @@ function PremiacaoDoDia({ isAdmin }) {
       supabase.from("premiacoes_diarias").select("*").eq("dia", dia),
       supabase.from("matriz_cargos").select("*"),
       supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle(),
+      supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
     ]);
     setPessoas(pessoasData || []);
     setPremiacoesSalvas(premiacoesData || []);
@@ -404,7 +483,8 @@ function PremiacaoDoDia({ isAdmin }) {
     setModoLeitura((presencasData || []).length > 0);
     setMatriz(Object.fromEntries((matrizData || []).map((m) => [m.papel, m])));
     const mapaPart = {};
-    (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: false, horas: 0 }; });
+    const idsPrevistos = new Set((previsoesData || []).map((p) => p.pessoa_id));
+    (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: idsPrevistos.has(p.id), horas: 0 }; });
     (presencasData || []).forEach((pr) => { mapaPart[pr.pessoa_id] = { incluido: true, horas: pr.horas_trabalhadas || 0 }; });
     setParticipacao(mapaPart);
     // A diária base por cargo é persistente (vem da Matriz, coluna
