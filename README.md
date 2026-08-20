@@ -285,6 +285,36 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Compra manual, forma de pagamento unificada, contas recorrentes e previsão
+
+**1. Compra manual** (Compras > "+ Compra manual") — dá entrada de estoque
+sem precisar de nota fiscal/foto. Tem o mesmo item buscável (ou cria
+novo), a mesma calculadora de pacotes (ex.: 5 pacotes de 2,5kg = 12.500g),
+valor unitário/total calculando um a partir do outro, forma de pagamento,
+e fornecedor buscável (ou cria novo).
+
+**2. Forma de pagamento unificada** — tanto a confirmação de nota fiscal
+quanto a compra manual agora usam a mesma forma de pagamento (Pix /
+Débito / Cartão de crédito / Boleto). Só **boleto** gera conta a pagar
+(com o prazo em dias que você informar) — os outros já foram pagos na
+hora, então não viram dívida.
+
+**3. Contas fixas recorrentes** — em Contas a Pagar, botões rápidos pra
+lançar Água, Luz, Internet, Alvará, Aluguel, Telefone (ou "Outra"), sem
+precisar passar pela compra de insumo.
+
+**4. Previsão de custos mensais** — card no topo de Contas a Pagar
+mostrando a média de cada conta recorrente já lançada antes (ex.: "Luz
+~R$450, 3 lanç."). Cresce sozinho conforme você for lançando mais meses.
+
+### Migração
+
+`029_compra_manual_e_recorrentes.sql` — adiciona `forma_pagamento` em
+`movimentacoes_estoque` e `contas_pagar`, e `categoria` em `contas_pagar`
+(usada pra reconhecer as recorrentes na previsão).
+
+Não mexe em Edge Function.
+
 ## Previsão de escala, item manual em notas, contas a pagar, e fiado
 
 Cinco coisas grandes nessa entrega:

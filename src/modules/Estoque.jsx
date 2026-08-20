@@ -25,9 +25,16 @@ const TIPO_LABEL = {
 };
 const TIPO_ICONE = { compra: Truck, ajuste: SlidersHorizontal, perda: AlertTriangle, contagem: SlidersHorizontal };
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
+const FORMAS_PAGAMENTO_COMPRA = [
+  { valor: "pix", rotulo: "Pix" },
+  { valor: "debito", rotulo: "Débito" },
+  { valor: "credito", rotulo: "Cartão de crédito" },
+  { valor: "boleto", rotulo: "Boleto" },
+];
+function round2(n) { return Math.round((n || 0) * 100) / 100; }
 
 export default function Estoque() {
-  const [tela, setTela] = useState("lista"); // lista | extrato
+  const [tela, setTela] = useState("lista"); // lista | extrato | compra_manual
   const [insumos, setInsumos] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
@@ -162,6 +169,10 @@ export default function Estoque() {
     return <ExtratoInsumo insumo={insumoAtual} onVoltar={() => { setTela("lista"); setInsumoAtual(null); carregar(); }} />;
   }
 
+  if (tela === "compra_manual") {
+    return <CompraManual insumos={insumos} onVoltar={() => { setTela("lista"); carregar(); }} />;
+  }
+
   return (
     <div>
       <div style={{ ...cardStyle, marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -199,10 +210,16 @@ export default function Estoque() {
           <button onClick={criarInsumo} style={{ ...btnSecondary, fontSize: 12, padding: "6px 12px" }}>Criar</button>
         </div>
       ) : (
-        <button onClick={() => setCriandoInsumo(true)}
-          style={{ width: "100%", boxSizing: "border-box", border: "1px dashed #37A0E5", borderRadius: 10, padding: "10px", background: "none", color: "#185FA5", fontSize: 13, cursor: "pointer", marginBottom: 14 }}>
-          + Novo insumo
-        </button>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <button onClick={() => setCriandoInsumo(true)}
+            style={{ flex: 1, boxSizing: "border-box", border: "1px dashed #37A0E5", borderRadius: 10, padding: "10px", background: "none", color: "#185FA5", fontSize: 13, cursor: "pointer" }}>
+            + Novo insumo
+          </button>
+          <button onClick={() => setTela("compra_manual")}
+            style={{ flex: 1, boxSizing: "border-box", border: "1px dashed #37A0E5", borderRadius: 10, padding: "10px", background: "none", color: "#185FA5", fontSize: 13, cursor: "pointer" }}>
+            + Compra manual
+          </button>
+        </div>
       )}
 
       {carregando ? (
@@ -245,8 +262,6 @@ export default function Estoque() {
     </div>
   );
 }
-
-function round2(n) { return Math.round((n || 0) * 100) / 100; }
 
 
 function ExtratoInsumo({ insumo, onVoltar }) {
@@ -438,3 +453,214 @@ const linkBtn = { background: "none", border: "none", color: "#8A6A0F", fontSize
 const sectionLabel = { fontSize: 12, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#8A8778", marginBottom: 8 };
 const pill = { fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#F0999522", color: "#A32D2D" };
 const avisoStyle = { display: "flex", gap: 8, background: "#FBF3D9", border: "1px solid #E8D48A", color: "#7A6A1E", borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 };
+const inputStyle = { width: "100%", boxSizing: "border-box", padding: "9px 10px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" };
+const btnPrimary = { background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
+
+// ---------------------------------------------------------------------------
+// Compra manual — dá entrada de uma compra sem precisar de nota fiscal
+// (foto/leitura por IA). Faz a mesma coisa que confirmar uma nota faz:
+// grava a movimentação, atualiza o custo do insumo, e — se for boleto —
+// gera a conta a pagar.
+// ---------------------------------------------------------------------------
+function CompraManual({ onVoltar }) {
+  const [insumos, setInsumos] = useState([]);
+  const [fornecedores, setFornecedores] = useState([]);
+  const [itemNome, setItemNome] = useState("");
+  const [itemUnidade, setItemUnidade] = useState("un");
+  const [quantidade, setQuantidade] = useState("");
+  const [valorUnitario, setValorUnitario] = useState("");
+  const [calcPacotes, setCalcPacotes] = useState({ qtd: "", tamanho: "", unidade: "g" });
+  const [formaPagamento, setFormaPagamento] = useState("pix");
+  const [prazoBoleto, setPrazoBoleto] = useState("28");
+  const [fornecedorNome, setFornecedorNome] = useState("");
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  useEffect(() => {
+    supabase.from("insumos").select("id, nome, unidade, composto").order("nome").then(({ data }) => setInsumos(data || []));
+    supabase.from("fornecedores").select("id, nome").order("nome").then(({ data }) => setFornecedores(data || []));
+  }, []);
+
+  const insumoSelecionado = insumos.find((i) => i.nome.toLowerCase() === itemNome.trim().toLowerCase());
+  useEffect(() => {
+    if (insumoSelecionado) setItemUnidade(insumoSelecionado.unidade);
+  }, [insumoSelecionado?.id]);
+
+  const aplicarCalculadoraPacotes = () => {
+    const qtd = parseFloat(calcPacotes.qtd) || 0;
+    const tamanho = parseFloat(calcPacotes.tamanho) || 0;
+    setQuantidade(String(round2(qtd * tamanho)));
+    setItemUnidade(calcPacotes.unidade);
+  };
+
+  const valorTotal = round2((parseFloat(quantidade) || 0) * (parseFloat(valorUnitario) || 0));
+
+  const salvar = async () => {
+    const nome = itemNome.trim();
+    const fornecedor = fornecedorNome.trim();
+    const qtd = parseFloat(quantidade) || 0;
+    const preco = parseFloat(valorUnitario) || 0;
+    if (!nome) { setErro("Informe o item comprado."); return; }
+    if (!fornecedor) { setErro("Informe o fornecedor."); return; }
+    if (qtd <= 0) { setErro("Informe a quantidade comprada."); return; }
+    setSalvando(true);
+    setErro("");
+    const { data: userData } = await supabase.auth.getUser();
+
+    // resolve o insumo — usa o já cadastrado (mesmo nome) ou cria um novo
+    let insumo = insumoSelecionado;
+    if (!insumo) {
+      const { data, error } = await supabase.from("insumos").insert({ nome, unidade: itemUnidade }).select().single();
+      if (error) { setErro(error.message); setSalvando(false); return; }
+      insumo = data;
+    }
+
+    // resolve o fornecedor — mesmo padrão de Notas Fiscais
+    let fornecedorObj = fornecedores.find((f) => f.nome.toLowerCase() === fornecedor.toLowerCase());
+    if (!fornecedorObj) {
+      const { data, error } = await supabase.from("fornecedores").insert({ nome: fornecedor }).select().single();
+      if (error) { setErro(error.message); setSalvando(false); return; }
+      fornecedorObj = data;
+    }
+
+    const { error: errMov } = await supabase.from("movimentacoes_estoque").insert({
+      insumo_id: insumo.id, tipo: "compra", quantidade: qtd, preco_unitario: preco,
+      fornecedor, forma_pagamento: formaPagamento, criado_por: userData?.user?.id,
+    });
+    if (errMov) { setErro(errMov.message); setSalvando(false); return; }
+
+    if (!insumo.composto) {
+      await supabase.from("insumos").update({ custo_medio_atual: preco, atualizado_em: new Date().toISOString() }).eq("id", insumo.id);
+    }
+
+    // só boleto vira conta a pagar — pix/débito/crédito já foi pago na hora
+    if (formaPagamento === "boleto") {
+      const dias = parseInt(prazoBoleto) || 0;
+      const vencimento = new Date();
+      vencimento.setDate(vencimento.getDate() + dias);
+      await supabase.from("contas_pagar").insert({
+        fornecedor_id: fornecedorObj.id, fornecedor_nome: fornecedorObj.nome,
+        descricao: `Compra manual — ${nome}`, valor_total: valorTotal,
+        forma_pagamento: formaPagamento, categoria: "compra",
+        data_vencimento: vencimento.toISOString().slice(0, 10), criado_por: userData?.user?.id,
+      });
+    }
+
+    setSalvando(false);
+    onVoltar();
+  };
+
+  return (
+    <div>
+      <button onClick={onVoltar} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, marginBottom: 14 }}>
+        <ChevronLeft size={14} /> Voltar
+      </button>
+      <div style={sectionLabel}>Compra manual (sem nota fiscal)</div>
+
+      {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+
+      <div style={{ ...cardStyle, marginBottom: 14 }}>
+        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Item</label>
+        <input list="lista-insumos-compra" value={itemNome} onChange={(e) => setItemNome(e.target.value)}
+          placeholder="Busca insumo já cadastrado, ou digite um nome novo" style={{ ...inputStyle, marginBottom: 8 }} />
+        <datalist id="lista-insumos-compra">
+          {insumos.map((i) => <option key={i.id} value={i.nome} />)}
+        </datalist>
+        {!insumoSelecionado && itemNome.trim() && (
+          <div style={{ fontSize: 11, color: "#185FA5", marginBottom: 8 }}>Esse insumo ainda não existe — vai ser criado ao salvar.</div>
+        )}
+
+        <div style={{ border: "1px dashed #37A0E5", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+          <div style={{ fontSize: 11, color: "#185FA5", marginBottom: 8 }}>Veio em pacotes/potes? Calcule a quantidade total aqui</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 2 }}>Quantos pacotes</label>
+              <input type="number" value={calcPacotes.qtd} onChange={(e) => setCalcPacotes((c) => ({ ...c, qtd: e.target.value }))}
+                style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 2 }}>Tamanho de cada um</label>
+              <div style={{ display: "flex", gap: 4 }}>
+                <input type="number" value={calcPacotes.tamanho} onChange={(e) => setCalcPacotes((c) => ({ ...c, tamanho: e.target.value }))}
+                  style={{ flex: 1, minWidth: 0, padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                <select value={calcPacotes.unidade} onChange={(e) => setCalcPacotes((c) => ({ ...c, unidade: e.target.value }))}
+                  style={{ width: 55, padding: "5px 4px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                  {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 11, color: "#8A8778" }}>
+              = {round2((parseFloat(calcPacotes.qtd) || 0) * (parseFloat(calcPacotes.tamanho) || 0))} {calcPacotes.unidade}
+            </span>
+            <button onClick={aplicarCalculadoraPacotes} style={{ ...btnSecondary, fontSize: 11, padding: "4px 10px" }}>Usar esse valor</button>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Quantidade</label>
+            <input type="number" value={quantidade} onChange={(e) => setQuantidade(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "7px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+          </div>
+          <div style={{ width: 70 }}>
+            <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Unidade</label>
+            <select value={itemUnidade} onChange={(e) => setItemUnidade(e.target.value)} disabled={!!insumoSelecionado}
+              style={{ width: "100%", padding: "7px 4px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13, background: insumoSelecionado ? "#F6F1E7" : "#FFFFFF" }}>
+              {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Valor unitário</label>
+            <input type="number" step="0.01" value={valorUnitario} onChange={(e) => setValorUnitario(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "7px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Valor total</label>
+            <input type="number" step="0.01" value={valorTotal}
+              onChange={(e) => {
+                const novoTotal = parseFloat(e.target.value) || 0;
+                const qtd = parseFloat(quantidade) || 0;
+                setValorUnitario(String(qtd > 0 ? round2(novoTotal / qtd) : 0));
+              }}
+              style={{ width: "100%", boxSizing: "border-box", padding: "7px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 13 }} />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ ...cardStyle, marginBottom: 14 }}>
+        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Forma de pagamento</label>
+        <select value={formaPagamento} onChange={(e) => setFormaPagamento(e.target.value)} style={inputStyle}>
+          {FORMAS_PAGAMENTO_COMPRA.map((f) => <option key={f.valor} value={f.valor}>{f.rotulo}</option>)}
+        </select>
+        {formaPagamento === "boleto" && (
+          <div style={{ marginTop: 6 }}>
+            <label style={{ fontSize: 10, color: "#8A6A0F", display: "block", marginBottom: 3 }}>Prazo do boleto (dias)</label>
+            <input type="number" value={prazoBoleto} onChange={(e) => setPrazoBoleto(e.target.value)}
+              style={{ width: 80, padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 13 }} />
+          </div>
+        )}
+        <div style={{ fontSize: 10, color: "#8A8778", marginTop: 6 }}>
+          {formaPagamento === "boleto" ? "Gera uma conta a pagar com esse prazo." : "Pix/débito/crédito já é pago na hora — não gera conta a pagar."}
+        </div>
+      </div>
+
+      <div style={{ ...cardStyle, marginBottom: 14 }}>
+        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Fornecedor</label>
+        <input list="lista-fornecedores-compra" value={fornecedorNome} onChange={(e) => setFornecedorNome(e.target.value)}
+          placeholder="Busca fornecedor já cadastrado, ou digite um nome novo" style={inputStyle} />
+        <datalist id="lista-fornecedores-compra">
+          {fornecedores.map((f) => <option key={f.id} value={f.nome} />)}
+        </datalist>
+      </div>
+
+      <button onClick={salvar} disabled={salvando} style={{ ...btnPrimary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
+        {salvando ? <Loader2 size={16} /> : <Check size={16} />} Salvar compra
+      </button>
+    </div>
+  );
+}

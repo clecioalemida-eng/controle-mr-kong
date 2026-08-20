@@ -5,13 +5,11 @@ import {
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
-const CONDICOES_PAGAMENTO = [
-  { valor: "a_vista", rotulo: "À vista", dias: 0 },
-  { valor: "7_dias", rotulo: "7 dias", dias: 7 },
-  { valor: "14_dias", rotulo: "14 dias", dias: 14 },
-  { valor: "21_dias", rotulo: "21 dias", dias: 21 },
-  { valor: "28_dias", rotulo: "28 dias", dias: 28 },
-  { valor: "outro", rotulo: "Outro prazo…", dias: null },
+const FORMAS_PAGAMENTO_COMPRA = [
+  { valor: "pix", rotulo: "Pix" },
+  { valor: "debito", rotulo: "Débito" },
+  { valor: "credito", rotulo: "Cartão de crédito" },
+  { valor: "boleto", rotulo: "Boleto" },
 ];
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
@@ -172,8 +170,8 @@ function Conferencia({ documento, onVoltar }) {
   const [insumos, setInsumos] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
-  const [condicaoPagamento, setCondicaoPagamento] = useState("a_vista");
-  const [prazoCustom, setPrazoCustom] = useState("");
+  const [formaPagamento, setFormaPagamento] = useState("pix");
+  const [prazoBoleto, setPrazoBoleto] = useState("28");
   const [erro, setErro] = useState("");
   const [editandoId, setEditandoId] = useState(null);
   const [formEdicao, setFormEdicao] = useState({ nome_lido: "", quantidade: 0, unidade: "un", preco_unitario: 0, insumo_id: "" });
@@ -325,6 +323,7 @@ function Conferencia({ documento, onVoltar }) {
         quantidade: item.quantidade,
         preco_unitario: item.preco_unitario,
         fornecedor: documento.fornecedor || null,
+        forma_pagamento: formaPagamento,
         documento_compra_id: documento.id,
         criado_por: userData?.user?.id,
       });
@@ -346,23 +345,25 @@ function Conferencia({ documento, onVoltar }) {
 
     await supabase.from("documentos_compra").update({ status: "confirmado", confirmado_em: new Date().toISOString() }).eq("id", documento.id);
 
-    // Gera a conta a pagar dessa compra, com vencimento calculado pela
-    // condição de pagamento escolhida.
-    const opcao = CONDICOES_PAGAMENTO.find((c) => c.valor === condicaoPagamento);
-    const dias = condicaoPagamento === "outro" ? (parseInt(prazoCustom) || 0) : (opcao?.dias || 0);
-    const vencimento = new Date();
-    vencimento.setDate(vencimento.getDate() + dias);
-    const valorTotal = itens.reduce((s, it) => s + it.quantidade * it.preco_unitario, 0);
-    await supabase.from("contas_pagar").insert({
-      documento_compra_id: documento.id,
-      fornecedor_id: fornecedorAtual.id,
-      fornecedor_nome: fornecedorAtual.nome,
-      descricao: `Nota fiscal — ${fornecedorAtual.nome || "fornecedor não identificado"}`,
-      valor_total: round2(valorTotal),
-      condicao_pagamento: condicaoPagamento,
-      data_vencimento: vencimento.toISOString().slice(0, 10),
-      criado_por: userData?.user?.id,
-    });
+    // Só boleto vira conta a pagar de verdade (é a única forma que fica
+    // devendo) — pix/débito/crédito já foram pagos na hora da compra.
+    if (formaPagamento === "boleto") {
+      const dias = parseInt(prazoBoleto) || 0;
+      const vencimento = new Date();
+      vencimento.setDate(vencimento.getDate() + dias);
+      const valorTotal = itens.reduce((s, it) => s + it.quantidade * it.preco_unitario, 0);
+      await supabase.from("contas_pagar").insert({
+        documento_compra_id: documento.id,
+        fornecedor_id: fornecedorAtual.id,
+        fornecedor_nome: fornecedorAtual.nome,
+        descricao: `Nota fiscal — ${fornecedorAtual.nome || "fornecedor não identificado"}`,
+        valor_total: round2(valorTotal),
+        forma_pagamento: formaPagamento,
+        categoria: "compra",
+        data_vencimento: vencimento.toISOString().slice(0, 10),
+        criado_por: userData?.user?.id,
+      });
+    }
 
     setSalvando(false);
     onVoltar();
@@ -609,16 +610,21 @@ function Conferencia({ documento, onVoltar }) {
       )}
 
       <div style={{ ...cardStyle, marginBottom: 14 }}>
-        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Condição de pagamento</label>
-        <select value={condicaoPagamento} onChange={(e) => setCondicaoPagamento(e.target.value)}
+        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Forma de pagamento</label>
+        <select value={formaPagamento} onChange={(e) => setFormaPagamento(e.target.value)}
           style={{ width: "100%", boxSizing: "border-box", padding: "7px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }}>
-          {CONDICOES_PAGAMENTO.map((c) => <option key={c.valor} value={c.valor}>{c.rotulo}</option>)}
+          {FORMAS_PAGAMENTO_COMPRA.map((f) => <option key={f.valor} value={f.valor}>{f.rotulo}</option>)}
         </select>
-        {condicaoPagamento === "outro" && (
-          <input type="number" value={prazoCustom} onChange={(e) => setPrazoCustom(e.target.value)} placeholder="Quantos dias?"
-            style={{ width: "100%", boxSizing: "border-box", marginTop: 6, padding: "7px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+        {formaPagamento === "boleto" && (
+          <div style={{ marginTop: 6 }}>
+            <label style={{ fontSize: 10, color: "#8A6A0F", display: "block", marginBottom: 3 }}>Prazo do boleto (dias)</label>
+            <input type="number" value={prazoBoleto} onChange={(e) => setPrazoBoleto(e.target.value)}
+              style={{ width: 80, padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 13 }} />
+          </div>
         )}
-        <div style={{ fontSize: 10, color: "#8A8778", marginTop: 6 }}>Gera uma conta a pagar com esse prazo, no valor total da nota.</div>
+        <div style={{ fontSize: 10, color: "#8A8778", marginTop: 6 }}>
+          {formaPagamento === "boleto" ? "Gera uma conta a pagar com esse prazo, no valor total da nota." : "Pix/débito/crédito já é pago na hora — não gera conta a pagar."}
+        </div>
       </div>
 
       {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 12 }}>{erro}</div>}

@@ -12,7 +12,17 @@ function diasAte(dataVencimento) {
 }
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
 
-const CONDICAO_LABEL = { a_vista: "À vista", "7_dias": "7 dias", "14_dias": "14 dias", "21_dias": "21 dias", "28_dias": "28 dias", outro: "Outro prazo" };
+const CONDICAO_LABEL = { a_vista: "À vista", "7_dias": "7 dias", "14_dias": "14 dias", "21_dias": "21 dias", "28_dias": "28 dias", outro: "Outro prazo", pix: "Pix", debito: "Débito", credito: "Cartão de crédito", boleto: "Boleto" };
+const CATEGORIAS_RECORRENTES = [
+  { valor: "agua", rotulo: "Água" },
+  { valor: "luz", rotulo: "Luz" },
+  { valor: "internet", rotulo: "Internet" },
+  { valor: "alvara", rotulo: "Alvará" },
+  { valor: "aluguel", rotulo: "Aluguel" },
+  { valor: "telefone", rotulo: "Telefone" },
+  { valor: "outro", rotulo: "Outra" },
+];
+const CATEGORIA_LABEL = Object.fromEntries(CATEGORIAS_RECORRENTES.map((c) => [c.valor, c.rotulo]));
 
 // Contas a pagar, geradas ao confirmar uma nota fiscal (ver
 // src/modules/NotasFiscais.jsx) — organizadas por prazo de vencimento,
@@ -28,6 +38,9 @@ export default function ContasPagar() {
   const [salvando, setSalvando] = useState(false);
   const [expandidoId, setExpandidoId] = useState(null);
   const [historicoPagamentos, setHistoricoPagamentos] = useState({}); // conta_id -> [pagamentos]
+  const [criandoCategoria, setCriandoCategoria] = useState(null); // categoria sendo criada, ou null
+  const [novaConta, setNovaConta] = useState({ descricao: "", valor: "", vencimento: new Date().toISOString().slice(0, 10) });
+  const [previsao, setPrevisao] = useState([]); // [{ categoria, media, meses }]
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -36,8 +49,46 @@ export default function ContasPagar() {
     if (error) setErro(error.message);
     setContas(data || []);
     setCarregando(false);
+
+    // Previsão de custos mensais: média dos últimos meses de cada
+    // categoria recorrente que já tem pelo menos uma conta lançada.
+    const recorrentes = (data || []).filter((c) => c.categoria && c.categoria !== "compra" && c.categoria !== "outro");
+    const porCategoria = {};
+    recorrentes.forEach((c) => {
+      if (!porCategoria[c.categoria]) porCategoria[c.categoria] = [];
+      porCategoria[c.categoria].push(c.valor_total);
+    });
+    setPrevisao(Object.entries(porCategoria).map(([categoria, valores]) => ({
+      categoria,
+      media: round2(valores.reduce((s, v) => s + v, 0) / valores.length),
+      meses: valores.length,
+    })));
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
+
+  const abrirCriarRecorrente = (categoria) => {
+    setCriandoCategoria(categoria);
+    setNovaConta({ descricao: CATEGORIA_LABEL[categoria] || "", valor: "", vencimento: new Date().toISOString().slice(0, 10) });
+  };
+
+  const salvarContaRecorrente = async () => {
+    const valor = parseFloat(novaConta.valor);
+    if (!valor || valor <= 0) { setErro("Informe um valor válido."); return; }
+    setSalvando(true);
+    setErro("");
+    const { data: userData } = await supabase.auth.getUser();
+    const { error } = await supabase.from("contas_pagar").insert({
+      descricao: novaConta.descricao || CATEGORIA_LABEL[criandoCategoria],
+      valor_total: round2(valor),
+      categoria: criandoCategoria,
+      data_vencimento: novaConta.vencimento,
+      criado_por: userData?.user?.id,
+    });
+    setSalvando(false);
+    if (error) { setErro(error.message); return; }
+    setCriandoCategoria(null);
+    carregar();
+  };
 
   const abrirHistorico = async (contaId) => {
     if (expandidoId === contaId) { setExpandidoId(null); return; }
@@ -74,6 +125,47 @@ export default function ContasPagar() {
     <div>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
 
+      {previsao.length > 0 && (
+        <div style={{ ...cardStyle, marginBottom: 14 }}>
+          <div style={sectionLabel}>Previsão de custos mensais</div>
+          <div style={{ fontSize: 10, color: "#8A8778", marginBottom: 8 }}>Média das contas recorrentes já lançadas — dá uma ideia do que costuma vir por aí.</div>
+          {previsao.map((p) => (
+            <div key={p.categoria} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0" }}>
+              <span style={{ color: "#22231F" }}>{CATEGORIA_LABEL[p.categoria] || p.categoria}</span>
+              <span style={{ color: "#8A8778" }}>~{brl(p.media)}<span style={{ fontSize: 10 }}> ({p.meses} lanç.)</span></span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={sectionLabel}>Contas fixas — lançar rápido</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
+        {CATEGORIAS_RECORRENTES.map((c) => (
+          <button key={c.valor} onClick={() => abrirCriarRecorrente(c.valor)}
+            style={{ padding: "6px 12px", borderRadius: 999, border: "1px solid #37A0E5", background: "none", color: "#185FA5", fontSize: 12, cursor: "pointer" }}>
+            + {c.rotulo}
+          </button>
+        ))}
+      </div>
+
+      {criandoCategoria && (
+        <div style={{ ...cardStyle, border: "1px dashed #37A0E5", marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: "#185FA5", marginBottom: 8 }}>Nova conta — {CATEGORIA_LABEL[criandoCategoria]}</div>
+          <input value={novaConta.descricao} onChange={(e) => setNovaConta((f) => ({ ...f, descricao: e.target.value }))}
+            placeholder="Descrição" style={{ width: "100%", boxSizing: "border-box", marginBottom: 6, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+            <input type="number" step="0.01" value={novaConta.valor} onChange={(e) => setNovaConta((f) => ({ ...f, valor: e.target.value }))}
+              placeholder="Valor" style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+            <input type="date" value={novaConta.vencimento} onChange={(e) => setNovaConta((f) => ({ ...f, vencimento: e.target.value }))}
+              style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={salvarContaRecorrente} disabled={salvando} style={{ ...btnSecondary, flex: 1 }}>Salvar</button>
+            <button onClick={() => setCriandoCategoria(null)} style={linkBtn}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
         <input type="checkbox" checked={mostrarPagas} onChange={(e) => setMostrarPagas(e.target.checked)} />
         Mostrar contas já pagas
@@ -102,7 +194,7 @@ export default function ContasPagar() {
                   ) : proxima ? (
                     <span style={{ ...pill, background: "#FAC77555", color: "#854F0B" }}>{dias === 0 ? "Vence hoje" : `Vence em ${dias}d`}</span>
                   ) : (
-                    <span style={{ ...pill, background: "#F6F1E7", color: "#8A8778" }}>{CONDICAO_LABEL[conta.condicao_pagamento] || conta.condicao_pagamento}</span>
+                    <span style={{ ...pill, background: "#F6F1E7", color: "#8A8778" }}>{CONDICAO_LABEL[conta.forma_pagamento] || CONDICAO_LABEL[conta.condicao_pagamento] || "—"}</span>
                   )}
                 </div>
                 <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 6 }}>Vencimento {fmtData(conta.data_vencimento)} · Total {brl(conta.valor_total)}</div>
@@ -160,6 +252,7 @@ export default function ContasPagar() {
 }
 
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
+const sectionLabel = { fontSize: 12, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#8A8778", marginBottom: 8 };
 const btnSecondary = { background: "#F6F1E7", border: "1px solid #E8E2D2", color: "#22231F", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" };
 const linkBtn = { background: "none", border: "none", color: "#8A6A0F", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0, textAlign: "left" };
 const pill = { fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 999, whiteSpace: "nowrap" };
