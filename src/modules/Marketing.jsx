@@ -4,6 +4,7 @@ import {
   Users, ShieldCheck, CalendarClock, Tag, MapPin,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import RadarConcorrentes from "./RadarConcorrentes";
 
 // ---------------------------------------------------------------------------
 // Módulo Marketing — Fase 0: Diagnóstico
@@ -48,7 +49,13 @@ const NOMES_TIPO = {
   indoor: "Salão",
 };
 
+const ABAS = [
+  { chave: "radar", label: "Radar" },
+  { chave: "diagnostico", label: "Diagnóstico da API" },
+];
+
 export default function Marketing({ onVoltar }) {
+  const [aba, setAba] = useState("radar");
   const [dataInicio, setDataInicio] = useState(diasAtras(30));
   const [dataFim, setDataFim] = useState(hoje());
   const [carregando, setCarregando] = useState(false);
@@ -100,6 +107,17 @@ export default function Marketing({ onVoltar }) {
           <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Marketing</div>
         </div>
 
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          {ABAS.map((a) => (
+            <button key={a.chave} onClick={() => setAba(a.chave)}
+              style={{ ...tabBtn, ...(aba === a.chave ? tabBtnAtivo : {}) }}>
+              {a.label}
+            </button>
+          ))}
+        </div>
+
+        {aba === "radar" ? <RadarConcorrentes /> : (
+        <>
         <div style={{ ...cardStyle, marginBottom: 16 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F", marginBottom: 6 }}>
             Fase 0 · Diagnóstico
@@ -142,6 +160,8 @@ export default function Marketing({ onVoltar }) {
         )}
 
         {!carregando && res && <Resultado res={res} />}
+        </>
+        )}
       </div>
     </div>
   );
@@ -361,6 +381,11 @@ const btnPrimary = {
   background: "#22231F", color: "#F3EFE3", border: "none",
   borderRadius: 8, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer",
 };
+const tabBtn = {
+  padding: "8px 14px", borderRadius: 999, border: "1px solid #E8E2D2",
+  background: "#FFFFFF", color: "#8A8778", fontSize: 13, fontWeight: 600, cursor: "pointer",
+};
+const tabBtnAtivo = { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" };
 const inputStyle = {
   padding: "9px 10px", borderRadius: 8, border: "1px solid #E8E2D2",
   fontSize: 13, background: "#FFFFFF", color: "#22231F",
