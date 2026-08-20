@@ -5,6 +5,10 @@ import {
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
+const LINHAS_PRODUTO = [
+  "Hambúrguer Gourmet", "Hambúrguer Tradicional", "Bebidas", "Bombons e Balas",
+  "Milkshake e Sorvetes", "Cremes", "Petiscos", "Chapa", "Combos", "Batatas Fritas", "Açaí",
+];
 
 function brl(v) {
   return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -114,22 +118,34 @@ export default function FichasTecnicas() {
       ) : (
         <div className="list-grid">
           {pratos.filter((p) => p.nome.toLowerCase().includes(busca.toLowerCase())).map((p) => (
-            <button key={p.id} onClick={() => { setPratoAtual(p); setTela("editor"); }}
-              style={{ ...itemRow, cursor: "pointer", textAlign: "left", border: (p.temFicha && !p.custoZerado) ? "1px solid #E8E2D2" : "1px solid #F0D8CE" }}>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{p.nome}</div>
-                <div style={{ fontSize: 12, color: "#8A8778" }}>{brl(p.preco_venda)}</div>
-              </div>
-              {p.custoZerado ? (
-                <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Custo pendente</span>
-              ) : p.temFicha ? (
-                <span style={{ ...pill, background: p.margemPct >= 50 ? "#2F8F5B22" : p.margemPct >= 30 ? "#FAC77555" : "#F0999522", color: p.margemPct >= 50 ? "#0F6E56" : p.margemPct >= 30 ? "#854F0B" : "#A32D2D" }}>
-                  Margem {p.margemPct.toFixed(1)}%
-                </span>
-              ) : (
-                <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Sem ficha</span>
-              )}
-            </button>
+            <div key={p.id} style={{ ...itemRow, flexDirection: "column", alignItems: "stretch", gap: 6, border: (p.temFicha && !p.custoZerado) ? "1px solid #E8E2D2" : "1px solid #F0D8CE" }}>
+              <button onClick={() => { setPratoAtual(p); setTela("editor"); }}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", width: "100%" }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{p.nome}</div>
+                  <div style={{ fontSize: 12, color: "#8A8778" }}>{brl(p.preco_venda)}</div>
+                </div>
+                {p.custoZerado ? (
+                  <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Custo pendente</span>
+                ) : p.temFicha ? (
+                  <span style={{ ...pill, background: p.margemPct >= 50 ? "#2F8F5B22" : p.margemPct >= 30 ? "#FAC77555" : "#F0999522", color: p.margemPct >= 50 ? "#0F6E56" : p.margemPct >= 30 ? "#854F0B" : "#A32D2D" }}>
+                    Margem {p.margemPct.toFixed(1)}%
+                  </span>
+                ) : (
+                  <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Sem ficha</span>
+                )}
+              </button>
+              <select value={p.linha_produto || ""} onClick={(e) => e.stopPropagation()}
+                onChange={async (e) => {
+                  const linha = e.target.value || null;
+                  await supabase.from("pratos").update({ linha_produto: linha }).eq("id", p.id);
+                  setPratos((prev) => prev.map((x) => x.id === p.id ? { ...x, linha_produto: linha } : x));
+                }}
+                style={{ fontSize: 11, padding: "3px 6px", borderRadius: 6, border: "1px solid #E8E2D2", background: p.linha_produto ? "#FFFFFF" : "#FBF3D9", color: p.linha_produto ? "#22231F" : "#7A6A1E" }}>
+                <option value="">— linha de produto pendente —</option>
+                {LINHAS_PRODUTO.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </div>
           ))}
         </div>
       )}

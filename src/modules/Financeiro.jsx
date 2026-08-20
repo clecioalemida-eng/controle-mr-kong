@@ -8,8 +8,11 @@ import Equipe from "./Equipe";
 import ConferenciaCaixa from "./ConferenciaCaixa";
 import ContasPagar from "./ContasPagar";
 import RelatorioFiado from "./RelatorioFiado";
+import CurvaABC from "./CurvaABC";
+import Dashboard from "./Dashboard";
 
 const ABAS = [
+  { chave: "dashboard", label: "Dashboard" },
   { chave: "vendas", label: "Vendas" },
   { chave: "pedidos", label: "Pedidos" },
   { chave: "pagamentos", label: "Pagamentos" },
@@ -21,6 +24,7 @@ const ABAS = [
   { chave: "conferencia", label: "Conferência de caixa" },
   { chave: "contaspagar", label: "Plano de Contas" },
   { chave: "fiado", label: "Fiado" },
+  { chave: "curvaabc", label: "Curva ABC" },
 ];
 
 const NOMES_PAGAMENTO = {
@@ -52,8 +56,8 @@ function formatBRL(v) {
   return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-export default function Financeiro({ onVoltar }) {
-  const [aba, setAba] = useState("vendas");
+export default function Financeiro({ onVoltar, abaInicial }) {
+  const [aba, setAba] = useState(abaInicial || "vendas");
   const [dataInicio, setDataInicio] = useState(diasAtras(7));
   const [dataFim, setDataFim] = useState(hoje());
   const [carregando, setCarregando] = useState(false);
@@ -110,6 +114,10 @@ export default function Financeiro({ onVoltar }) {
           <ContasPagar />
         ) : aba === "fiado" ? (
           <RelatorioFiado />
+        ) : aba === "curvaabc" ? (
+          <CurvaABC />
+        ) : aba === "dashboard" ? (
+          <Dashboard />
         ) : (
           <>
             <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>

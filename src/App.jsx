@@ -32,6 +32,7 @@ export default function App() {
   const [modulos, setModulos] = useState([]);
   const [carregandoModulos, setCarregandoModulos] = useState(false);
   const [totalPendentes, setTotalPendentes] = useState(0);
+  const [abaFinanceiroInicial, setAbaFinanceiroInicial] = useState(null); // usado pelo card de Dashboard, que abre Financeiro já na aba certa
 
   // ---- sessão -------------------------------------------------------------
   useEffect(() => {
@@ -134,7 +135,8 @@ export default function App() {
   if (tela !== "home") {
     const Componente = COMPONENTES_MODULO[tela];
     if (Componente) {
-      return <Componente nomeUsuario={perfil?.nome} onVoltar={() => setTela("home")} />;
+      const propsExtra = tela === "financeiro" ? { abaInicial: abaFinanceiroInicial } : {};
+      return <Componente nomeUsuario={perfil?.nome} onVoltar={() => { setTela("home"); setAbaFinanceiroInicial(null); }} {...propsExtra} />;
     }
   }
 
@@ -145,6 +147,7 @@ export default function App() {
       carregando={carregandoModulos}
       totalPendentes={totalPendentes}
       onAbrirModulo={(chave) => setTela(chave)}
+      onAbrirDashboard={() => { setAbaFinanceiroInicial("dashboard"); setTela("financeiro"); }}
       onAbrirAdmin={() => setTela("admin")}
       onSair={sair}
     />
@@ -284,7 +287,8 @@ function TelaAguardando({ perfil, onSair }) {
 // ---------------------------------------------------------------------------
 // Início: grid de cards
 // ---------------------------------------------------------------------------
-function TelaInicio({ perfil, modulos, carregando, totalPendentes, onAbrirModulo, onAbrirAdmin, onSair }) {
+function TelaInicio({ perfil, modulos, carregando, totalPendentes, onAbrirModulo, onAbrirDashboard, onAbrirAdmin, onSair }) {
+  const temFinanceiro = modulos.some((m) => m.chave === "financeiro");
   return (
     <div style={pageStyle}>
       <div className="app-shell">
@@ -318,6 +322,13 @@ function TelaInicio({ perfil, modulos, carregando, totalPendentes, onAbrirModulo
           </div>
         ) : (
           <div className="cards-grid">
+            {temFinanceiro && (
+              <button onClick={onAbrirDashboard}
+                style={{ ...cardStyle, textAlign: "left", cursor: "pointer", border: "2px solid #185FA5" }}>
+                <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F", marginBottom: 4 }}>Dashboard</div>
+                <div style={{ fontSize: 13, color: "#8A8778" }}>Faturamento previsto, custos por centro de custo, curva ABC, lucro previsto e mais.</div>
+              </button>
+            )}
             {modulos.map((m) => (
               <button key={m.id} onClick={() => onAbrirModulo(m.chave)}
                 style={{ ...cardStyle, textAlign: "left", cursor: "pointer", border: "1px solid #E8E2D2" }}>

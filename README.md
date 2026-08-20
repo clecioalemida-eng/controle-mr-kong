@@ -285,6 +285,46 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Dashboard, previsão de faturamento, curva ABC, segmentação de produtos
+
+Quatro peças grandes nessa entrega:
+
+**1. Segmentação de produtos** — na lista de Fichas técnicas, cada prato
+agora tem um seletor de linha de produto embaixo (Hambúrguer Gourmet,
+Hambúrguer Tradicional, Bebidas, Bombons e Balas, Milkshake e Sorvetes,
+Cremes, Petiscos, Chapa, Combos, Batatas Fritas, Açaí). Fica destacado em
+amarelo enquanto não classificado.
+
+**2. Curva ABC** (nova aba em Financeiro) — ranqueia produtos (ou linhas
+de produto, tem toggle) pelo faturamento que geram num período, e
+classifica A (até 80% do faturamento), B (até 95%), C (os últimos 5%).
+
+**3. Dashboard** (nova aba, primeira da lista) — previsão de faturamento
+com três partes: resto do mês atual (realizado + previsto, baseado na
+média de dia útil/fim de semana dos últimos 30 dias), mês seguinte
+inteiro (só previsto), e comparativo semana a semana contra o mês
+anterior. Junto, os custos previstos do Plano de Contas (o que já foi
+lançado + a média histórica dos centros de custo que ainda não lançaram
+nada esse mês) — a diferença entre os dois vira o **lucro previsto do
+mês**. Também mostra os custos quebrados por centro de custo, com
+"Pessoas" aparecendo junto dos outros.
+
+### Migração
+
+`033_linha_produto.sql` — adiciona `linha_produto` em `pratos`.
+
+Não mexe em Edge Function — tudo reaproveita o `resumo_financeiro` que
+já existia.
+
+### Uma coisa importante sobre a previsão
+
+Tanto a Curva ABC quanto o Dashboard dependem de `cardapioweb_item_id`
+estar preenchido nos pratos (pra casar item vendido com prato) — se um
+prato não tiver isso (não foi importado do CardápioWeb ainda), ele não
+entra no cálculo. E os custos previstos do Dashboard ficam mais precisos
+quanto mais meses de histórico você já tiver no Plano de Contas — no
+primeiro mês, a "média histórica" pode ficar vazia ou pouco confiável.
+
 ## Dia da compra, e marcar/reverter pago
 
 **1. Dia da compra** — cada conta agora mostra "Comprado DD/MM · Vencimento DD/MM" (antes só tinha vencimento). Migração já preenche retroativamente pras contas que vieram de nota fiscal, usando a data do documento.

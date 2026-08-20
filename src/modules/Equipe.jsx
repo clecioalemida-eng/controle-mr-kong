@@ -89,6 +89,7 @@ function PrevisaoDeEscala() {
   });
   const [pessoas, setPessoas] = useState([]);
   const [previstos, setPrevistos] = useState(new Set());
+  const [fechada, setFechada] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const [mensagem, setMensagem] = useState("");
@@ -96,13 +97,15 @@ function PrevisaoDeEscala() {
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
-    const [{ data: pessoasData, error }, { data: previsoesData }] = await Promise.all([
+    const [{ data: pessoasData, error }, { data: previsoesData }, { data: statusData }] = await Promise.all([
       supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
       supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
+      supabase.from("previsoes_escala_dias").select("fechada").eq("dia", dia).maybeSingle(),
     ]);
     if (error) setErro(error.message);
     setPessoas(pessoasData || []);
     setPrevistos(new Set((previsoesData || []).map((p) => p.pessoa_id)));
+    setFechada(statusData?.fechada || false);
     setCarregando(false);
   }, [dia]);
   useEffect(() => { carregar(); }, [carregar]);
@@ -122,6 +125,18 @@ function PrevisaoDeEscala() {
     setMensagem("Previsão salva.");
   };
 
+  const fecharPrevisao = async () => {
+    await supabase.from("previsoes_escala_dias").upsert({ dia, fechada: true, atualizado_em: new Date().toISOString() }, { onConflict: "dia" });
+    setFechada(true);
+    setMensagem("");
+  };
+  const reabrirPrevisao = async () => {
+    await supabase.from("previsoes_escala_dias").upsert({ dia, fechada: false, atualizado_em: new Date().toISOString() }, { onConflict: "dia" });
+    setFechada(false);
+  };
+
+  const selecionados = pessoas.filter((p) => previstos.has(p.id));
+
   return (
     <div>
       <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
@@ -134,19 +149,40 @@ function PrevisaoDeEscala() {
 
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
-      ) : (
-        <div style={{ display: "grid", gap: 6 }}>
-          {pessoas.map((p) => (
-            <div key={p.id} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-              <input type="checkbox" checked={previstos.has(p.id)} onChange={() => alternar(p.id)} />
-              <div>
+      ) : fechada ? (
+        <div>
+          <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>{selecionados.length} marcado{selecionados.length !== 1 ? "s" : ""} — previsão fechada</div>
+          <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 12 }}>
+            {selecionados.map((p, idx) => (
+              <div key={p.id} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
                 <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
                 <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}</div>
               </div>
-            </div>
-          ))}
-          {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Cadastre pessoas na aba "Pessoas" primeiro.</div>}
+            ))}
+            {selecionados.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Ninguém marcado nesse dia.</div>}
+          </div>
+          <button onClick={reabrirPrevisao} style={linkBtn}>✎ Editar de novo</button>
         </div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+            {pessoas.map((p) => (
+              <div key={p.id} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
+                <input type="checkbox" checked={previstos.has(p.id)} onChange={() => alternar(p.id)} />
+                <div>
+                  <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
+                  <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}</div>
+                </div>
+              </div>
+            ))}
+            {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Cadastre pessoas na aba "Pessoas" primeiro.</div>}
+          </div>
+          {pessoas.length > 0 && (
+            <button onClick={fecharPrevisao} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
+              <Check size={14} /> Fechar previsão desse dia
+            </button>
+          )}
+        </>
       )}
     </div>
   );
@@ -468,46 +504,52 @@ function PremiacaoDoDia({ isAdmin }) {
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
-    const [{ data: pessoasData }, { data: presencasData }, { data: premiacoesData }, { data: matrizData }, { data: cacheTaxa }] = await Promise.all([
-      supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
-      supabase.from("presencas_diarias").select("*").eq("dia", dia),
-      supabase.from("premiacoes_diarias").select("*").eq("dia", dia),
-      supabase.from("matriz_cargos").select("*"),
-      supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle(),
-      supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
-    ]);
-    setPessoas(pessoasData || []);
-    setPremiacoesSalvas(premiacoesData || []);
-    // Dia já preenchido (tem presença registrada) abre travado, em modo
-    // leitura — evita mexer sem querer no que já foi fechado.
-    setModoLeitura((presencasData || []).length > 0);
-    setMatriz(Object.fromEntries((matrizData || []).map((m) => [m.papel, m])));
-    const mapaPart = {};
-    const idsPrevistos = new Set((previsoesData || []).map((p) => p.pessoa_id));
-    (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: idsPrevistos.has(p.id), horas: 0 }; });
-    (presencasData || []).forEach((pr) => { mapaPart[pr.pessoa_id] = { incluido: true, horas: pr.horas_trabalhadas || 0 }; });
-    setParticipacao(mapaPart);
-    // A diária base por cargo é persistente (vem da Matriz, coluna
-    // diaria_base) — não se retype todo dia, só edita via lápis quando
-    // precisar mudar (e aí passa a valer pros próximos dias também).
-    const mapaBase = {};
-    (matrizData || []).forEach((m) => { mapaBase[m.papel] = String(m.diaria_base ?? 0); });
-    setBaseCategoria(mapaBase);
-    const mapaHora = {};
-    (matrizData || []).forEach((m) => { mapaHora[m.papel] = String(m.valor_hora ?? 0); });
-    setValorHora(mapaHora);
-    setFaturamentoBrutoDia(cacheTaxa?.faturamento_bruto || 0);
-    if (premiacoesData && premiacoesData.length > 0) {
-      setTaxaServico(String(premiacoesData[0].taxa_servico_dia));
-      setMensagem("Esse dia já tem premiação calculada e salva — recalcular vai substituir os valores.");
-    } else if (cacheTaxa) {
-      // Já foi buscada antes (por essa tela ou pela Conferência de Caixa)
-      // — reaproveita em vez de consultar o CardápioWeb de novo.
-      setTaxaServico(String(cacheTaxa.taxa_servico));
-      setTaxaAutomatica(true);
-      setMensagem("Taxa de serviço reaproveitada da última busca (Escala do dia ou Conferência de Caixa) — clique em Buscar se quiser atualizar.");
-    } else {
-      setTaxaServico("");
+    try {
+      const [{ data: pessoasData }, { data: presencasData }, { data: premiacoesData }, { data: matrizData }, { data: cacheTaxa }, { data: previsoesData }] = await Promise.all([
+        supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
+        supabase.from("presencas_diarias").select("*").eq("dia", dia),
+        supabase.from("premiacoes_diarias").select("*").eq("dia", dia),
+        supabase.from("matriz_cargos").select("*"),
+        supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle(),
+        supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
+      ]);
+      setPessoas(pessoasData || []);
+      setPremiacoesSalvas(premiacoesData || []);
+      // Dia já preenchido (tem presença registrada) abre travado, em modo
+      // leitura — evita mexer sem querer no que já foi fechado.
+      setModoLeitura((presencasData || []).length > 0);
+      setMatriz(Object.fromEntries((matrizData || []).map((m) => [m.papel, m])));
+      const mapaPart = {};
+      const idsPrevistos = new Set((previsoesData || []).map((p) => p.pessoa_id));
+      (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: idsPrevistos.has(p.id), horas: 0 }; });
+      (presencasData || []).forEach((pr) => { mapaPart[pr.pessoa_id] = { incluido: true, horas: pr.horas_trabalhadas || 0 }; });
+      setParticipacao(mapaPart);
+      // A diária base por cargo é persistente (vem da Matriz, coluna
+      // diaria_base) — não se retype todo dia, só edita via lápis quando
+      // precisar mudar (e aí passa a valer pros próximos dias também).
+      const mapaBase = {};
+      (matrizData || []).forEach((m) => { mapaBase[m.papel] = String(m.diaria_base ?? 0); });
+      setBaseCategoria(mapaBase);
+      const mapaHora = {};
+      (matrizData || []).forEach((m) => { mapaHora[m.papel] = String(m.valor_hora ?? 0); });
+      setValorHora(mapaHora);
+      setFaturamentoBrutoDia(cacheTaxa?.faturamento_bruto || 0);
+      if (premiacoesData && premiacoesData.length > 0) {
+        setTaxaServico(String(premiacoesData[0].taxa_servico_dia));
+        setMensagem("Esse dia já tem premiação calculada e salva — recalcular vai substituir os valores.");
+      } else if (cacheTaxa) {
+        // Já foi buscada antes (por essa tela ou pela Conferência de Caixa)
+        // — reaproveita em vez de consultar o CardápioWeb de novo.
+        setTaxaServico(String(cacheTaxa.taxa_servico));
+        setTaxaAutomatica(true);
+        setMensagem("Taxa de serviço reaproveitada da última busca (Escala do dia ou Conferência de Caixa) — clique em Buscar se quiser atualizar.");
+      } else {
+        setTaxaServico("");
+      }
+    } catch (e) {
+      // Nunca deixa a tela travada em "Carregando…" silenciosamente —
+      // mostra o erro de verdade, mesmo que seja algo inesperado.
+      setErro(`Erro ao carregar a Escala do dia: ${e.message || e}`);
     }
     setCarregando(false);
   }, [dia]);
