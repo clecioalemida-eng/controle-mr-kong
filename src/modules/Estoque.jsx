@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { ChevronLeft, AlertTriangle, Truck, SlidersHorizontal, Search, RefreshCw, Loader2, Pencil, Check } from "lucide-react";
+import { ChevronLeft, AlertTriangle, Truck, SlidersHorizontal, Search, RefreshCw, Loader2, Pencil, Check, Trash2 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function fmt(v, unidade) {
@@ -36,6 +36,8 @@ export default function Estoque() {
   const [diasEstoque, setDiasEstoque] = useState("4");
   const [consumoPorInsumo, setConsumoPorInsumo] = useState({}); // insumo_id -> { mediaUtil, mediaFds }
   const [buscandoConsumo, setBuscandoConsumo] = useState(false);
+  const [criandoInsumo, setCriandoInsumo] = useState(false);
+  const [novoInsumo, setNovoInsumo] = useState({ nome: "", unidade: "un" });
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -55,6 +57,16 @@ export default function Estoque() {
   const salvarDiasEstoque = async (valor) => {
     setDiasEstoque(valor);
     await supabase.from("configuracoes").upsert({ chave: "dias_estoque_compras", valor: String(valor) }, { onConflict: "chave" });
+  };
+
+  const criarInsumo = async () => {
+    const nome = novoInsumo.nome.trim();
+    if (!nome) return;
+    const { error } = await supabase.from("insumos").insert({ nome, unidade: novoInsumo.unidade });
+    if (error) { setErro(error.message); return; }
+    setNovoInsumo({ nome: "", unidade: "un" });
+    setCriandoInsumo(false);
+    carregar();
   };
 
   // Calcula quanto foi consumido de cada insumo nos últimos 14 dias,
@@ -174,6 +186,25 @@ export default function Estoque() {
             style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
         </div>
       )}
+
+      {criandoInsumo ? (
+        <div style={{ ...cardStyle, border: "1px dashed #37A0E5", marginBottom: 14, display: "flex", gap: 8, alignItems: "center" }}>
+          <input value={novoInsumo.nome} onChange={(e) => setNovoInsumo((f) => ({ ...f, nome: e.target.value }))} autoFocus
+            onKeyDown={(e) => e.key === "Enter" && criarInsumo()}
+            placeholder="Nome do insumo" style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+          <select value={novoInsumo.unidade} onChange={(e) => setNovoInsumo((f) => ({ ...f, unidade: e.target.value }))}
+            style={{ padding: "6px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }}>
+            {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+          </select>
+          <button onClick={criarInsumo} style={{ ...btnSecondary, fontSize: 12, padding: "6px 12px" }}>Criar</button>
+        </div>
+      ) : (
+        <button onClick={() => setCriandoInsumo(true)}
+          style={{ width: "100%", boxSizing: "border-box", border: "1px dashed #37A0E5", borderRadius: 10, padding: "10px", background: "none", color: "#185FA5", fontSize: 13, cursor: "pointer", marginBottom: 14 }}>
+          + Novo insumo
+        </button>
+      )}
+
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
@@ -263,6 +294,20 @@ function ExtratoInsumo({ insumo, onVoltar }) {
     setEditandoNome(false);
   };
 
+  const excluirInsumo = async () => {
+    if (!window.confirm(`Excluir "${insumo.nome}"? Isso apaga o histórico de movimentações dele também — não dá pra desfazer.`)) return;
+    const { error } = await supabase.from("insumos").delete().eq("id", insumo.id);
+    if (error) {
+      if (error.message.includes("violates foreign key constraint")) {
+        setErro(`Não dá pra excluir "${insumo.nome}" — ele está sendo usado numa Ficha Técnica ou como parte de outro insumo composto. Remove ele de lá primeiro.`);
+      } else {
+        setErro(error.message);
+      }
+      return;
+    }
+    onVoltar();
+  };
+
   const registrarAjuste = async () => {
     const qtd = parseFloat(ajusteForm.quantidade);
     if (!qtd) return;
@@ -320,6 +365,9 @@ function ExtratoInsumo({ insumo, onVoltar }) {
           </div>
         </div>
         <div style={{ fontSize: 10, color: "#8A8778", marginTop: 8 }}>Mudar a unidade não converte números já usados em Ficha Técnica — confira as receitas que usam esse insumo depois de mudar.</div>
+        <button onClick={excluirInsumo} style={{ ...ghostIconBtn, color: "#C4432B", margin: "10px auto 0", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
+          <Trash2 size={13} /> Excluir insumo
+        </button>
       </div>
 
       {!ajusteForm.aberto ? (

@@ -312,7 +312,7 @@ function EditorFicha({ prato, onVoltar }) {
       if (error) { setErro(error.message); setSalvando(false); return; }
     }
     setSalvando(false);
-    setMensagem("Ficha técnica salva.");
+    onVoltar();
   };
 
   return (
