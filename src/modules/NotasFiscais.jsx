@@ -366,6 +366,7 @@ function Conferencia({ documento, onVoltar }) {
         forma_pagamento: formaPagamento,
         categoria: "compra",
         centro_custo: "insumos",
+        data_compra: documento.data_documento || new Date().toISOString().slice(0, 10),
         data_vencimento: vencimento.toISOString().slice(0, 10),
         criado_por: userData?.user?.id,
       });

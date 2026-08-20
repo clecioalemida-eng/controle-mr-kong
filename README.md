@@ -285,6 +285,25 @@ clipe ao lado do nome abre/baixa esse arquivo.
 `018_documento_pessoa.sql` — coluna `documento_path` em `pessoas`, e o
 bucket privado `documentos-pessoas` no Storage.
 
+## Dia da compra, e marcar/reverter pago
+
+**1. Dia da compra** — cada conta agora mostra "Comprado DD/MM · Vencimento DD/MM" (antes só tinha vencimento). Migração já preenche retroativamente pras contas que vieram de nota fiscal, usando a data do documento.
+
+**2. Marcar como pago / reverter** — contas pendentes ganharam um botão
+**"Marcar como pago"** (paga o valor total de uma vez, na data de hoje,
+sem precisar passar pelo formulário) ao lado do "Pagar parcial…" (o
+antigo "Registrar pagamento", pra quando o valor não é o total). Contas
+já pagas ganharam a etiqueta **"Pago ↺"** clicável, pra reverter de
+volta pra pendente caso tenha marcado errado (zera o valor pago, mas não
+apaga o histórico de pagamentos já feitos).
+
+### Migração
+
+`032_dia_compra_e_status.sql` — adiciona `data_compra`, preenche
+retroativamente pras contas com nota fiscal vinculada.
+
+Não mexe em Edge Function.
+
 ## Centro de custo, sincronização, e Pessoas no Plano de Contas
 
 **1. Centro de custo em cada conta.** Lista completa (baseada em pesquisa

@@ -550,6 +550,7 @@ function CompraManual({ onVoltar }) {
         status: ehBoleto ? "pendente" : "pago",
         forma_pagamento: formaPagamento, categoria: "compra", centro_custo: "insumos",
         movimentacao_estoque_id: movimentacao.id,
+        data_compra: new Date().toISOString().slice(0, 10),
         data_vencimento: vencimento.toISOString().slice(0, 10), criado_por: userData?.user?.id,
       });
     }

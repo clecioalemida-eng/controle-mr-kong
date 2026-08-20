@@ -167,6 +167,29 @@ export default function ContasPagar() {
     carregar();
   };
 
+  const marcarComoPago = async (conta) => {
+    const hoje = new Date().toISOString().slice(0, 10);
+    setErro("");
+    if ((conta.valor_pago || 0) < conta.valor_total) {
+      // registra o restante como um pagamento, pra manter o histórico coerente
+      const { data: userData } = await supabase.auth.getUser();
+      const restante = round2(conta.valor_total - (conta.valor_pago || 0));
+      await supabase.from("pagamentos_conta").insert({
+        conta_pagar_id: conta.id, valor: restante, data_pagamento: hoje, criado_por: userData?.user?.id,
+      });
+    }
+    const { error } = await supabase.from("contas_pagar").update({ valor_pago: conta.valor_total, status: "pago" }).eq("id", conta.id);
+    if (error) { setErro(error.message); return; }
+    carregar();
+  };
+
+  const marcarComoPendente = async (conta) => {
+    if (!window.confirm("Marcar essa conta como pendente de novo? O valor pago fica zerado (não apaga o histórico de pagamentos já registrados).")) return;
+    const { error } = await supabase.from("contas_pagar").update({ valor_pago: 0, status: "pendente" }).eq("id", conta.id);
+    if (error) { setErro(error.message); return; }
+    carregar();
+  };
+
   const contasVisiveis = contas.filter((c) => mostrarPagas || c.status !== "pago");
   const semCentroCusto = contas.filter((c) => !c.centro_custo).length;
 
@@ -244,7 +267,7 @@ export default function ContasPagar() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{conta.fornecedor_nome || "Fornecedor não identificado"}</div>
                   {conta.status === "pago" ? (
-                    <span style={{ ...pill, background: "#EAF3DE", color: "#27500A" }}>Pago</span>
+                    <button onClick={() => marcarComoPendente(conta)} style={{ ...pill, background: "#EAF3DE", color: "#27500A", border: "none", cursor: "pointer" }}>Pago ↺</button>
                   ) : vencida ? (
                     <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Vencida há {Math.abs(dias)}d</span>
                   ) : proxima ? (
@@ -253,7 +276,10 @@ export default function ContasPagar() {
                     <span style={{ ...pill, background: "#F6F1E7", color: "#8A8778" }}>{CONDICAO_LABEL[conta.forma_pagamento] || CONDICAO_LABEL[conta.condicao_pagamento] || "—"}</span>
                   )}
                 </div>
-                <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 4 }}>Vencimento {fmtData(conta.data_vencimento)} · Total {brl(conta.valor_total)}</div>
+                <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 4 }}>
+                  {conta.data_compra && <>Comprado {fmtData(conta.data_compra)} · </>}
+                  Vencimento {fmtData(conta.data_vencimento)} · Total {brl(conta.valor_total)}
+                </div>
 
                 {editandoFormaId === conta.id ? (
                   <div style={{ border: "1px dashed #37A0E5", borderRadius: 8, padding: 8, marginBottom: 6, display: "grid", gap: 6 }}>
@@ -316,10 +342,15 @@ export default function ContasPagar() {
                       </div>
                     </div>
                   ) : (
-                    <button onClick={() => { setPagandoId(conta.id); setValorPagamento(String(restante)); }}
-                      style={{ ...btnSecondary, width: "100%", marginTop: 4 }}>
-                      + Registrar pagamento
-                    </button>
+                    <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                      <button onClick={() => marcarComoPago(conta)}
+                        style={{ ...btnSecondary, flex: 1, background: "#22231F", color: "#F3EFE3", display: "flex", justifyContent: "center", gap: 6 }}>
+                        <Check size={14} /> Marcar como pago
+                      </button>
+                      <button onClick={() => { setPagandoId(conta.id); setValorPagamento(String(restante)); }} style={{ ...btnSecondary, flex: 1 }}>
+                        Pagar parcial…
+                      </button>
+                    </div>
                   )
                 )}
 
