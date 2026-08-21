@@ -13,6 +13,19 @@ const FORMAS_PAGAMENTO_COMPRA = [
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
 function fmtData(d) { if (!d) return ""; return new Date(d).toLocaleDateString("pt-BR"); }
+function round4(n) { return Math.round((n || 0) * 10000) / 10000; }
+function norm(s) { return String(s || "").trim().toLowerCase().replace(/\s+/g, " "); }
+// Lê o padrão de embalagem que quase toda nota de descartável traz no
+// próprio nome do produto: "20X50U", "(20X100U)", "700U GALVANOTEK".
+// Serve só pra SUGERIR — quem decide é quem está conferindo.
+function detectarEmbalagem(nome) {
+  const s = String(nome || "").toUpperCase();
+  let m = s.match(/(\d{1,4})\s*[X\u00D7]\s*(\d{1,5})\s*(UN|U|PC|P)?\b/);
+  if (m) return { pacotes: Number(m[1]), porPacote: Number(m[2]) };
+  m = s.match(/\b(\d{2,5})\s*(UN|U)\b/);
+  if (m) return { pacotes: 1, porPacote: Number(m[1]) };
+  return null;
+}
 async function abrirPreview(caminho) {
   const { data, error } = await supabase.storage.from("notas-fiscais").createSignedUrl(caminho, 300);
   if (error || !data?.signedUrl) { alert("Não consegui abrir o arquivo: " + (error?.message || "")); return; }
@@ -104,6 +117,9 @@ export default function NotasFiscais() {
       if (inputRef.current) inputRef.current.value = "";
     }
   };
+  if (tela === "regras") {
+    return <RegrasProduto onVoltar={() => setTela("lista")} />;
+  }
   if (tela === "conferencia" && documentoAtual) {
     return (
       <Conferencia
@@ -138,7 +154,10 @@ export default function NotasFiscais() {
             style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
         </div>
       )}
-      <div style={sectionLabel}>Documentos recebidos</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ ...sectionLabel, marginBottom: 0 }}>Documentos recebidos</div>
+        <button onClick={() => setTela("regras")} style={{ ...linkBtn, fontSize: 12 }}>Regras de produto</button>
+      </div>
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
@@ -241,16 +260,36 @@ function Conferencia({ documento, onVoltar }) {
   const [editandoFornecedor, setEditandoFornecedor] = useState(false);
   const [nomeFornecedorInput, setNomeFornecedorInput] = useState("");
   const [historicoFornecedor, setHistoricoFornecedor] = useState([]);
+  // --- regras de embalagem -------------------------------------------
+  const [regras, setRegras] = useState([]);
+  const [maiorNota, setMaiorNota] = useState(0);
+  const [conferidos, setConferidos] = useState(() => new Set()); // itens que o usuário jurou que estão certos
+  const [embalagemItem, setEmbalagemItem] = useState(null);      // id do item com o bloco de embalagem aberto
+  const [formEmb, setFormEmb] = useState({ pacotes: "1", porPacote: "1", unidade: "un", precoPor: "pacote" });
+  const [aplicadas, setAplicadas] = useState({});                // itemId -> { texto, anterior }
+  const regrasJaAplicadas = useRef(false);
   const carregar = useCallback(async () => {
     setCarregando(true);
-    const [{ data: itensData }, { data: insumosData }, { data: fornecedoresData }] = await Promise.all([
+    const [{ data: itensData }, { data: insumosData }, { data: fornecedoresData }, { data: regrasData }, { data: maiorData }] = await Promise.all([
       supabase.from("itens_documento_compra").select("*").eq("documento_id", documento.id).order("criado_em"),
       supabase.from("insumos").select("id, nome, unidade").order("nome"),
       supabase.from("fornecedores").select("*").order("nome"),
+      supabase.from("produto_regras").select("*"),
+      supabase.from("documentos_compra").select("valor_total").not("valor_total", "is", null).order("valor_total", { ascending: false }).limit(1),
     ]);
-    setItens(itensData || []);
     setInsumos(insumosData || []);
     setFornecedores(fornecedoresData || []);
+    setRegras(regrasData || []);
+    setMaiorNota(maiorData?.[0]?.valor_total || 0);
+    // As regras são aplicadas UMA vez por abertura da tela. Sem essa
+    // trava, cada carregar() reaplicaria os fatores em cima de valores
+    // que já foram corrigidos, e a quantidade despencaria a cada volta.
+    let listaFinal = itensData || [];
+    if (!regrasJaAplicadas.current) {
+      regrasJaAplicadas.current = true;
+      listaFinal = await aplicarRegras(listaFinal, regrasData || []);
+    }
+    setItens(listaFinal);
     setCarregando(false);
     if (documento.fornecedor_id) carregarHistoricoFornecedor(documento.fornecedor_id);
   }, [documento.id]);
@@ -265,6 +304,96 @@ function Conferencia({ documento, onVoltar }) {
       .limit(10);
     setHistoricoFornecedor(data || []);
   };
+  // Aplica as regras já aprendidas nos itens recém-lidos pela IA.
+  const aplicarRegras = async (lista, listaRegras) => {
+    const banners = {};
+    const saida = [];
+    for (const item of lista) {
+      const regra = (listaRegras || []).find((r) => norm(r.nome_lido) === norm(item.nome_lido));
+      if (!regra) { saida.push(item); continue; }
+      const novaQtd = round2((item.quantidade || 0) * Number(regra.fator_quantidade || 1));
+      const novoPreco = round4((item.preco_unitario || 0) * Number(regra.fator_preco || 1));
+      if (novaQtd === item.quantidade && novoPreco === item.preco_unitario) { saida.push(item); continue; }
+      const atualizado = {
+        ...item,
+        quantidade: novaQtd,
+        preco_unitario: novoPreco,
+        unidade: regra.unidade || item.unidade,
+        insumo_id: item.insumo_id || regra.insumo_id || null,
+      };
+      await supabase.from("itens_documento_compra").update({
+        quantidade: atualizado.quantidade,
+        preco_unitario: atualizado.preco_unitario,
+        unidade: atualizado.unidade,
+        insumo_id: atualizado.insumo_id,
+      }).eq("id", item.id);
+      await supabase.from("produto_regras")
+        .update({ vezes_usada: (regra.vezes_usada || 0) + 1, atualizada_em: new Date().toISOString() })
+        .eq("id", regra.id);
+      banners[item.id] = {
+        texto: `${regra.pacotes} ${Number(regra.pacotes) > 1 ? "pacotes" : "pacote"} \u00d7 ${regra.unidades_por_pacote} ${regra.unidade} \u00b7 pre\u00e7o por ${regra.preco_por}`,
+        anterior: { quantidade: item.quantidade, preco_unitario: item.preco_unitario, unidade: item.unidade },
+      };
+      saida.push(atualizado);
+    }
+    if (Object.keys(banners).length) setAplicadas(banners);
+    return saida;
+  };
+
+  const desfazerRegra = async (item) => {
+    const info = aplicadas[item.id];
+    if (!info) return;
+    await supabase.from("itens_documento_compra").update(info.anterior).eq("id", item.id);
+    setItens((prev) => prev.map((it) => (it.id === item.id ? { ...it, ...info.anterior } : it)));
+    setAplicadas((prev) => { const copia = { ...prev }; delete copia[item.id]; return copia; });
+  };
+
+  const abrirEmbalagem = (item) => {
+    const det = detectarEmbalagem(item.nome_lido);
+    const ins = insumos.find((i) => i.id === item.insumo_id);
+    setFormEmb({
+      pacotes: String(det?.pacotes ?? 1),
+      porPacote: String(det?.porPacote ?? 1),
+      unidade: ins?.unidade || item.unidade || "un",
+      precoPor: "pacote",
+    });
+    setEmbalagemItem(item.id);
+  };
+
+  const aplicarEmbalagem = async (item, salvarRegra) => {
+    const pacotes = parseFloat(formEmb.pacotes) || 1;
+    const porPacote = parseFloat(formEmb.porPacote) || 1;
+    const totalUnidades = round2(pacotes * porPacote);
+    const novoPreco = formEmb.precoPor === "pacote"
+      ? round4((item.preco_unitario || 0) / porPacote)
+      : round4(item.preco_unitario || 0);
+
+    const { error } = await supabase.from("itens_documento_compra").update({
+      quantidade: totalUnidades, preco_unitario: novoPreco, unidade: formEmb.unidade,
+    }).eq("id", item.id);
+    if (error) { setErro(error.message); return; }
+
+    if (salvarRegra) {
+      // Guarda a RAZÃO entre o que a IA leu e o que estava certo — é isso
+      // que continua valendo quando o volume da próxima compra for outro.
+      const fatorQuantidade = item.quantidade > 0 ? totalUnidades / item.quantidade : 1;
+      const fatorPreco = item.preco_unitario > 0 ? novoPreco / item.preco_unitario : 1;
+      const { error: errRegra } = await supabase.from("produto_regras").upsert({
+        nome_lido: String(item.nome_lido || "").trim(),
+        insumo_id: item.insumo_id || null,
+        pacotes, unidades_por_pacote: porPacote, unidade: formEmb.unidade,
+        preco_por: formEmb.precoPor,
+        fator_quantidade: fatorQuantidade,
+        fator_preco: fatorPreco,
+        atualizada_em: new Date().toISOString(),
+      }, { onConflict: "nome_lido" });
+      if (errRegra) { setErro(errRegra.message); return; }
+    }
+    setEmbalagemItem(null);
+    setConferidos((prev) => { const c = new Set(prev); c.delete(item.id); return c; });
+    carregar();
+  };
+
   const salvarFornecedor = async () => {
     const nome = nomeFornecedorInput.trim();
     if (!nome) { setEditandoFornecedor(false); return; }
@@ -348,10 +477,29 @@ function Conferencia({ documento, onVoltar }) {
     const ins = insumos.find((i) => i.id === it.insumo_id);
     return ins && ins.unidade !== it.unidade;
   });
-  const podeConfirmar = todosVinculados && !algumaUnidadeDivergente;
+  // Trava de sanidade. Não depende de regra nenhuma: compara o item com o
+  // total da própria nota e com a maior nota já registrada. É o que teria
+  // pego os R$ 270.000,00 em copos descartáveis.
+  const motivoImplausivel = (item) => {
+    const total = (item.quantidade || 0) * (item.preco_unitario || 0);
+    if (total <= 0) return null;
+    if (documento.valor_total > 0 && total > documento.valor_total * 1.5) {
+      return `esse item sozinho vale ${brl(total)}, mais que o total da própria nota (${brl(documento.valor_total)})`;
+    }
+    if (maiorNota > 0 && total > maiorNota * 10) {
+      return `${brl(total)} num item só — mais de dez vezes a maior nota já registrada (${brl(maiorNota)})`;
+    }
+    if (!documento.valor_total && !maiorNota && total > 20000) {
+      return `${brl(total)} num item só parece alto demais`;
+    }
+    return null;
+  };
+  const implausiveis = itens.filter((it) => motivoImplausivel(it) && !conferidos.has(it.id));
+  const podeConfirmar = todosVinculados && !algumaUnidadeDivergente && implausiveis.length === 0;
   const confirmar = async () => {
     if (!todosVinculados) { setErro("Vincule todos os itens a um insumo antes de confirmar."); return; }
     if (algumaUnidadeDivergente) { setErro("Tem item com unidade diferente da do insumo — corrija pelo lápis antes de confirmar."); return; }
+    if (implausiveis.length > 0) { setErro("Tem item com valor implausível — ajuste a embalagem ou marque \"conferi, está certo\" antes de confirmar."); return; }
     setSalvando(true);
     setErro("");
     const { data: userData } = await supabase.auth.getUser();
@@ -470,9 +618,13 @@ function Conferencia({ documento, onVoltar }) {
             const semInsumo = !item.insumo_id;
             const insumoVinculadoRow = insumos.find((i) => i.id === item.insumo_id);
             const unidadeDivergente = !semInsumo && insumoVinculadoRow && insumoVinculadoRow.unidade !== item.unidade;
+            const motivo = motivoImplausivel(item);
+            const alertaAtivo = motivo && !conferidos.has(item.id);
+            const det = detectarEmbalagem(item.nome_lido);
+            const temRegra = regras.some((r) => norm(r.nome_lido) === norm(item.nome_lido));
             return (
               <div key={item.id} style={{
-                background: item.alerta_preco ? "#FCEBEB" : unidadeDivergente ? "#FBF3D9" : "#FFFFFF",
+                background: alertaAtivo ? "#FCEBEB" : item.alerta_preco ? "#FCEBEB" : unidadeDivergente ? "#FBF3D9" : "#FFFFFF",
                 borderTop: idx > 0 ? "1px solid #F0EBDD" : "none",
               }}>
                 <div style={linhaTabela}>
@@ -506,6 +658,104 @@ function Conferencia({ documento, onVoltar }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderTop: "1px solid #F09595", fontSize: 12, color: "#791F1F" }}>
                     <AlertTriangle size={14} style={{ flexShrink: 0 }} />
                     {(((item.preco_unitario / item.preco_anterior) - 1) * 100).toFixed(0)}% acima da última compra ({brl(item.preco_anterior)})
+                  </div>
+                )}
+
+                {/* Regra de embalagem já aprendida foi aplicada nesse item */}
+                {aplicadas[item.id] && (
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "8px 10px", borderTop: "1px solid #A9D3C0", background: "#2F8F5B12", fontSize: 11.5, color: "#0F6E56" }}>
+                    <Check size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div>
+                      <b>Regra aplicada:</b> {aplicadas[item.id].texto}.{" "}
+                      <span style={{ color: "#8A8778" }}>
+                        A IA tinha lido {aplicadas[item.id].anterior.quantidade} {aplicadas[item.id].anterior.unidade} a {brl(aplicadas[item.id].anterior.preco_unitario)}.
+                      </span>{" "}
+                      <button onClick={() => desfazerRegra(item)} style={{ ...linkBtn, fontSize: 11.5, color: "#185FA5" }}>desfazer</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Trava de sanidade — bloqueia o confirmar */}
+                {alertaAtivo && (
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "9px 10px", borderTop: "1px solid #F09595", fontSize: 12, color: "#791F1F" }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div>
+                      <b>Esse valor não parece certo</b> — {motivo}.
+                      {det && (
+                        <> O nome traz <b>{det.pacotes}×{det.porPacote}</b>, então provavelmente são {round2(det.pacotes * det.porPacote)} unidades e o preço lido é o do pacote.</>
+                      )}
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 7 }}>
+                        <button onClick={() => abrirEmbalagem(item)} style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Definir embalagem</button>
+                        <button onClick={() => setConferidos((prev) => new Set(prev).add(item.id))} style={{ ...linkBtn, fontSize: 12, color: "#791F1F" }}>
+                          Conferi, está certo
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Atalho discreto quando não há alerta nem regra, mas o nome
+                    tem cara de embalagem múltipla (20X50U e afins) */}
+                {!alertaAtivo && !temRegra && !aplicadas[item.id] && det && embalagemItem !== item.id && (
+                  <div style={{ padding: "0 10px 8px" }}>
+                    <button onClick={() => abrirEmbalagem(item)} style={{ ...linkBtn, fontSize: 11.5 }}>
+                      Definir como esse produto vem embalado ({det.pacotes}×{det.porPacote})
+                    </button>
+                  </div>
+                )}
+
+                {/* Bloco que ensina a embalagem */}
+                {embalagemItem === item.id && (
+                  <div style={{ border: "1px dashed #37A0E5", borderRadius: 10, padding: 12, margin: "0 10px 12px", background: "#F7FBFE" }}>
+                    <div style={{ fontSize: 11.5, color: "#185FA5", fontWeight: 700, marginBottom: 2 }}>Como esse produto vem embalado?</div>
+                    <div style={{ fontSize: 11, color: "#5C5A4E", marginBottom: 10, lineHeight: 1.45 }}>
+                      {det
+                        ? <>Detectei <b>{det.pacotes}×{det.porPacote}</b> no nome e já preenchi abaixo. Confirme ou corrija.</>
+                        : <>Não achei um padrão no nome — preencha na mão.</>}
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                      <div style={{ flex: 1, minWidth: 80 }}>
+                        <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Vem em</label>
+                        <input type="number" value={formEmb.pacotes} onChange={(e) => setFormEmb((f) => ({ ...f, pacotes: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 80 }}>
+                        <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>pacotes, cada um com</label>
+                        <input type="number" value={formEmb.porPacote} onChange={(e) => setFormEmb((f) => ({ ...f, porPacote: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 12 }} />
+                      </div>
+                      <div style={{ width: 70 }}>
+                        <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>unidade</label>
+                        <select value={formEmb.unidade} onChange={(e) => setFormEmb((f) => ({ ...f, unidade: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 4px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                          {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, background: "#F6F1E7", border: "1px solid #E8E2D2", borderRadius: 6, padding: "6px 10px", marginTop: 9, display: "inline-block" }}>
+                      1 compra dessas = <b style={{ color: "#0F6E56" }}>{round2((parseFloat(formEmb.pacotes) || 0) * (parseFloat(formEmb.porPacote) || 0))} {formEmb.unidade}</b>
+                      {formEmb.precoPor === "pacote" && (parseFloat(formEmb.porPacote) || 0) > 0 && (
+                        <> · custo real <b style={{ color: "#0F6E56" }}>{brl((item.preco_unitario || 0) / (parseFloat(formEmb.porPacote) || 1))} / {formEmb.unidade}</b></>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: 14, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ color: "#8A8778", fontSize: 11 }}>O {brl(item.preco_unitario)} da nota é o preço de:</span>
+                      <label style={{ display: "flex", gap: 5, alignItems: "center", fontSize: 12 }}>
+                        <input type="radio" checked={formEmb.precoPor === "pacote"} onChange={() => setFormEmb((f) => ({ ...f, precoPor: "pacote" }))} /> 1 pacote
+                      </label>
+                      <label style={{ display: "flex", gap: 5, alignItems: "center", fontSize: 12 }}>
+                        <input type="radio" checked={formEmb.precoPor === "unidade"} onChange={() => setFormEmb((f) => ({ ...f, precoPor: "unidade" }))} /> 1 unidade
+                      </label>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                      <button onClick={() => aplicarEmbalagem(item, true)} style={{ ...btnPrimary, fontSize: 12.5, padding: "9px 15px" }}>
+                        Aplicar e lembrar desse produto
+                      </button>
+                      <button onClick={() => aplicarEmbalagem(item, false)} style={{ ...btnSecondary, fontSize: 12, padding: "7px 12px" }}>
+                        Só nessa nota
+                      </button>
+                      <button onClick={() => setEmbalagemItem(null)} style={{ ...linkBtn, fontSize: 12 }}>Cancelar</button>
+                    </div>
                   </div>
                 )}
                 {semInsumo && criarInsumoAberto !== item.id && (
@@ -669,9 +919,151 @@ function Conferencia({ documento, onVoltar }) {
       {todosVinculados && algumaUnidadeDivergente && !carregando && (
         <div style={{ fontSize: 12, color: "#854F0B", marginTop: 8, textAlign: "center" }}>Corrija a unidade divergente (destacada em amarelo) pra poder confirmar.</div>
       )}
+      {implausiveis.length > 0 && !carregando && (
+        <div style={{ fontSize: 12, color: "#791F1F", marginTop: 8, textAlign: "center" }}>
+          {implausiveis.length === 1 ? "Tem 1 item com valor implausível" : `Tem ${implausiveis.length} itens com valor implausível`} (em vermelho) — ajuste a embalagem ou marque que conferiu.
+        </div>
+      )}
     </div>
   );
 }
+// ---------------------------------------------------------------------------
+// Regras de produto: manutenção do que o sistema aprendeu sobre embalagem.
+// Existe pra você poder consertar uma regra que aprendeu errado sem ter que
+// esperar a próxima nota daquele produto chegar.
+// ---------------------------------------------------------------------------
+function RegrasProduto({ onVoltar }) {
+  const [regras, setRegras] = useState([]);
+  const [insumos, setInsumos] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [editando, setEditando] = useState(null);
+  const [form, setForm] = useState({ pacotes: "1", porPacote: "1", unidade: "un", precoPor: "pacote" });
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    const [{ data: regrasData, error }, { data: insumosData }] = await Promise.all([
+      supabase.from("produto_regras").select("*").order("atualizada_em", { ascending: false }),
+      supabase.from("insumos").select("id, nome, unidade").order("nome"),
+    ]);
+    if (error) setErro(error.message);
+    setRegras(regrasData || []);
+    setInsumos(insumosData || []);
+    setCarregando(false);
+  }, []);
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const abrirEdicao = (r) => {
+    setEditando(r.id);
+    setForm({
+      pacotes: String(r.pacotes ?? 1),
+      porPacote: String(r.unidades_por_pacote ?? 1),
+      unidade: r.unidade || "un",
+      precoPor: r.preco_por || "pacote",
+    });
+  };
+
+  const salvar = async (r) => {
+    const pacotes = parseFloat(form.pacotes) || 1;
+    const porPacote = parseFloat(form.porPacote) || 1;
+    // Recalcula os fatores mantendo a proporção original entre o que a IA
+    // leu e o que ficou certo — se a embalagem muda, o fator muda junto.
+    const fatorQuantidade = Number(r.unidades_por_pacote) > 0 && Number(r.pacotes) > 0
+      ? Number(r.fator_quantidade) * ((pacotes * porPacote) / (Number(r.pacotes) * Number(r.unidades_por_pacote)))
+      : Number(r.fator_quantidade);
+    const fatorPreco = form.precoPor === "pacote" ? 1 / porPacote : 1;
+    const { error } = await supabase.from("produto_regras").update({
+      pacotes, unidades_por_pacote: porPacote, unidade: form.unidade, preco_por: form.precoPor,
+      fator_quantidade: fatorQuantidade, fator_preco: fatorPreco,
+      atualizada_em: new Date().toISOString(),
+    }).eq("id", r.id);
+    if (error) { setErro(error.message); return; }
+    setEditando(null);
+    carregar();
+  };
+
+  const excluir = async (r) => {
+    if (!window.confirm(`Esquecer a regra de "${r.nome_lido}"? As notas já confirmadas não mudam — só para de aplicar daqui pra frente.`)) return;
+    const { error } = await supabase.from("produto_regras").delete().eq("id", r.id);
+    if (error) { setErro(error.message); return; }
+    carregar();
+  };
+
+  return (
+    <div>
+      <button onClick={onVoltar} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, marginBottom: 14 }}>
+        <ChevronLeft size={14} /> Voltar
+      </button>
+      <div style={sectionLabel}>Regras aprendidas</div>
+      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 12, lineHeight: 1.5 }}>
+        Cada regra guarda como um produto vem embalado. Quando esse mesmo produto aparecer numa nota nova, a quantidade e o preço já chegam convertidos.
+      </div>
+      {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+      {carregando ? (
+        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
+      ) : regras.length === 0 ? (
+        <div style={{ ...cardStyle, fontSize: 13, color: "#8A8778" }}>
+          Nenhuma regra ainda. Elas nascem na conferência de uma nota, quando você define como um produto vem embalado e marca pra lembrar.
+        </div>
+      ) : (
+        <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
+          {regras.map((r, idx) => {
+            const ins = insumos.find((i) => i.id === r.insumo_id);
+            return (
+              <div key={r.id} style={{ borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", padding: "10px 12px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis" }}>{r.nome_lido}</div>
+                    <div style={{ fontSize: 11, color: "#8A8778", marginTop: 2 }}>
+                      → {ins ? ins.nome : "sem insumo vinculado"} · {r.pacotes} × {r.unidades_por_pacote} {r.unidade} · preço por {r.preco_por}
+                    </div>
+                  </div>
+                  <span style={{ ...pill, background: r.vezes_usada > 0 ? "#2F8F5B22" : "#FAC77555", color: r.vezes_usada > 0 ? "#0F6E56" : "#854F0B", whiteSpace: "nowrap", flexShrink: 0 }}>
+                    {r.vezes_usada > 0 ? `${r.vezes_usada} ${r.vezes_usada === 1 ? "nota" : "notas"}` : "nunca usada"}
+                  </span>
+                  <button onClick={() => abrirEdicao(r)} style={ghostIconBtn} aria-label="Editar regra"><Pencil size={14} /></button>
+                  <button onClick={() => excluir(r)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Esquecer regra"><Trash2 size={14} /></button>
+                </div>
+                {editando === r.id && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginTop: 10, paddingTop: 10, borderTop: "1px dashed #E8E2D2" }}>
+                    <div style={{ flex: 1, minWidth: 78 }}>
+                      <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Pacotes</label>
+                      <input type="number" value={form.pacotes} onChange={(e) => setForm((f) => ({ ...f, pacotes: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 78 }}>
+                      <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Cada um com</label>
+                      <input type="number" value={form.porPacote} onChange={(e) => setForm((f) => ({ ...f, porPacote: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 12 }} />
+                    </div>
+                    <div style={{ width: 68 }}>
+                      <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Unidade</label>
+                      <select value={form.unidade} onChange={(e) => setForm((f) => ({ ...f, unidade: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "6px 4px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                        {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                      </select>
+                    </div>
+                    <div style={{ minWidth: 130 }}>
+                      <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Preço da nota é por</label>
+                      <select value={form.precoPor} onChange={(e) => setForm((f) => ({ ...f, precoPor: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                        <option value="pacote">pacote</option>
+                        <option value="unidade">unidade</option>
+                      </select>
+                    </div>
+                    <button onClick={() => salvar(r)} style={{ ...btnSecondary, fontSize: 12, padding: "7px 12px" }}>Salvar</button>
+                    <button onClick={() => setEditando(null)} style={{ ...linkBtn, fontSize: 12 }}>Cancelar</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
 const linhaTabela = { display: "grid", gridTemplateColumns: "2fr 0.6fr 0.5fr 0.8fr 0.8fr 0.6fr", gap: 6, padding: "8px 10px", alignItems: "center" };
 const itemRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10, padding: "12px 14px" };
