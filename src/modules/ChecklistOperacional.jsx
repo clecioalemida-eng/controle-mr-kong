@@ -1,117 +1,69 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   CheckCircle2, XCircle, Clock, AlertTriangle, ChevronLeft,
-  LayoutDashboard, Flame, Wine, CircleDollarSign,
+  LayoutDashboard, Flame, Wine, CircleDollarSign, Utensils, ClipboardList,
   ShieldCheck, Loader2, Pencil, Trash2, Plus, Check,
 } from "lucide-react";
 import { supabase, TABELA_CHECKLIST } from "../lib/supabaseClient";
-
 // ---------------------------------------------------------------------------
-// Dados dos departamentos e itens de checklist
+// Aparência dos departamentos
+//
+// ATENÇÃO: este objeto NÃO é mais a lista de departamentos — é só o visual
+// (nome bonito, ícone e cor). Quem manda na lista é o banco: todo
+// departamento com item cadastrado em `checklist_itens` ganha um card.
+//
+// Antes a lista era fixa aqui, e por isso um cargo novo podia existir no
+// banco e nunca aparecer na tela. Cargo que não estiver neste objeto
+// continua funcionando — só herda um nome derivado da chave e um ícone
+// genérico.
 // ---------------------------------------------------------------------------
-const DEPARTAMENTOS = {
-  caixa: {
-    label: "Caixa",
-    icon: CircleDollarSign,
-    cor: "#C9A227",
-    abertura: [
-      "Contar caixa inicial", "Conferir troco", "Ligar sistema de vendas (PDV)",
-      "Testar impressora de cupom", "Verificar maquininha de cartão",
-      "Conferir conexão com internet", "Organizar bancada do caixa",
-      "Conferir bobinas de cupom fiscal", "Ligar ar-condicionado do salão",
-      "Verificar iluminação do salão", "Conferir cardápios disponíveis",
-      "Testar comunicação com a cozinha", "Verificar limpeza do caixa", "Ligar som",
-    ],
-    fechamento: [
-      "Contar caixa final", "Conferir sangria do dia", "Emitir relatório de vendas",
-      "Desligar sistema de vendas (PDV)", "Separar troco para o dia seguinte",
-      "Conferir diferenças de caixa", "Organizar comprovantes e cupons",
-      "Desligar impressora de cupom", "Trancar gaveta do caixa", "Desligar som",
-      "Desligar ar-condicionado", "Verificar limpeza final do caixa",
-    ],
-  },
-  bar: {
-    label: "Bar",
-    icon: Wine,
-    cor: "#2F8F5B",
-    abertura: [
-      "Conferir estoque de bebidas", "Verificar validade dos insumos",
-      "Organizar bancada do bar", "Testar máquina de gelo",
-      "Conferir taças e copos limpos", "Verificar temperatura das geladeiras",
-      "Preparar guarnições e frutas", "Conferir cardápio de drinks",
-      "Testar liquidificador", "Organizar utensílios do bar", "Repor gelo",
-      "Verificar limpeza do bar",
-    ],
-    fechamento: [
-      "Conferir estoque final de bebidas", "Guardar bebidas abertas",
-      "Limpar bancada do bar", "Lavar utensílios utilizados",
-      "Desligar máquina de gelo", "Registrar perdas e quebras",
-      "Conferir consumo interno", "Organizar geladeiras", "Retirar lixo do bar",
-      "Trancar armários de bebidas", "Verificar limpeza geral do bar",
-    ],
-  },
-  chapa: {
-    label: "Chapa",
-    icon: Flame,
-    cor: "#C4432B",
-    abertura: [
-      "Ligar chapa", "Verificar temperatura da chapa", "Conferir estoque de carnes",
-      "Conferir estoque de pães", "Organizar bancada da chapa",
-      "Verificar validade dos insumos", "Testar exaustor",
-      "Conferir utensílios de corte", "Verificar limpeza da chapa",
-      "Conferir molhos e temperos", "Verificar uso de EPIs",
-    ],
-    fechamento: [
-      "Desligar chapa", "Limpar superfície da chapa", "Guardar insumos restantes",
-      "Conferir sobras do dia", "Registrar perdas", "Limpar bancada",
-      "Lavar utensílios", "Desligar exaustor", "Retirar lixo",
-      "Verificar limpeza geral",
-    ],
-  },
-  gerencia: {
-    label: "Gerência",
-    icon: ShieldCheck,
-    cor: "#4A5D8A",
-    abertura: [
-      "Conferir escala do dia", "Verificar caixa inicial de todos os setores",
-      "Conferir estoque geral", "Verificar equipe presente",
-      "Revisar pendências do dia anterior",
-    ],
-    fechamento: [
-      "Conferir fechamento de todos os setores", "Revisar relatório de vendas do dia",
-      "Conferir não conformidades registradas", "Planejar pendências para o dia seguinte",
-      "Trancar estabelecimento",
-    ],
-  },
+const APARENCIA = {
+  caixa:    { label: "Caixa",    icon: CircleDollarSign, cor: "#C9A227" },
+  bar:      { label: "Bar",      icon: Wine,             cor: "#2F8F5B" },
+  chapa:    { label: "Chapa",    icon: Flame,            cor: "#C4432B" },
+  gerencia: { label: "Gerência", icon: ShieldCheck,      cor: "#4A5D8A" },
+  garcom:   { label: "Garçom",   icon: Utensils,         cor: "#8A6A0F" },
 };
-
-const DEPT_KEYS = Object.keys(DEPARTAMENTOS);
-
+const APARENCIA_PADRAO = { icon: ClipboardList, cor: "#8A8778" };
+function aparenciaDe(chave) {
+  if (APARENCIA[chave]) return APARENCIA[chave];
+  // Cargo criado pela tela e sem entrada aqui: "entregador" -> "Entregador"
+  const label = String(chave || "").replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+  return { ...APARENCIA_PADRAO, label };
+}
+// Nome digitado -> chave do banco. O banco exige minúsculo, sem acento e
+// sem espaço (constraint checklist_itens_departamento_check).
+function chaveDoNome(nome) {
+  const base = String(nome || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!base) return "";
+  return /^[a-z]/.test(base) ? base : `c_${base}`;
+}
+const TURNOS = ["abertura", "fechamento"];
 // ---------------------------------------------------------------------------
 // Helpers de dia operacional (17h -> 17h do dia seguinte)
 // ---------------------------------------------------------------------------
 function pad(n) { return String(n).padStart(2, "0"); }
 function toDateStr(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
-
 function diaOperacional(date = new Date()) {
   const d = new Date(date);
   if (d.getHours() < 17) d.setDate(d.getDate() - 1);
   return toDateStr(d);
 }
-
 function formatDiaLabel(dateStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
   const dt = new Date(y, m - 1, d);
   return dt.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
 }
-
 function podePreencher(etapa) {
   const h = new Date().getHours();
   if (etapa === "abertura") return h >= 17 || h < 2;
   if (etapa === "fechamento") return h >= 2 && h < 17;
   return true;
 }
-
 function useIsAdmin() {
   const [isAdmin, setIsAdmin] = useState(null);
   useEffect(() => {
@@ -123,7 +75,6 @@ function useIsAdmin() {
   }, []);
   return isAdmin;
 }
-
 // ---------------------------------------------------------------------------
 // Componente principal
 // ---------------------------------------------------------------------------
@@ -138,23 +89,31 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
   const [modoTeste, setModoTeste] = useState(false);
   const [erro, setErro] = useState("");
   const [itensDb, setItensDb] = useState({}); // departamento -> turno -> [texto, ...] (ordenado)
+  const [carregandoDepts, setCarregandoDepts] = useState(true);
   const isAdmin = useIsAdmin();
-
   const opDate = diaOperacional();
-
+  // A lista de departamentos vem daqui: quem tem item cadastrado, aparece.
   const carregarItensDb = useCallback(async () => {
+    setCarregandoDepts(true);
     const { data } = await supabase.from("checklist_itens").select("*").eq("ativo", true).order("ordem");
     const mapa = {};
-    DEPT_KEYS.forEach((k) => { mapa[k] = { abertura: [], fechamento: [] }; });
     (data || []).forEach((it) => {
       if (!mapa[it.departamento]) mapa[it.departamento] = { abertura: [], fechamento: [] };
+      if (!mapa[it.departamento][it.turno]) mapa[it.departamento][it.turno] = [];
       mapa[it.departamento][it.turno].push(it.texto);
     });
     setItensDb(mapa);
+    setCarregandoDepts(false);
   }, []);
-
   useEffect(() => { carregarItensDb(); }, [carregarItensDb]);
-
+  // Ordem dos cards: os conhecidos primeiro, na ordem do APARENCIA; os
+  // criados depois entram em seguida, em ordem alfabética.
+  const deptKeys = React.useMemo(() => {
+    const doBanco = Object.keys(itensDb);
+    const conhecidos = Object.keys(APARENCIA).filter((k) => doBanco.includes(k));
+    const novos = doBanco.filter((k) => !APARENCIA[k]).sort();
+    return [...conhecidos, ...novos];
+  }, [itensDb]);
   const abrirChecklist = async (deptKey, etapa) => {
     setErro("");
     setDeptAtual(deptKey);
@@ -163,7 +122,6 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
     setItens({});
     setCarregandoItem(true);
     setTela("checklist");
-
     const { data, error } = await supabase
       .from(TABELA_CHECKLIST)
       .select("itens, responsavel")
@@ -171,7 +129,6 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
       .eq("departamento", deptKey)
       .eq("etapa", etapa)
       .maybeSingle();
-
     if (error) {
       setErro("Não foi possível carregar o checklist: " + error.message);
     } else if (data) {
@@ -180,16 +137,13 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
     }
     setCarregandoItem(false);
   };
-
   const marcarItem = (itemLabel, status) => {
     setItens((prev) => ({ ...prev, [itemLabel]: status }));
   };
-
   const listaItensAtual = deptAtual && etapaAtual ? (itensDb[deptAtual]?.[etapaAtual] || []) : [];
   const totalItens = listaItensAtual.length;
   const totalPreenchidos = listaItensAtual.filter((i) => itens[i]).length;
   const completo = totalItens > 0 && totalPreenchidos === totalItens;
-
   const salvarChecklist = async () => {
     if (!completo) {
       setErro(`Preencha todos os itens (${totalPreenchidos}/${totalItens}) antes de salvar.`);
@@ -197,7 +151,6 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
     }
     setSalvando(true);
     setErro("");
-
     const { error } = await supabase.from(TABELA_CHECKLIST).upsert(
       {
         dia_operacional: opDate,
@@ -209,7 +162,6 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
       },
       { onConflict: "dia_operacional,departamento,etapa" }
     );
-
     if (error) {
       setErro("Não foi possível salvar: " + error.message);
     } else {
@@ -217,52 +169,61 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
     }
     setSalvando(false);
   };
-
   if (tela === "home") {
     return (
       <Shell titulo="Checklist Operacional" subtitulo={`Olá, ${nomeUsuario} · Dia operacional ${formatDiaLabel(opDate)}`}
         onBack={onVoltar} onDashboard={() => setTela("dashboard")}>
-        <div className="cards-grid">
-          {DEPT_KEYS.map((k) => {
-            const dept = DEPARTAMENTOS[k];
-            const Icon = dept.icon;
-            return (
-              <div key={k} style={cardStyle}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                  <div style={{ width: 34, height: 34, borderRadius: 8, background: dept.cor + "22", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <Icon size={18} color={dept.cor} />
+        {carregandoDepts ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A8778", fontSize: 13 }}>
+            <Loader2 size={16} /> Carregando…
+          </div>
+        ) : (
+          <div className="cards-grid">
+            {deptKeys.map((k) => {
+              const dept = aparenciaDe(k);
+              const Icon = dept.icon;
+              return (
+                <div key={k} style={cardStyle}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                    <div style={{ width: 34, height: 34, borderRadius: 8, background: dept.cor + "22", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <Icon size={18} color={dept.cor} />
+                    </div>
+                    <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F" }}>{dept.label}</div>
                   </div>
-                  <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F" }}>{dept.label}</div>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button style={{ ...btnSecondary, opacity: podePreencher("abertura") || modoTeste ? 1 : 0.5 }}
+                      onClick={() => abrirChecklist(k, "abertura")}>
+                      Abertura
+                    </button>
+                    <button style={{ ...btnSecondary, opacity: podePreencher("fechamento") || modoTeste ? 1 : 0.5 }}
+                      onClick={() => abrirChecklist(k, "fechamento")}>
+                      Fechamento
+                    </button>
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: 10 }}>
-                  <button style={{ ...btnSecondary, opacity: podePreencher("abertura") || modoTeste ? 1 : 0.5 }}
-                    onClick={() => abrirChecklist(k, "abertura")}>
-                    Abertura
-                  </button>
-                  <button style={{ ...btnSecondary, opacity: podePreencher("fechamento") || modoTeste ? 1 : 0.5 }}
-                    onClick={() => abrirChecklist(k, "fechamento")}>
-                    Fechamento
-                  </button>
-                </div>
+              );
+            })}
+            {deptKeys.length === 0 && (
+              <div style={{ ...cardStyle, fontSize: 13, color: "#8A8778" }}>
+                Nenhum cargo com checklist cadastrado ainda.{isAdmin ? " Use \"Editar checklist\" para criar o primeiro." : ""}
               </div>
-            );
-          })}
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#8A8778", marginTop: 4 }}>
-            <input type="checkbox" checked={modoTeste} onChange={(e) => setModoTeste(e.target.checked)} />
-            Modo teste (ignorar horário de abertura/fechamento)
-          </label>
-          {isAdmin && (
-            <button onClick={() => setTela("editar")} style={{ ...btnSecondary, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 4 }}>
-              <Pencil size={14} /> Editar checklist
-            </button>
-          )}
-        </div>
+            )}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#8A8778", marginTop: 4 }}>
+              <input type="checkbox" checked={modoTeste} onChange={(e) => setModoTeste(e.target.checked)} />
+              Modo teste (ignorar horário de abertura/fechamento)
+            </label>
+            {isAdmin && (
+              <button onClick={() => setTela("editar")} style={{ ...btnSecondary, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 4 }}>
+                <Pencil size={14} /> Editar checklist
+              </button>
+            )}
+          </div>
+        )}
       </Shell>
     );
   }
-
   if (tela === "checklist") {
-    const dept = DEPARTAMENTOS[deptAtual];
+    const dept = aparenciaDe(deptAtual);
     const bloqueado = !modoTeste && !podePreencher(etapaAtual);
     return (
       <Shell titulo={`${dept.label} · ${etapaAtual === "abertura" ? "Abertura" : "Fechamento"}`}
@@ -300,6 +261,9 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
                   </div>
                 </div>
               ))}
+              {listaItensAtual.length === 0 && (
+                <div style={{ fontSize: 13, color: "#8A8778" }}>Esse turno ainda não tem item cadastrado.</div>
+              )}
             </div>
             {erro && <div style={{ color: "#C4432B", fontSize: 13, marginTop: 10 }}>{erro}</div>}
             <button onClick={salvarChecklist} disabled={salvando} style={{ ...btnPrimary, marginTop: 16, width: "100%" }}>
@@ -311,20 +275,16 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
       </Shell>
     );
   }
-
   if (tela === "dashboard") {
-    return <Dashboard onBack={() => setTela("home")} opDateHoje={opDate} />;
+    return <Dashboard onBack={() => setTela("home")} opDateHoje={opDate} itensDb={itensDb} deptKeys={deptKeys} />;
   }
-
   if (tela === "editar") {
     return <EditarChecklist onBack={() => { setTela("home"); carregarItensDb(); }} />;
   }
-
   return null;
 }
-
 // ---------------------------------------------------------------------------
-// Edição do checklist (só admin) — editar, excluir, acrescentar itens
+// Edição do checklist (só admin) — cargos, itens, e criação de cargo novo
 // ---------------------------------------------------------------------------
 function EditarChecklist({ onBack }) {
   const [itens, setItens] = useState([]);
@@ -333,7 +293,11 @@ function EditarChecklist({ onBack }) {
   const [editandoId, setEditandoId] = useState(null);
   const [textoEdicao, setTextoEdicao] = useState("");
   const [novoTexto, setNovoTexto] = useState({}); // `${dept}:${turno}` -> texto sendo digitado
-
+  // Cargo recém-criado ainda não tem item, então não vem do banco —
+  // fica aqui até o primeiro item ser salvo.
+  const [deptsExtras, setDeptsExtras] = useState([]);
+  const [criandoCargo, setCriandoCargo] = useState(false);
+  const [nomeCargo, setNomeCargo] = useState("");
   const carregar = useCallback(async () => {
     setCarregando(true);
     const { data, error } = await supabase.from("checklist_itens").select("*").eq("ativo", true).order("ordem");
@@ -342,7 +306,22 @@ function EditarChecklist({ onBack }) {
     setCarregando(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
-
+  const deptKeys = React.useMemo(() => {
+    const doBanco = [...new Set(itens.map((i) => i.departamento))];
+    const todos = [...new Set([...doBanco, ...deptsExtras])];
+    const conhecidos = Object.keys(APARENCIA).filter((k) => todos.includes(k));
+    const novos = todos.filter((k) => !APARENCIA[k]).sort();
+    return [...conhecidos, ...novos];
+  }, [itens, deptsExtras]);
+  const criarCargo = () => {
+    const chave = chaveDoNome(nomeCargo);
+    if (!chave) { setErro("Digite um nome válido para o cargo."); return; }
+    if (deptKeys.includes(chave)) { setErro(`O cargo "${aparenciaDe(chave).label}" já existe.`); return; }
+    setDeptsExtras((prev) => [...prev, chave]);
+    setNomeCargo("");
+    setCriandoCargo(false);
+    setErro("");
+  };
   const salvarEdicao = async (id) => {
     const texto = textoEdicao.trim();
     if (!texto) return;
@@ -351,14 +330,12 @@ function EditarChecklist({ onBack }) {
     setEditandoId(null);
     carregar();
   };
-
   const excluir = async (item) => {
-    if (!window.confirm(`Remover "${item.texto}" do checklist de ${DEPARTAMENTOS[item.departamento].label}?`)) return;
+    if (!window.confirm(`Remover "${item.texto}" do checklist de ${aparenciaDe(item.departamento).label}?`)) return;
     const { error } = await supabase.from("checklist_itens").update({ ativo: false }).eq("id", item.id);
     if (error) { setErro(error.message); return; }
     carregar();
   };
-
   const adicionar = async (departamento, turno) => {
     const chave = `${departamento}:${turno}`;
     const texto = (novoTexto[chave] || "").trim();
@@ -369,7 +346,6 @@ function EditarChecklist({ onBack }) {
     setNovoTexto((prev) => ({ ...prev, [chave]: "" }));
     carregar();
   };
-
   return (
     <div style={pageStyle}>
       <div className="app-shell">
@@ -377,16 +353,35 @@ function EditarChecklist({ onBack }) {
           <button onClick={onBack} style={iconBtn}><ChevronLeft size={18} /></button>
           <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Editar checklist</div>
         </div>
-
         {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 14 }}>{erro}</div>}
-
+        <div style={{ marginBottom: 20 }}>
+          {criandoCargo ? (
+            <div style={{ display: "flex", gap: 6 }}>
+              <input value={nomeCargo} onChange={(e) => setNomeCargo(e.target.value)} autoFocus
+                onKeyDown={(e) => e.key === "Enter" && criarCargo()}
+                placeholder="Nome do cargo (ex.: Entregador)"
+                style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13 }} />
+              <button onClick={criarCargo} style={{ ...btnSecondary, flex: "none", padding: "8px 14px" }}>Criar</button>
+              <button onClick={() => { setCriandoCargo(false); setNomeCargo(""); }} style={{ ...ghostIconBtn, color: "#8A6A0F", fontSize: 13, fontWeight: 600 }}>Cancelar</button>
+            </div>
+          ) : (
+            <button onClick={() => setCriandoCargo(true)} style={{ ...btnSecondary, flex: "none", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <Plus size={14} /> Novo cargo
+            </button>
+          )}
+          {criandoCargo && (
+            <div style={{ fontSize: 11, color: "#8A8778", marginTop: 6 }}>
+              O cargo aparece na tela inicial assim que tiver o primeiro item cadastrado.
+            </div>
+          )}
+        </div>
         {carregando ? (
           <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
         ) : (
-          DEPT_KEYS.map((deptKey) => (
+          deptKeys.map((deptKey) => (
             <div key={deptKey} style={{ marginBottom: 24 }}>
-              <div style={{ fontWeight: 700, fontSize: 15, color: "#22231F", marginBottom: 10 }}>{DEPARTAMENTOS[deptKey].label}</div>
-              {["abertura", "fechamento"].map((turno) => {
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#22231F", marginBottom: 10 }}>{aparenciaDe(deptKey).label}</div>
+              {TURNOS.map((turno) => {
                 const chave = `${deptKey}:${turno}`;
                 const itensDoGrupo = itens.filter((i) => i.departamento === deptKey && i.turno === turno);
                 return (
@@ -419,7 +414,7 @@ function EditarChecklist({ onBack }) {
                       <input value={novoTexto[chave] || ""} onChange={(e) => setNovoTexto((prev) => ({ ...prev, [chave]: e.target.value }))}
                         onKeyDown={(e) => e.key === "Enter" && adicionar(deptKey, turno)}
                         placeholder="Novo item…" style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
-                      <button onClick={() => adicionar(deptKey, turno)} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 4, fontSize: 12, padding: "6px 10px" }}>
+                      <button onClick={() => adicionar(deptKey, turno)} style={{ ...btnSecondary, flex: "none", display: "flex", alignItems: "center", gap: 4, fontSize: 12, padding: "6px 10px" }}>
                         <Plus size={13} /> Adicionar
                       </button>
                     </div>
@@ -433,7 +428,6 @@ function EditarChecklist({ onBack }) {
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Shell / layout comum
 // ---------------------------------------------------------------------------
@@ -460,11 +454,15 @@ function Shell({ titulo, subtitulo, children, onBack, onDashboard }) {
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Dashboard
+//
+// Os totais vêm do banco (itensDb), não de uma lista fixa. Antes o
+// "preenchido/total" comparava com a lista escrita no código — e, como os
+// itens passaram a viver no banco, esse total ficava errado sempre que
+// alguém acrescentava ou removia um item pelo Editar checklist.
 // ---------------------------------------------------------------------------
-function Dashboard({ onBack, opDateHoje }) {
+function Dashboard({ onBack, opDateHoje, itensDb, deptKeys }) {
   const [diaSelecionado, setDiaSelecionado] = useState(opDateHoje);
   const [mesSelecionado, setMesSelecionado] = useState(opDateHoje.slice(0, 7));
   const [carregando, setCarregando] = useState(true);
@@ -472,35 +470,27 @@ function Dashboard({ onBack, opDateHoje }) {
   const [alertas, setAlertas] = useState([]);
   const [resumoMes, setResumoMes] = useState(null);
   const [erroCarregamento, setErroCarregamento] = useState("");
-
   const carregarDia = useCallback(async (dia) => {
     setCarregando(true);
     setErroCarregamento("");
-
     const status = {};
-    for (const deptKey of DEPT_KEYS) {
-      const dept = DEPARTAMENTOS[deptKey];
-      for (const etapa of ["abertura", "fechamento"]) {
-        status[`${deptKey}:${etapa}`] = { preenchido: 0, total: dept[etapa].length, ok: false };
-      }
-    }
-
+    deptKeys.forEach((deptKey) => {
+      TURNOS.forEach((etapa) => {
+        status[`${deptKey}:${etapa}`] = { preenchido: 0, total: (itensDb[deptKey]?.[etapa] || []).length, ok: false };
+      });
+    });
     const { data, error } = await supabase
       .from(TABELA_CHECKLIST)
       .select("*")
       .eq("dia_operacional", dia);
-
     if (error) {
       setErroCarregamento("Erro ao carregar dados do dia: " + error.message);
       setCarregando(false);
       return;
     }
-
     const novosAlertas = [];
     (data || []).forEach((row) => {
-      const dept = DEPARTAMENTOS[row.departamento];
-      if (!dept) return;
-      const total = dept[row.etapa] ? dept[row.etapa].length : 0;
+      const total = (itensDb[row.departamento]?.[row.etapa] || []).length;
       const entries = Object.entries(row.itens || {});
       status[`${row.departamento}:${row.etapa}`] = {
         preenchido: entries.length,
@@ -509,38 +499,32 @@ function Dashboard({ onBack, opDateHoje }) {
       };
       entries.forEach(([item, st]) => {
         if (st === "nao_conforme") {
-          novosAlertas.push({ dept: dept.label, etapa: row.etapa, item, responsavel: row.responsavel });
+          novosAlertas.push({ dept: aparenciaDe(row.departamento).label, etapa: row.etapa, item, responsavel: row.responsavel });
         }
       });
     });
-
     setStatusDia(status);
     setAlertas(novosAlertas);
     setCarregando(false);
-  }, []);
-
+  }, [itensDb, deptKeys]);
   const carregarMes = useCallback(async (mes) => {
     const [ano, mesNum] = mes.split("-").map(Number);
     const inicio = `${ano}-${pad(mesNum)}-01`;
     const diasNoMes = new Date(ano, mesNum, 0).getDate();
     const fim = `${ano}-${pad(mesNum)}-${pad(diasNoMes)}`;
-
     const { data, error } = await supabase
       .from(TABELA_CHECKLIST)
       .select("*")
       .gte("dia_operacional", inicio)
       .lte("dia_operacional", fim);
-
     if (error) {
       setErroCarregamento("Erro ao carregar dados do mês: " + error.message);
       return;
     }
-
     let totalItensMes = 0;
     let totalNaoConforme = 0;
     let checklistsPreenchidos = 0;
     const porPessoa = {};
-
     (data || []).forEach((row) => {
       const entries = Object.entries(row.itens || {});
       if (entries.length === 0) return;
@@ -557,13 +541,11 @@ function Dashboard({ onBack, opDateHoje }) {
         }
       });
     });
-
     const pessoasArr = Object.entries(porPessoa).map(([nome, v]) => ({
       nome,
       checklists: v.checklists,
       percNaoConforme: v.total > 0 ? (v.naoConforme / v.total) * 100 : 0,
     })).sort((a, b) => b.percNaoConforme - a.percNaoConforme);
-
     setResumoMes({
       checklistsPreenchidos,
       percGeral: totalItensMes > 0 ? (totalNaoConforme / totalItensMes) * 100 : 0,
@@ -571,10 +553,8 @@ function Dashboard({ onBack, opDateHoje }) {
       pessoas: pessoasArr,
     });
   }, []);
-
   useEffect(() => { carregarDia(diaSelecionado); }, [diaSelecionado, carregarDia]);
   useEffect(() => { carregarMes(mesSelecionado); }, [mesSelecionado, carregarMes]);
-
   return (
     <Shell titulo="Dashboard" subtitulo={formatDiaLabel(diaSelecionado)} onBack={onBack}>
       {erroCarregamento && (
@@ -582,7 +562,6 @@ function Dashboard({ onBack, opDateHoje }) {
           <AlertTriangle size={16} /> {erroCarregamento}
         </div>
       )}
-
       <div style={{ marginBottom: 18 }}>
         <div style={sectionLabel}>Pendências do dia</div>
         <input type="date" value={diaSelecionado} onChange={(e) => setDiaSelecionado(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
@@ -590,30 +569,26 @@ function Dashboard({ onBack, opDateHoje }) {
           <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
         ) : (
           <div style={{ display: "grid", gap: 8 }}>
-            {DEPT_KEYS.map((k) => {
-              const dept = DEPARTAMENTOS[k];
-              return (
-                <div key={k} style={cardStyle}>
-                  <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8, color: "#22231F" }}>{dept.label}</div>
-                  {["abertura", "fechamento"].map((etapa) => {
-                    const s = statusDia[`${k}:${etapa}`] || { preenchido: 0, total: 0, ok: false };
-                    return (
-                      <div key={etapa} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", fontSize: 13 }}>
-                        <span style={{ color: "#5C5A4E", textTransform: "capitalize" }}>{etapa}</span>
-                        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <span style={{ color: "#8A8778" }}>{s.preenchido}/{s.total}</span>
-                          {s.ok ? <CheckCircle2 size={16} color="#2F8F5B" /> : <Clock size={16} color="#C9A227" />}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
+            {deptKeys.map((k) => (
+              <div key={k} style={cardStyle}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8, color: "#22231F" }}>{aparenciaDe(k).label}</div>
+                {TURNOS.map((etapa) => {
+                  const s = statusDia[`${k}:${etapa}`] || { preenchido: 0, total: 0, ok: false };
+                  return (
+                    <div key={etapa} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", fontSize: 13 }}>
+                      <span style={{ color: "#5C5A4E", textTransform: "capitalize" }}>{etapa}</span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ color: "#8A8778" }}>{s.preenchido}/{s.total}</span>
+                        {s.ok ? <CheckCircle2 size={16} color="#2F8F5B" /> : <Clock size={16} color="#C9A227" />}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         )}
       </div>
-
       <div style={{ marginBottom: 18 }}>
         <div style={sectionLabel}>Alertas de não conformidade</div>
         {alertas.length === 0 && !carregando && (
@@ -631,7 +606,6 @@ function Dashboard({ onBack, opDateHoje }) {
           ))}
         </div>
       </div>
-
       <div>
         <div style={sectionLabel}>Média mensal de não conformidade</div>
         <input type="month" value={mesSelecionado} onChange={(e) => setMesSelecionado(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
@@ -668,7 +642,6 @@ function Dashboard({ onBack, opDateHoje }) {
     </Shell>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Estilos
 // ---------------------------------------------------------------------------
