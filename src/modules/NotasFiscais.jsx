@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  ChevronLeft, Camera, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search,
+  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
-
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
 const FORMAS_PAGAMENTO_COMPRA = [
   { valor: "pix", rotulo: "Pix" },
@@ -11,17 +10,14 @@ const FORMAS_PAGAMENTO_COMPRA = [
   { valor: "credito", rotulo: "Cartão de crédito" },
   { valor: "boleto", rotulo: "Boleto" },
 ];
-
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
 function fmtData(d) { if (!d) return ""; return new Date(d).toLocaleDateString("pt-BR"); }
-
 async function abrirPreview(caminho) {
   const { data, error } = await supabase.storage.from("notas-fiscais").createSignedUrl(caminho, 300);
   if (error || !data?.signedUrl) { alert("Não consegui abrir o arquivo: " + (error?.message || "")); return; }
   window.open(data.signedUrl, "_blank");
 }
-
 const STATUS_LABEL = {
   processando: "Lendo com IA",
   aguardando_confirmacao: "Aguardando conferência",
@@ -34,7 +30,6 @@ const STATUS_ESTILO = {
   confirmado: { background: "#2F8F5B22", color: "#0F6E56" },
   erro: { background: "#F0999522", color: "#A32D2D" },
 };
-
 export default function NotasFiscais() {
   const [tela, setTela] = useState("lista"); // lista | conferencia
   const [documentos, setDocumentos] = useState([]);
@@ -44,7 +39,6 @@ export default function NotasFiscais() {
   const [documentoAtual, setDocumentoAtual] = useState(null);
   const [busca, setBusca] = useState("");
   const inputRef = useRef(null);
-
   const carregar = useCallback(async () => {
     setCarregando(true);
     const { data, error } = await supabase.from("documentos_compra").select("*").order("criado_em", { ascending: false }).limit(30);
@@ -52,9 +46,7 @@ export default function NotasFiscais() {
     setDocumentos(data || []);
     setCarregando(false);
   }, []);
-
   useEffect(() => { carregar(); }, [carregar]);
-
   const excluirDocumento = async (d) => {
     if (!window.confirm(`Excluir a nota de "${d.fornecedor || "fornecedor não identificado"}"? Isso apaga o documento e os itens lidos — não dá pra desfazer.`)) return;
     const { error } = await supabase.from("documentos_compra").delete().eq("id", d.id);
@@ -62,7 +54,6 @@ export default function NotasFiscais() {
     await supabase.storage.from("notas-fiscais").remove([d.arquivo_path]);
     carregar();
   };
-
   const enviarArquivo = async (file) => {
     if (!file) return;
     setEnviando(true);
@@ -72,20 +63,16 @@ export default function NotasFiscais() {
       const caminho = `${userData?.user?.id || "anon"}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
       const { error: erroUpload } = await supabase.storage.from("notas-fiscais").upload(caminho, file);
       if (erroUpload) throw erroUpload;
-
       const { data: doc, error: erroInsert } = await supabase.from("documentos_compra")
         .insert({ arquivo_path: caminho, status: "processando", criado_por: userData?.user?.id })
         .select().single();
       if (erroInsert) throw erroInsert;
-
       carregar(); // já mostra "Lendo com IA" na lista
-
       const { data: resultado, error: erroFuncao } = await supabase.functions.invoke("processar-documento-compra", {
         body: { documento_id: doc.id },
       });
       if (erroFuncao) throw new Error(await extrairErroFuncao(erroFuncao));
       if (resultado?.error) throw new Error(resultado.error);
-
       carregar();
     } catch (e) {
       setErro(e.message || String(e));
@@ -94,7 +81,6 @@ export default function NotasFiscais() {
       if (inputRef.current) inputRef.current.value = "";
     }
   };
-
   if (tela === "conferencia" && documentoAtual) {
     return (
       <Conferencia
@@ -103,19 +89,25 @@ export default function NotasFiscais() {
       />
     );
   }
-
   return (
     <div>
-      <input ref={inputRef} type="file" accept="image/*,application/pdf" capture="environment" style={{ display: "none" }}
+      {/*
+        SEM `capture` de propósito. O atributo capture="environment" mandava
+        o celular abrir a câmera traseira direto, sem perguntar nada — no
+        iPhone e no iPad isso tornava impossível escolher um arquivo já
+        salvo. Sem ele, o iOS abre o menu nativo com "Biblioteca de Fotos",
+        "Tirar Foto" e "Escolher Arquivo", e o Android faz o equivalente.
+        Ou seja: dá pra fotografar a nota na hora OU subir um PDF/imagem
+        que já está no aparelho ou no iCloud/Drive.
+      */}
+      <input ref={inputRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }}
         onChange={(e) => enviarArquivo(e.target.files?.[0])} />
       <button onClick={() => inputRef.current?.click()} disabled={enviando}
         style={{ ...btnPrimary, width: "100%", marginBottom: 16 }}>
-        {enviando ? <Loader2 size={16} /> : <Camera size={17} />}
+        {enviando ? <Loader2 size={16} /> : <Upload size={17} />}
         {enviando ? "Enviando…" : "Enviar nota fiscal ou recibo"}
       </button>
-
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-
       {documentos.length > 0 && (
         <div style={{ position: "relative", marginBottom: 14 }}>
           <Search size={15} color="#8A8778" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
@@ -123,7 +115,6 @@ export default function NotasFiscais() {
             style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
         </div>
       )}
-
       <div style={sectionLabel}>Documentos recebidos</div>
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
@@ -161,7 +152,6 @@ export default function NotasFiscais() {
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Tela de conferência: revisar/editar os itens lidos antes de confirmar
 // ---------------------------------------------------------------------------
@@ -186,7 +176,6 @@ function Conferencia({ documento, onVoltar }) {
   const [editandoFornecedor, setEditandoFornecedor] = useState(false);
   const [nomeFornecedorInput, setNomeFornecedorInput] = useState("");
   const [historicoFornecedor, setHistoricoFornecedor] = useState([]);
-
   const carregar = useCallback(async () => {
     setCarregando(true);
     const [{ data: itensData }, { data: insumosData }, { data: fornecedoresData }] = await Promise.all([
@@ -200,9 +189,7 @@ function Conferencia({ documento, onVoltar }) {
     setCarregando(false);
     if (documento.fornecedor_id) carregarHistoricoFornecedor(documento.fornecedor_id);
   }, [documento.id]);
-
   useEffect(() => { carregar(); }, [carregar]);
-
   const carregarHistoricoFornecedor = async (fornecedorId) => {
     const { data } = await supabase
       .from("documentos_compra")
@@ -213,7 +200,6 @@ function Conferencia({ documento, onVoltar }) {
       .limit(10);
     setHistoricoFornecedor(data || []);
   };
-
   const salvarFornecedor = async () => {
     const nome = nomeFornecedorInput.trim();
     if (!nome) { setEditandoFornecedor(false); return; }
@@ -230,12 +216,10 @@ function Conferencia({ documento, onVoltar }) {
     setEditandoFornecedor(false);
     carregarHistoricoFornecedor(fornecedor.id);
   };
-
   const removerItem = async (id) => {
     await supabase.from("itens_documento_compra").delete().eq("id", id);
     setItens((prev) => prev.filter((it) => it.id !== id));
   };
-
   const adicionarItemManual = async () => {
     const { data, error } = await supabase.from("itens_documento_compra")
       .insert({ documento_id: documento.id, nome_lido: "Novo item", quantidade: 1, unidade: "un", preco_unitario: 0 })
@@ -244,19 +228,16 @@ function Conferencia({ documento, onVoltar }) {
     setItens((prev) => [...prev, data]);
     abrirEdicao(data);
   };
-
   const abrirEdicao = (item) => {
     setEditandoId(item.id);
     setFormEdicao({ nome_lido: item.nome_lido, quantidade: item.quantidade, unidade: item.unidade, preco_unitario: item.preco_unitario, insumo_id: item.insumo_id || "" });
     setCalcPacotes({ qtd: "", tamanho: "", unidade: item.unidade || "g" });
   };
-
   const aplicarCalculadoraPacotes = () => {
     const qtd = parseFloat(calcPacotes.qtd) || 0;
     const tamanho = parseFloat(calcPacotes.tamanho) || 0;
     setFormEdicao((f) => ({ ...f, quantidade: round2(qtd * tamanho), unidade: calcPacotes.unidade }));
   };
-
   const renomearInsumoVinculado = async () => {
     const nome = nomeInsumoInput.trim();
     if (!nome || !formEdicao.insumo_id) { setRenomeandoInsumo(false); return; }
@@ -265,7 +246,6 @@ function Conferencia({ documento, onVoltar }) {
     setInsumos((prev) => prev.map((i) => i.id === formEdicao.insumo_id ? { ...i, nome } : i).sort((a, b) => a.nome.localeCompare(b.nome)));
     setRenomeandoInsumo(false);
   };
-
   const salvarEdicao = async () => {
     const { error } = await supabase.from("itens_documento_compra").update({
       nome_lido: formEdicao.nome_lido,
@@ -278,12 +258,10 @@ function Conferencia({ documento, onVoltar }) {
     carregar();
     setEditandoId(null);
   };
-
   const vincularInsumo = async (itemId, insumoId) => {
     await supabase.from("itens_documento_compra").update({ insumo_id: insumoId }).eq("id", itemId);
     carregar();
   };
-
   const criarEVincularInsumo = async (item) => {
     if (!novoInsumoNome.trim()) return;
     const { data: insumo, error } = await supabase.from("insumos")
@@ -300,21 +278,18 @@ function Conferencia({ documento, onVoltar }) {
     setNovoInsumoNome("");
     carregar();
   };
-
   const todosVinculados = itens.length > 0 && itens.every((it) => it.insumo_id);
   const algumaUnidadeDivergente = itens.some((it) => {
     const ins = insumos.find((i) => i.id === it.insumo_id);
     return ins && ins.unidade !== it.unidade;
   });
   const podeConfirmar = todosVinculados && !algumaUnidadeDivergente;
-
   const confirmar = async () => {
     if (!todosVinculados) { setErro("Vincule todos os itens a um insumo antes de confirmar."); return; }
     if (algumaUnidadeDivergente) { setErro("Tem item com unidade diferente da do insumo — corrija pelo lápis antes de confirmar."); return; }
     setSalvando(true);
     setErro("");
     const { data: userData } = await supabase.auth.getUser();
-
     for (const item of itens) {
       // grava a movimentação de entrada no estoque
       const { error: errMov } = await supabase.from("movimentacoes_estoque").insert({
@@ -328,23 +303,19 @@ function Conferencia({ documento, onVoltar }) {
         criado_por: userData?.user?.id,
       });
       if (errMov) { setErro(errMov.message); setSalvando(false); return; }
-
       // atualiza o custo do insumo pro preço dessa última compra confirmada
       // (só se o insumo não for composto — o custo dele é calculado, não digitado)
       const { data: insumoAtual } = await supabase.from("insumos").select("composto").eq("id", item.insumo_id).single();
       if (!insumoAtual?.composto) {
         await supabase.from("insumos").update({ custo_medio_atual: item.preco_unitario, atualizado_em: new Date().toISOString() }).eq("id", item.insumo_id);
       }
-
       // aprende o sinônimo, se o nome lido for diferente do nome do insumo
       const insumoVinculado = insumos.find((i) => i.id === item.insumo_id);
       if (insumoVinculado && insumoVinculado.nome.trim().toLowerCase() !== item.nome_lido.trim().toLowerCase()) {
         await supabase.from("insumo_sinonimos").insert({ nome_variante: item.nome_lido, insumo_id: item.insumo_id }).select();
       }
     }
-
     await supabase.from("documentos_compra").update({ status: "confirmado", confirmado_em: new Date().toISOString() }).eq("id", documento.id);
-
     // Toda nota confirmada vira um registro em Contas a Pagar — pago ou a
     // pagar, mas sempre lá, pra ter o valor de toda compra num lugar só.
     // Boleto entra como pendente (com vencimento); pix/débito/crédito
@@ -371,17 +342,14 @@ function Conferencia({ documento, onVoltar }) {
         criado_por: userData?.user?.id,
       });
     }
-
     setSalvando(false);
     onVoltar();
   };
-
   return (
     <div>
       <button onClick={onVoltar} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, marginBottom: 14 }}>
         <ChevronLeft size={14} /> Voltar
       </button>
-
       <div style={{ ...cardStyle, marginBottom: 14, display: "flex", alignItems: "center", gap: 12 }}>
         <div style={iconBox}><FileText size={18} color="#8A8778" /></div>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -407,7 +375,6 @@ function Conferencia({ documento, onVoltar }) {
           <Eye size={14} /> Ver original
         </button>
       </div>
-
       {fornecedorAtual.id && historicoFornecedor.length > 0 && (
         <div style={{ ...cardStyle, marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Histórico com {fornecedorAtual.nome}</div>
@@ -423,7 +390,6 @@ function Conferencia({ documento, onVoltar }) {
           </div>
         </div>
       )}
-
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={sectionLabel}>Itens encontrados</div>
         <button onClick={adicionarItemManual} style={{ ...linkBtn, fontSize: 12 }}>+ Adicionar item manualmente</button>
@@ -457,7 +423,6 @@ function Conferencia({ documento, onVoltar }) {
                     <button onClick={() => removerItem(item.id)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Remover item"><Trash2 size={14} /></button>
                   </span>
                 </div>
-
                 {semInsumo && (
                   <div style={{ fontSize: 11, color: "#8A6A0F", padding: "0 10px 8px" }}>→ insumo não reconhecido — escolher ou criar abaixo</div>
                 )}
@@ -466,21 +431,18 @@ function Conferencia({ documento, onVoltar }) {
                     → vinculado a: {insumoVinculadoRow?.nome}
                   </div>
                 )}
-
                 {unidadeDivergente && (
                   <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderTop: "1px solid #E8D48A", fontSize: 12, color: "#7A6A1E" }}>
                     <AlertTriangle size={14} style={{ flexShrink: 0 }} />
                     Essa nota veio em <strong>{item.unidade}</strong>, mas o insumo "{insumoVinculadoRow?.nome}" é controlado em <strong>{insumoVinculadoRow?.unidade}</strong> — ajuste a quantidade e a unidade pelo lápis antes de confirmar, ou o estoque fica errado.
                   </div>
                 )}
-
                 {item.alerta_preco && (
                   <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderTop: "1px solid #F09595", fontSize: 12, color: "#791F1F" }}>
                     <AlertTriangle size={14} style={{ flexShrink: 0 }} />
                     {(((item.preco_unitario / item.preco_anterior) - 1) * 100).toFixed(0)}% acima da última compra ({brl(item.preco_anterior)})
                   </div>
                 )}
-
                 {semInsumo && criarInsumoAberto !== item.id && (
                   <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderTop: "1px dashed #E8D48A" }}>
                     <select defaultValue="" onChange={(e) => e.target.value && vincularInsumo(item.id, e.target.value)}
@@ -503,7 +465,6 @@ function Conferencia({ documento, onVoltar }) {
                     <button onClick={() => criarEVincularInsumo(item)} style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Salvar</button>
                   </div>
                 )}
-
                 {editandoId === item.id && (
                   <div style={{ padding: "10px", borderTop: "1px solid #E8E2D2", display: "grid", gap: 8 }}>
                     <div>
@@ -615,7 +576,6 @@ function Conferencia({ documento, onVoltar }) {
           {itens.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum item lido nesse documento.</div>}
         </div>
       )}
-
       <div style={{ ...cardStyle, marginBottom: 14 }}>
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Forma de pagamento</label>
         <select value={formaPagamento} onChange={(e) => setFormaPagamento(e.target.value)}
@@ -633,9 +593,7 @@ function Conferencia({ documento, onVoltar }) {
           {formaPagamento === "boleto" ? "Gera uma conta a pagar com esse prazo, no valor total da nota." : "Pix/débito/crédito entra em Contas a Pagar já marcado como pago."}
         </div>
       </div>
-
       {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 12 }}>{erro}</div>}
-
       <button onClick={confirmar} disabled={salvando || !podeConfirmar} style={{ ...btnPrimary, width: "100%" }}>
         {salvando ? <Loader2 size={16} /> : <Check size={16} />}
         Confirmar e lançar no estoque
@@ -649,7 +607,6 @@ function Conferencia({ documento, onVoltar }) {
     </div>
   );
 }
-
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
 const linhaTabela = { display: "grid", gridTemplateColumns: "2fr 0.6fr 0.5fr 0.8fr 0.8fr 0.6fr", gap: 6, padding: "8px 10px", alignItems: "center" };
 const itemRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10, padding: "12px 14px" };
