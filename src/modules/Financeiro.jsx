@@ -1,18 +1,20 @@
 import React, { useState, useCallback } from "react";
 import { ChevronLeft, Loader2, AlertTriangle, RefreshCw, DollarSign } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+import { podeVer } from "../lib/permissoes";
 import FichasTecnicas from "./FichasTecnicas";
 import NotasFiscais from "./NotasFiscais";
 import Estoque from "./Estoque";
-import Equipe from "./Equipe";
 import ConferenciaCaixa from "./ConferenciaCaixa";
 import ContasPagar from "./ContasPagar";
 import RelatorioFiado from "./RelatorioFiado";
 import CurvaABC from "./CurvaABC";
-import Dashboard from "./Dashboard";
-
+// Dashboard e Equipe saíram daqui:
+//   - Dashboard virou módulo próprio (src/modules/DashboardModulo.jsx)
+//   - Equipe virou "Gente e Gestão" (src/modules/GenteGestao.jsx)
+// Os dois tinham card na home e aba aqui dentro ao mesmo tempo; manter os
+// dois lugares significava duas permissões para a mesma tela.
 const ABAS = [
-  { chave: "dashboard", label: "Dashboard" },
   { chave: "vendas", label: "Vendas" },
   { chave: "pedidos", label: "Pedidos" },
   { chave: "pagamentos", label: "Pagamentos" },
@@ -20,13 +22,11 @@ const ABAS = [
   { chave: "fichas", label: "Fichas técnicas" },
   { chave: "notas", label: "Notas" },
   { chave: "estoque", label: "Compras" },
-  { chave: "equipe", label: "Equipe" },
   { chave: "conferencia", label: "Conferência de caixa" },
   { chave: "contaspagar", label: "Plano de Contas" },
   { chave: "fiado", label: "Fiado" },
   { chave: "curvaabc", label: "Curva ABC" },
 ];
-
 const NOMES_PAGAMENTO = {
   money: "Dinheiro",
   credit_card: "Cartão de crédito",
@@ -45,7 +45,6 @@ const NOMES_PAGAMENTO = {
   food99: "99Food (online)",
   food99_voucher: "Desconto 99Food",
 };
-
 function hoje() { return new Date().toISOString().slice(0, 10); }
 function diasAtras(n) {
   const d = new Date();
@@ -55,15 +54,19 @@ function diasAtras(n) {
 function formatBRL(v) {
   return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
-
-export default function Financeiro({ onVoltar, abaInicial }) {
-  const [aba, setAba] = useState(abaInicial || "vendas");
+export default function Financeiro({ onVoltar, abaInicial, permissoes }) {
+  // Só as abas que o cargo da pessoa pode ver. Administrador vê todas,
+  // porque podeVer() devolve true para ele em qualquer chave.
+  const abasVisiveis = ABAS.filter((a) => podeVer(permissoes, `financeiro.${a.chave}`));
+  const abaPadrao = abasVisiveis.some((a) => a.chave === abaInicial)
+    ? abaInicial
+    : (abasVisiveis[0]?.chave || null);
+  const [aba, setAba] = useState(abaPadrao);
   const [dataInicio, setDataInicio] = useState(diasAtras(7));
   const [dataFim, setDataFim] = useState(hoje());
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState(null);
   const [resumo, setResumo] = useState(null);
-
   const carregar = useCallback(async () => {
     setCarregando(true);
     setErro(null);
@@ -78,11 +81,9 @@ export default function Financeiro({ onVoltar, abaInicial }) {
     if (data?.error) { setErro(data.error); return; }
     setResumo(data);
   }, [dataInicio, dataFim]);
-
   // Sem busca automática ao abrir ou trocar de aba/data — só busca quando
   // a pessoa clica em "Atualizar" mesmo, de propósito. Isso evita bater
   // sem querer no limite de 5 consultas por minuto do CardápioWeb.
-
   return (
     <div style={pageStyle}>
       <div className="app-shell">
@@ -90,79 +91,76 @@ export default function Financeiro({ onVoltar, abaInicial }) {
           <button onClick={onVoltar} style={iconBtn}><ChevronLeft size={18} /></button>
           <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Financeiro</div>
         </div>
-
-        <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
-          {ABAS.map((a) => (
-            <button key={a.chave} onClick={() => setAba(a.chave)}
-              style={{ ...tabBtn, ...(aba === a.chave ? tabBtnAtivo : {}) }}>
-              {a.label}
-            </button>
-          ))}
-        </div>
-
-        {aba === "fichas" ? (
-          <FichasTecnicas />
-        ) : aba === "notas" ? (
-          <NotasFiscais />
-        ) : aba === "estoque" ? (
-          <Estoque />
-        ) : aba === "equipe" ? (
-          <Equipe />
-        ) : aba === "conferencia" ? (
-          <ConferenciaCaixa />
-        ) : aba === "contaspagar" ? (
-          <ContasPagar />
-        ) : aba === "fiado" ? (
-          <RelatorioFiado />
-        ) : aba === "curvaabc" ? (
-          <CurvaABC />
-        ) : aba === "dashboard" ? (
-          <Dashboard />
+        {abasVisiveis.length === 0 ? (
+          <div style={{ ...cardStyle, textAlign: "center", color: "#8A8778", fontSize: 13 }}>
+            Seu cargo não libera nenhuma aba do Financeiro. Fale com um administrador.
+          </div>
         ) : (
           <>
-            <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-              <input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} style={inputStyle} />
-              <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={inputStyle} />
-              <button onClick={carregar} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
-                <RefreshCw size={14} /> Atualizar
-              </button>
+            <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+              {abasVisiveis.map((a) => (
+                <button key={a.chave} onClick={() => setAba(a.chave)}
+                  style={{ ...tabBtn, ...(aba === a.chave ? tabBtnAtivo : {}) }}>
+                  {a.label}
+                </button>
+              ))}
             </div>
-
-            {carregando && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A8778", fontSize: 13 }}>
-                <Loader2 size={16} /> Consultando o CardápioWeb…
-              </div>
-            )}
-
-            {!carregando && erro && (
-              <div style={avisoStyle}>
-                <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Não deu para trazer esses dados</div>
-                  <div style={{ fontSize: 13 }}>{erro}</div>
-                </div>
-              </div>
-            )}
-
-            {!carregando && !erro && !resumo && (
-              <div style={{ fontSize: 13, color: "#8A8778" }}>Escolha o período e clique em "Atualizar" para consultar o CardápioWeb.</div>
-            )}
-
-            {!carregando && !erro && resumo && (
+            {aba === "fichas" ? (
+              <FichasTecnicas />
+            ) : aba === "notas" ? (
+              <NotasFiscais />
+            ) : aba === "estoque" ? (
+              <Estoque />
+            ) : aba === "conferencia" ? (
+              <ConferenciaCaixa />
+            ) : aba === "contaspagar" ? (
+              <ContasPagar />
+            ) : aba === "fiado" ? (
+              <RelatorioFiado />
+            ) : aba === "curvaabc" ? (
+              <CurvaABC />
+            ) : (
               <>
-                {resumo.truncado && (
-                  <div style={{ ...avisoStyle, marginBottom: 14 }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+                  <input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} style={inputStyle} />
+                  <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={inputStyle} />
+                  <button onClick={carregar} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
+                    <RefreshCw size={14} /> Atualizar
+                  </button>
+                </div>
+                {carregando && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A8778", fontSize: 13 }}>
+                    <Loader2 size={16} /> Consultando o CardápioWeb…
+                  </div>
+                )}
+                {!carregando && erro && (
+                  <div style={avisoStyle}>
                     <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
-                    <div style={{ fontSize: 13 }}>
-                      Esse período tem mais pedidos do que o limite processado de uma vez. Reduza o intervalo de datas para ver todos.
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>Não deu para trazer esses dados</div>
+                      <div style={{ fontSize: 13 }}>{erro}</div>
                     </div>
                   </div>
                 )}
-
-                {aba === "vendas" && <AbaVendas resumo={resumo} />}
-                {aba === "pedidos" && <AbaPedidos resumo={resumo} />}
-                {aba === "pagamentos" && <AbaPagamentos resumo={resumo} />}
-                {aba === "fechamento" && <AbaFechamento resumo={resumo} />}
+                {!carregando && !erro && !resumo && (
+                  <div style={{ fontSize: 13, color: "#8A8778" }}>Escolha o período e clique em "Atualizar" para consultar o CardápioWeb.</div>
+                )}
+                {!carregando && !erro && resumo && (
+                  <>
+                    {resumo.truncado && (
+                      <div style={{ ...avisoStyle, marginBottom: 14 }}>
+                        <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                        <div style={{ fontSize: 13 }}>
+                          Esse período tem mais pedidos do que o limite processado de uma vez. Reduza o intervalo de datas para ver todos.
+                        </div>
+                      </div>
+                    )}
+                    {aba === "vendas" && <AbaVendas resumo={resumo} />}
+                    {aba === "pedidos" && <AbaPedidos resumo={resumo} />}
+                    {aba === "pagamentos" && <AbaPagamentos resumo={resumo} />}
+                    {aba === "fechamento" && <AbaFechamento resumo={resumo} />}
+                  </>
+                )}
               </>
             )}
           </>
@@ -171,7 +169,6 @@ export default function Financeiro({ onVoltar, abaInicial }) {
     </div>
   );
 }
-
 function AbaVendas({ resumo }) {
   return (
     <div>
@@ -202,7 +199,6 @@ function AbaVendas({ resumo }) {
     </div>
   );
 }
-
 function AbaPedidos({ resumo }) {
   const [expandidoId, setExpandidoId] = useState(null);
   return (
@@ -236,7 +232,6 @@ function AbaPedidos({ resumo }) {
     </div>
   );
 }
-
 function AbaPagamentos({ resumo }) {
   const entradas = Object.entries(resumo.por_forma_pagamento).sort((a, b) => b[1] - a[1]);
   return (
@@ -253,7 +248,6 @@ function AbaPagamentos({ resumo }) {
     </div>
   );
 }
-
 function AbaFechamento({ resumo }) {
   return (
     <div className="list-grid">
@@ -272,7 +266,6 @@ function AbaFechamento({ resumo }) {
     </div>
   );
 }
-
 const pageStyle = {
   fontFamily: "'Inter', system-ui, sans-serif",
   background: "#F6F1E7",
