@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import RadarConcorrentes from "./RadarConcorrentes";
+import DiagnosticoSocial from "./DiagnosticoSocial";
 
 // ---------------------------------------------------------------------------
 // Módulo Marketing — Fase 0: Diagnóstico
@@ -51,7 +52,8 @@ const NOMES_TIPO = {
 
 const ABAS = [
   { chave: "radar", label: "Radar" },
-  { chave: "diagnostico", label: "Diagnóstico da API" },
+  { chave: "leitura", label: "Diagnóstico" },
+  { chave: "diagnostico", label: "CardápioWeb" },
 ];
 
 export default function Marketing({ onVoltar }) {
@@ -116,7 +118,8 @@ export default function Marketing({ onVoltar }) {
           ))}
         </div>
 
-        {aba === "radar" ? <RadarConcorrentes /> : (
+        {aba === "radar" ? <RadarConcorrentes /> :
+         aba === "leitura" ? <DiagnosticoSocial /> : (
         <>
         <div style={{ ...cardStyle, marginBottom: 16 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F", marginBottom: 6 }}>
