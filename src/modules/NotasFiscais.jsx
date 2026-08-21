@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search,
+  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search, X, ExternalLink,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
@@ -38,7 +38,30 @@ export default function NotasFiscais() {
   const [erro, setErro] = useState("");
   const [documentoAtual, setDocumentoAtual] = useState(null);
   const [busca, setBusca] = useState("");
+  // Documento aberto na miniatura sobre a página (null = fechada)
+  const [preview, setPreview] = useState(null);
   const inputRef = useRef(null);
+
+  // Abre a miniatura dentro da própria página. Usa a mesma URL assinada
+  // de 5 minutos que o "abrir em outra aba" — o bucket é privado, então
+  // não dá pra apontar direto pro arquivo.
+  const abrirMiniatura = async (d) => {
+    const { data, error } = await supabase.storage.from("notas-fiscais").createSignedUrl(d.arquivo_path, 300);
+    if (error || !data?.signedUrl) { setErro("Não consegui abrir o arquivo: " + (error?.message || "")); return; }
+    setPreview({
+      url: data.signedUrl,
+      nome: d.fornecedor || "Fornecedor não identificado",
+      ehPdf: /\.pdf(\?|$)/i.test(d.arquivo_path),
+    });
+  };
+
+  // Esc fecha a miniatura
+  useEffect(() => {
+    if (!preview) return;
+    const aoTeclar = (e) => { if (e.key === "Escape") setPreview(null); };
+    window.addEventListener("keydown", aoTeclar);
+    return () => window.removeEventListener("keydown", aoTeclar);
+  }, [preview]);
   const carregar = useCallback(async () => {
     setCarregando(true);
     const { data, error } = await supabase.from("documentos_compra").select("*").order("criado_em", { ascending: false }).limit(30);
@@ -122,10 +145,13 @@ export default function NotasFiscais() {
         <div className="list-grid">
           {documentos.filter((d) => (d.fornecedor || "Fornecedor não identificado").toLowerCase().includes(busca.toLowerCase())).map((d) => (
             <div key={d.id} style={itemRow}>
+              <button onClick={() => abrirPreview(d.arquivo_path)} style={iconBtnWrap}
+                aria-label="Abrir documento em outra aba" title="Abrir em outra aba">
+                <div style={iconBox}><FileText size={16} color="#8A8778" /></div>
+              </button>
               <button
                 onClick={() => { if (d.status === "aguardando_confirmacao") { setDocumentoAtual(d); setTela("conferencia"); } }}
-                style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1, background: "none", border: "none", padding: 0, cursor: d.status === "aguardando_confirmacao" ? "pointer" : "default", textAlign: "left" }}>
-                <div style={iconBox}><FileText size={16} color="#8A8778" /></div>
+                style={{ display: "flex", alignItems: "center", minWidth: 0, flex: 1, background: "none", border: "none", padding: 0, cursor: d.status === "aguardando_confirmacao" ? "pointer" : "default", textAlign: "left" }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {d.fornecedor || "Fornecedor não identificado"}
@@ -135,7 +161,8 @@ export default function NotasFiscais() {
                   </div>
                 </div>
               </button>
-              <button onClick={() => abrirPreview(d.arquivo_path)} style={ghostIconBtn} aria-label="Ver documento original">
+              <button onClick={() => abrirMiniatura(d)} style={ghostIconBtn}
+                aria-label="Ver documento aqui na página" title="Ver aqui na página">
                 <Eye size={16} />
               </button>
               {d.status !== "confirmado" && (
@@ -147,6 +174,44 @@ export default function NotasFiscais() {
             </div>
           ))}
           {documentos.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum documento enviado ainda.</div>}
+        </div>
+      )}
+
+      {/* Miniatura do documento, sobre a página. Clicar fora ou Esc fecha. */}
+      {preview && (
+        <div onClick={() => setPreview(null)} style={overlayStyle}>
+          <div onClick={(e) => e.stopPropagation()} style={modalStyle}>
+            <div style={modalBarra}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {preview.nome}
+              </span>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <button onClick={() => window.open(preview.url, "_blank")} style={ghostIconBtn}
+                  aria-label="Abrir em outra aba" title="Abrir em outra aba">
+                  <ExternalLink size={16} />
+                </button>
+                <button onClick={() => setPreview(null)} style={ghostIconBtn} aria-label="Fechar" title="Fechar">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            <div style={modalCorpo}>
+              {preview.ehPdf ? (
+                <>
+                  <iframe src={preview.url} title="Documento" style={{ width: "100%", height: "70vh", border: "none", background: "#FFFFFF" }} />
+                  {/* O Safari do iPhone costuma não renderizar PDF dentro de
+                      iframe. Se o quadro acima vier vazio, o botão abaixo
+                      resolve — por isso ele existe mesmo com o da barra. */}
+                  <button onClick={() => window.open(preview.url, "_blank")}
+                    style={{ ...btnSecondary, width: "100%", marginTop: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                    <ExternalLink size={14} /> Não apareceu? Abrir em outra aba
+                  </button>
+                </>
+              ) : (
+                <img src={preview.url} alt="Documento" style={{ maxWidth: "100%", maxHeight: "70vh", display: "block", margin: "0 auto", objectFit: "contain" }} />
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -612,6 +677,11 @@ const linhaTabela = { display: "grid", gridTemplateColumns: "2fr 0.6fr 0.5fr 0.8
 const itemRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10, padding: "12px 14px" };
 const iconBox = { width: 36, height: 44, borderRadius: 6, background: "#F6F1E7", border: "1px solid #E8E2D2", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
 const ghostIconBtn = { border: "none", background: "none", color: "#8A8778", cursor: "pointer", padding: 2, display: "flex" };
+const iconBtnWrap = { border: "none", background: "none", padding: 0, cursor: "pointer", flexShrink: 0, display: "flex" };
+const overlayStyle = { position: "fixed", inset: 0, background: "rgba(34,35,31,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 50 };
+const modalStyle = { background: "#F3EFE3", border: "1px solid #E8E2D2", borderRadius: 14, width: "min(680px, 94vw)", maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 12px 34px rgba(0,0,0,0.28)" };
+const modalBarra = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", borderBottom: "1px solid #E8E2D2", background: "#F6F1E7" };
+const modalCorpo = { padding: 10, overflow: "auto", background: "#FFFFFF" };
 const btnPrimary = { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
 const btnSecondary = { background: "#F6F1E7", border: "1px solid #E8E2D2", color: "#22231F", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" };
 const linkBtn = { background: "none", border: "none", color: "#8A6A0F", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0, textAlign: "left" };
