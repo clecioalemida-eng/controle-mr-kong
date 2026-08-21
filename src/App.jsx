@@ -11,6 +11,8 @@ import Comercial from "./modules/Comercial";
 import Sac from "./modules/Sac";
 import Rastreabilidade from "./modules/Rastreabilidade";
 import Permissoes from "./modules/Permissoes";
+import DashboardModulo from "./modules/DashboardModulo";
+import GenteGestao from "./modules/GenteGestao";
 // Mapa: chave do módulo (banco) -> componente React que o renderiza.
 // Para adicionar um novo card no futuro: crie o componente, cadastre uma
 // linha na tabela `modulos` (ver supabase/002_auth_e_modulos.sql) com a
@@ -18,6 +20,8 @@ import Permissoes from "./modules/Permissoes";
 // (é o catálogo de lá que faz o módulo aparecer na matriz de permissões).
 const COMPONENTES_MODULO = {
   checklist: ChecklistOperacional,
+  dashboard: DashboardModulo,
+  gente: GenteGestao,
   financeiro: Financeiro,
   marketing: Marketing,
   comercial: Comercial,
@@ -34,7 +38,6 @@ export default function App() {
   const [modulos, setModulos] = useState([]);
   const [carregandoModulos, setCarregandoModulos] = useState(false);
   const [totalPendentes, setTotalPendentes] = useState(0);
-  const [abaFinanceiroInicial, setAbaFinanceiroInicial] = useState(null); // usado pelo card de Dashboard, que abre Financeiro já na aba certa
   // ---- sessão -------------------------------------------------------------
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -132,14 +135,12 @@ export default function App() {
       // Segunda barreira: se a pessoa chegou numa tela que não pode ver
       // (link antigo, estado preso), volta pra home em vez de renderizar.
       if (!podeVer(permissoes, tela)) return <TelaSemPermissao onVoltar={() => setTela("home")} />;
-      const propsExtra = tela === "financeiro" ? { abaInicial: abaFinanceiroInicial } : {};
       return (
         <Componente
           nomeUsuario={perfil?.nome}
           perfil={perfil}
           permissoes={permissoes}
-          onVoltar={() => { setTela("home"); setAbaFinanceiroInicial(null); }}
-          {...propsExtra}
+          onVoltar={() => setTela("home")}
         />
       );
     }
@@ -152,7 +153,6 @@ export default function App() {
       carregando={carregandoModulos}
       totalPendentes={totalPendentes}
       onAbrirModulo={(chave) => setTela(chave)}
-      onAbrirDashboard={() => { setAbaFinanceiroInicial("dashboard"); setTela("financeiro"); }}
       onAbrirPermissoes={(aba) => { setAbaPermissoes(aba || "cargos"); setTela("permissoes"); }}
       onSair={sair}
     />
@@ -299,11 +299,10 @@ function TelaAguardando({ perfil, onSair }) {
 // ---------------------------------------------------------------------------
 // Início: grid de cards
 // ---------------------------------------------------------------------------
-function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, onAbrirModulo, onAbrirDashboard, onAbrirPermissoes, onSair }) {
-  // O Dashboard não é um módulo do banco — é um atalho que abre o Financeiro
-  // já na aba certa. Por isso ele obedece à permissão da SUB-ABA.
-  const temDashboard = podeVer(permissoes, "financeiro") && podeVer(permissoes, "financeiro.dashboard");
-  const nadaParaMostrar = modulos.length === 0 && !temDashboard && !perfil?.is_admin;
+function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, onAbrirModulo, onAbrirPermissoes, onSair }) {
+  // Dashboard e Gente e Gestão agora são módulos de verdade, com linha na
+  // tabela `modulos` — entram pela lista como qualquer outro card.
+  const nadaParaMostrar = modulos.length === 0 && !perfil?.is_admin;
   return (
     <div style={pageStyle}>
       <div className="app-shell">
@@ -338,16 +337,9 @@ function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, o
           </div>
         ) : (
           <div className="cards-grid">
-            {temDashboard && (
-              <button onClick={onAbrirDashboard}
-                style={{ ...cardStyle, textAlign: "left", cursor: "pointer", border: "2px solid #185FA5" }}>
-                <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F", marginBottom: 4 }}>Dashboard</div>
-                <div style={{ fontSize: 13, color: "#8A8778" }}>Faturamento previsto, custos por centro de custo, curva ABC, lucro previsto e mais.</div>
-              </button>
-            )}
             {modulos.map((m) => (
               <button key={m.id} onClick={() => onAbrirModulo(m.chave)}
-                style={{ ...cardStyle, textAlign: "left", cursor: "pointer", border: "1px solid #E8E2D2" }}>
+                style={{ ...cardStyle, textAlign: "left", cursor: "pointer", border: m.chave === "dashboard" ? "2px solid #185FA5" : "1px solid #E8E2D2" }}>
                 <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F", marginBottom: 4 }}>{m.nome}</div>
                 {m.descricao && <div style={{ fontSize: 13, color: "#8A8778" }}>{m.descricao}</div>}
               </button>
