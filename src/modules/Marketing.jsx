@@ -6,6 +6,7 @@ import {
 import { supabase } from "../lib/supabaseClient";
 import RadarConcorrentes from "./RadarConcorrentes";
 import DiagnosticoSocial from "./DiagnosticoSocial";
+import PistaMarketing from "./PistaMarketing";
 
 // ---------------------------------------------------------------------------
 // Módulo Marketing — Fase 0: Diagnóstico
@@ -53,10 +54,11 @@ const NOMES_TIPO = {
 const ABAS = [
   { chave: "radar", label: "Radar" },
   { chave: "leitura", label: "Diagnóstico" },
+  { chave: "pista", label: "Pista" },
   { chave: "diagnostico", label: "CardápioWeb" },
 ];
 
-export default function Marketing({ onVoltar }) {
+export default function Marketing({ onVoltar, perfil }) {
   const [aba, setAba] = useState("radar");
   const [dataInicio, setDataInicio] = useState(diasAtras(30));
   const [dataFim, setDataFim] = useState(hoje());
@@ -119,7 +121,8 @@ export default function Marketing({ onVoltar }) {
         </div>
 
         {aba === "radar" ? <RadarConcorrentes /> :
-         aba === "leitura" ? <DiagnosticoSocial /> : (
+         aba === "leitura" ? <DiagnosticoSocial /> :
+         aba === "pista" ? <PistaMarketing perfil={perfil} /> : (
         <>
         <div style={{ ...cardStyle, marginBottom: 16 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F", marginBottom: 6 }}>
