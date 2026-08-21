@@ -2,29 +2,30 @@
 //
 // Catálogo das telas do painel e leitura das permissões do usuário logado.
 //
-// As mesmas chaves usadas aqui existem na tabela `cargo_permissoes` e nas
-// funções pode_ver()/pode_editar() do banco. Se você adicionar uma tela
-// nova, adicione a chave aqui — é isso que faz ela aparecer na matriz de
-// permissões, sem precisar mexer em SQL.
+// As chaves daqui são as MESMAS que existem em `cargo_permissoes` e nas
+// funções pode_ver()/pode_editar() do banco — e, no caso das sub-abas do
+// Financeiro, precisam bater exatamente com as chaves do array ABAS do
+// Financeiro.jsx. Se divergirem, a permissão é salva num nome e conferida
+// em outro, e nada funciona.
 import { supabase } from "./supabaseClient";
 
 export const CATALOGO = [
   { chave: "checklist", nome: "Checklist Operacional" },
+  { chave: "dashboard", nome: "Dashboard",      sensivel: true },
+  { chave: "gente",     nome: "Gente e Gestão", sensivel: true },
   {
     chave: "financeiro",
     nome: "Financeiro",
     filhos: [
-      { chave: "financeiro.dashboard",   nome: "Dashboard",            sensivel: true },
       { chave: "financeiro.vendas",      nome: "Vendas" },
       { chave: "financeiro.pedidos",     nome: "Pedidos" },
       { chave: "financeiro.pagamentos",  nome: "Pagamentos" },
       { chave: "financeiro.fechamento",  nome: "Fechamento",           sensivel: true },
       { chave: "financeiro.fichas",      nome: "Fichas técnicas" },
       { chave: "financeiro.notas",       nome: "Notas" },
-      { chave: "financeiro.compras",     nome: "Compras" },
-      { chave: "financeiro.equipe",      nome: "Equipe",               sensivel: true },
+      { chave: "financeiro.estoque",     nome: "Compras" },
       { chave: "financeiro.conferencia", nome: "Conferência de caixa" },
-      { chave: "financeiro.contas",      nome: "Plano de Contas",      sensivel: true },
+      { chave: "financeiro.contaspagar", nome: "Plano de Contas",      sensivel: true },
       { chave: "financeiro.fiado",       nome: "Fiado" },
       { chave: "financeiro.curvaabc",    nome: "Curva ABC" },
     ],
@@ -35,7 +36,6 @@ export const CATALOGO = [
   { chave: "rastreabilidade", nome: "Rastreabilidade" },
 ];
 
-// Lista achatada, útil pra percorrer tudo de uma vez
 export const TODAS_AS_CHAVES = CATALOGO.flatMap((m) => [m.chave, ...(m.filhos || []).map((f) => f.chave)]);
 
 export function nomeDaChave(chave) {
