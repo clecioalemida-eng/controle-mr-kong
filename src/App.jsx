@@ -136,7 +136,7 @@ export default function App() {
     const Componente = COMPONENTES_MODULO[tela];
     if (Componente) {
       const propsExtra = tela === "financeiro" ? { abaInicial: abaFinanceiroInicial } : {};
-      return <Componente nomeUsuario={perfil?.nome} onVoltar={() => { setTela("home"); setAbaFinanceiroInicial(null); }} {...propsExtra} />;
+      return <Componente nomeUsuario={perfil?.nome} perfil={perfil} onVoltar={() => { setTela("home"); setAbaFinanceiroInicial(null); }} {...propsExtra} />;
     }
   }
 
