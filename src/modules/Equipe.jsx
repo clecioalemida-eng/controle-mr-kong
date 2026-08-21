@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload, Lock } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
-
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function hoje() { return new Date().toISOString().slice(0, 10); }
 async function abrirDocumento(path) {
@@ -27,7 +26,41 @@ function categoriaComissao(papel) {
 // peso 0,75, por exemplo). Simplifica pra só uma pergunta em vez de duas
 // pra mesma coisa.
 const HORAS_PADRAO_TURNO = 8;
-
+// ---------------------------------------------------------------------------
+// Ponto: entrada, saída e intervalo -> horas trabalhadas
+//
+// A saída pode ser MENOR que a entrada, e isso não é erro: a casa
+// trabalha das 17h às 03h, então virar o dia é o caso comum. Sem tratar
+// isso, um turno de 17:30 às 01:30 daria dezesseis horas negativas e o
+// peso do rateio ficaria negativo pra todo mundo naquele dia.
+// ---------------------------------------------------------------------------
+function minutosDoHorario(hhmm) {
+  if (!hhmm) return null;
+  const partes = String(hhmm).slice(0, 5).split(":");
+  const h = Number(partes[0]), m = Number(partes[1]);
+  if (isNaN(h) || isNaN(m)) return null;
+  return h * 60 + m;
+}
+function horasDoPonto(entrada, saida, intervaloMinutos) {
+  const ini = minutosDoHorario(entrada);
+  const fim = minutosDoHorario(saida);
+  if (ini === null || fim === null) return null;
+  let total = fim - ini;
+  if (total <= 0) total += 24 * 60; // virou o dia
+  total -= parseInt(intervaloMinutos) || 0;
+  if (total < 0) total = 0;
+  return Math.round((total / 60) * 100) / 100;
+}
+// Texto do horário pra telas de leitura. Dia antigo (sem horário
+// registrado) mostra só as horas, como sempre mostrou.
+function textoPonto(part) {
+  const h = part?.horas || 0;
+  if (part?.entrada && part?.saida) {
+    const intervalo = parseInt(part.intervalo) || 0;
+    return `${part.entrada}–${part.saida}${intervalo > 0 ? ` · ${intervalo} min intervalo` : ""} · ${h}h`;
+  }
+  return `${h}h`;
+}
 const SUBABAS = [
   { chave: "pessoas", label: "Pessoas" },
   { chave: "matriz", label: "Matriz de cargos", soAdmin: true },
@@ -35,7 +68,6 @@ const SUBABAS = [
   { chave: "premiacao", label: "Escala do dia" },
   { chave: "mensal", label: "Fechamento mensal", soAdmin: true },
 ];
-
 // Só admin vê valores (salário, matriz de cargos, comissão calculada,
 // fechamento mensal) — outras pessoas aprovadas só marcam quem trabalhou
 // e quantas horas (isso é registrado no banco de qualquer forma, mas as
@@ -52,7 +84,6 @@ function useIsAdmin() {
   }, []);
   return isAdmin;
 }
-
 export default function Equipe() {
   const [subaba, setSubaba] = useState("pessoas");
   const isAdmin = useIsAdmin();
@@ -75,7 +106,6 @@ export default function Equipe() {
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Previsão de Escala — planejamento de dias futuros, sem nenhum cálculo
 // de valor (isso só acontece na Escala do dia, quando o dia chegar).
@@ -93,7 +123,6 @@ function PrevisaoDeEscala() {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const [mensagem, setMensagem] = useState("");
-
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
@@ -109,7 +138,6 @@ function PrevisaoDeEscala() {
     setCarregando(false);
   }, [dia]);
   useEffect(() => { carregar(); }, [carregar]);
-
   const alternar = async (pessoaId) => {
     const jaPrevisto = previstos.has(pessoaId);
     if (jaPrevisto) {
@@ -124,7 +152,6 @@ function PrevisaoDeEscala() {
     });
     setMensagem("Previsão salva.");
   };
-
   const fecharPrevisao = async () => {
     await supabase.from("previsoes_escala_dias").upsert({ dia, fechada: true, atualizado_em: new Date().toISOString() }, { onConflict: "dia" });
     setFechada(true);
@@ -134,19 +161,15 @@ function PrevisaoDeEscala() {
     await supabase.from("previsoes_escala_dias").upsert({ dia, fechada: false, atualizado_em: new Date().toISOString() }, { onConflict: "dia" });
     setFechada(false);
   };
-
   const selecionados = pessoas.filter((p) => previstos.has(p.id));
-
   return (
     <div>
       <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
         Só planejamento — sem taxa de serviço, sem cálculo de valor. Quando o dia chegar, marque de novo (ou confirme) na Escala do dia pra calcular os valores de verdade.
       </div>
       <input type="date" value={dia} onChange={(e) => setDia(e.target.value)} style={{ ...inputStyle, marginBottom: 14 }} />
-
       {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : fechada ? (
@@ -187,10 +210,6 @@ function PrevisaoDeEscala() {
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Pessoas
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Matriz de cargos — diária base e valor hora, aplicados automaticamente
 // a todo diarista daquele cargo (não se digita mais por pessoa).
@@ -201,7 +220,6 @@ function MatrizCargos() {
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState("");
   const [mensagem, setMensagem] = useState("");
-
   const carregar = useCallback(async () => {
     setCarregando(true);
     const { data, error } = await supabase.from("matriz_cargos").select("*");
@@ -215,11 +233,9 @@ function MatrizCargos() {
     setCarregando(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
-
   const alterar = (papel, campo, valor) => {
     setLinhas((prev) => prev.map((l) => l.papel === papel ? { ...l, [campo]: valor } : l));
   };
-
   const salvar = async () => {
     setSalvando(true);
     setErro("");
@@ -234,7 +250,6 @@ function MatrizCargos() {
     setSalvando(false);
     setMensagem("Matriz salva.");
   };
-
   return (
     <div>
       <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
@@ -242,7 +257,6 @@ function MatrizCargos() {
       </div>
       {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
@@ -261,14 +275,12 @@ function MatrizCargos() {
           ))}
         </div>
       )}
-
       <button onClick={salvar} disabled={salvando} style={{ ...btnPrimary, width: "100%" }}>
         {salvando ? <Loader2 size={16} /> : <Check size={16} />} Salvar matriz
       </button>
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Pessoas
 // ---------------------------------------------------------------------------
@@ -281,7 +293,6 @@ function Pessoas({ isAdmin }) {
   const [expandidoId, setExpandidoId] = useState(null);
   const [busca, setBusca] = useState("");
   const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null });
-
   const carregar = useCallback(async () => {
     setCarregando(true);
     const { data, error } = await supabase.from("pessoas").select("*").order("nome");
@@ -290,7 +301,6 @@ function Pessoas({ isAdmin }) {
     setCarregando(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
-
   const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null }); setNovoAberto(true); setEditandoId(null); };
   const abrirEdicao = (p) => {
     setForm({
@@ -300,7 +310,6 @@ function Pessoas({ isAdmin }) {
     });
     setEditandoId(p.id); setNovoAberto(false);
   };
-
   const salvar = async () => {
     if (!form.nome.trim()) return;
     setErro("");
@@ -333,19 +342,15 @@ function Pessoas({ isAdmin }) {
     setNovoAberto(false); setEditandoId(null);
     carregar();
   };
-
   const alternarAtivo = async (p) => {
     await supabase.from("pessoas").update({ ativo: !p.ativo }).eq("id", p.id);
     carregar();
   };
-
   const CAMPO_FALTANDO = { color: "#C4432B", fontStyle: "italic" };
   const pessoasFiltradas = pessoas.filter((p) => p.nome.toLowerCase().includes(busca.toLowerCase()));
-
   return (
     <div>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-
       {pessoas.length > 0 && (
         <div style={{ position: "relative", marginBottom: 14 }}>
           <Search size={15} color="#8A8778" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
@@ -353,7 +358,6 @@ function Pessoas({ isAdmin }) {
             style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
         </div>
       )}
-
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
@@ -385,7 +389,6 @@ function Pessoas({ isAdmin }) {
                 <button onClick={() => abrirEdicao(p)} style={ghostIconBtn} aria-label="Editar pessoa"><Pencil size={15} /></button>
                 <button onClick={() => alternarAtivo(p)} style={{ ...linkBtn, fontSize: 11 }}>{p.ativo ? "Desativar" : "Ativar"}</button>
               </div>
-
               {expandidoId === p.id && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2", display: "grid", gap: 5, fontSize: 12 }}>
                   <div><span style={{ color: "#8A8778" }}>CPF: </span><span style={p.cpf ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.cpf || "não preenchido"}</span></div>
@@ -395,7 +398,6 @@ function Pessoas({ isAdmin }) {
                   <div><span style={{ color: "#8A8778" }}>Documento anexado: </span><span style={p.documento_path ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.documento_path ? "sim" : "nenhum"}</span></div>
                 </div>
               )}
-
               {editandoId === p.id && (
                 <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} isAdmin={isAdmin} />
               )}
@@ -404,7 +406,6 @@ function Pessoas({ isAdmin }) {
           {pessoasFiltradas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>{busca ? "Nenhuma pessoa encontrada." : "Nenhuma pessoa cadastrada ainda."}</div>}
         </div>
       )}
-
       {!novoAberto ? (
         <button onClick={abrirNovo} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
           <Plus size={15} /> Nova pessoa
@@ -417,7 +418,6 @@ function Pessoas({ isAdmin }) {
     </div>
   );
 }
-
 function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin }) {
   const fileRef = useRef(null);
   return (
@@ -479,14 +479,13 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin }) {
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
-// Premiação do dia
+// Premiação do dia (Escala do dia)
 // ---------------------------------------------------------------------------
 function PremiacaoDoDia({ isAdmin }) {
   const [dia, setDia] = useState(hoje());
   const [pessoas, setPessoas] = useState([]);
-  const [participacao, setParticipacao] = useState({}); // pessoa_id -> { incluido, peso }
+  const [participacao, setParticipacao] = useState({}); // pessoa_id -> { incluido, horas, entrada, saida, intervalo }
   const [baseCategoria, setBaseCategoria] = useState({}); // papel -> valor (vem da Matriz de cargos, só leitura aqui)
   const [valorHora, setValorHora] = useState({}); // papel -> valor (vem da Matriz de cargos, só leitura aqui)
   const [taxaServico, setTaxaServico] = useState("");
@@ -500,7 +499,6 @@ function PremiacaoDoDia({ isAdmin }) {
   const [mensagem, setMensagem] = useState("");
   const [modoLeitura, setModoLeitura] = useState(false);
   const [premiacoesSalvas, setPremiacoesSalvas] = useState([]);
-
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
@@ -516,13 +514,25 @@ function PremiacaoDoDia({ isAdmin }) {
       setPessoas(pessoasData || []);
       setPremiacoesSalvas(premiacoesData || []);
       // Dia já preenchido (tem presença registrada) abre travado, em modo
-      // leitura — evita mexer sem querer no que já foi fechado.
+      // leitura — evita mexer sem querer no que já foi fechado. Só admin
+      // vê o botão de reabrir.
       setModoLeitura((presencasData || []).length > 0);
       setMatriz(Object.fromEntries((matrizData || []).map((m) => [m.papel, m])));
       const mapaPart = {};
       const idsPrevistos = new Set((previsoesData || []).map((p) => p.pessoa_id));
-      (pessoasData || []).forEach((p) => { mapaPart[p.id] = { incluido: idsPrevistos.has(p.id), horas: 0 }; });
-      (presencasData || []).forEach((pr) => { mapaPart[pr.pessoa_id] = { incluido: true, horas: pr.horas_trabalhadas || 0 }; });
+      (pessoasData || []).forEach((p) => {
+        mapaPart[p.id] = { incluido: idsPrevistos.has(p.id), horas: 0, entrada: "", saida: "", intervalo: 0 };
+      });
+      (presencasData || []).forEach((pr) => {
+        mapaPart[pr.pessoa_id] = {
+          incluido: true,
+          horas: pr.horas_trabalhadas || 0,
+          // O banco devolve "HH:MM:SS"; o input type=time quer "HH:MM".
+          entrada: pr.hora_entrada ? String(pr.hora_entrada).slice(0, 5) : "",
+          saida: pr.hora_saida ? String(pr.hora_saida).slice(0, 5) : "",
+          intervalo: pr.intervalo_minutos || 0,
+        };
+      });
       setParticipacao(mapaPart);
       // A diária base por cargo é persistente (vem da Matriz, coluna
       // diaria_base) — não se retype todo dia, só edita via lápis quando
@@ -554,7 +564,6 @@ function PremiacaoDoDia({ isAdmin }) {
     setCarregando(false);
   }, [dia]);
   useEffect(() => { carregar(); }, [carregar]);
-
   const buscarTaxaAutomatica = async () => {
     setBuscandoTaxa(true);
     setErro("");
@@ -573,7 +582,6 @@ function PremiacaoDoDia({ isAdmin }) {
     if (data?.error) { setBuscandoTaxa(false); setErro(data.error); return; }
     setTaxaServico(String(data.taxa_servico));
     setTaxaAutomatica(data.encontrado_automaticamente);
-
     // Só busca o faturamento bruto (pra prévia da gerente) se ela estiver
     // marcada como presente hoje — evita gastar consulta à toa.
     let faturamentoBruto = cacheTaxa?.faturamento_bruto || 0;
@@ -591,7 +599,6 @@ function PremiacaoDoDia({ isAdmin }) {
     }
     setFaturamentoBrutoDia(faturamentoBruto);
     setBuscandoTaxa(false);
-
     if (data.encontrado_automaticamente) {
       await supabase.from("taxas_do_dia").upsert({
         dia, taxa_servico: data.taxa_servico, faturamento_bruto: faturamentoBruto, atualizado_em: new Date().toISOString(),
@@ -600,22 +607,35 @@ function PremiacaoDoDia({ isAdmin }) {
       setErro("Não tem pedido fechado nesse dia (17h–03h) — confira a data ou digite o valor manualmente.");
     }
   };
-
   const alternarIncluido = (pessoaId) => {
     setParticipacao((prev) => {
       const atual = prev[pessoaId] || {};
       const incluidoNovo = !atual.incluido;
       // Ao marcar como trabalhou, já sugere um turno padrão de horas —
-      // evita começar em 0 e a pessoa esquecer de preencher.
+      // evita começar em 0 e a pessoa esquecer de preencher. Se depois
+      // ela informar entrada e saída, esse número é substituído pelo
+      // cálculo.
       const horas = incluidoNovo && !atual.horas ? HORAS_PADRAO_TURNO : (atual.horas || 0);
       return { ...prev, [pessoaId]: { ...atual, incluido: incluidoNovo, horas } };
+    });
+  };
+  // Entrada, saída ou intervalo mudou: recalcula as horas na hora. Só
+  // sobrescreve o campo de horas quando entrada E saída existem — sem os
+  // dois não dá pra calcular nada, e o valor digitado à mão continua
+  // valendo.
+  const alterarPonto = (pessoaId, campo, valor) => {
+    setParticipacao((prev) => {
+      const atual = prev[pessoaId] || {};
+      const novo = { ...atual, [campo]: valor };
+      const calculado = horasDoPonto(novo.entrada, novo.saida, novo.intervalo);
+      if (calculado !== null) novo.horas = calculado;
+      return { ...prev, [pessoaId]: novo };
     });
   };
   const alterarHoras = (pessoaId, horas) => {
     setParticipacao((prev) => ({ ...prev, [pessoaId]: { ...prev[pessoaId], horas: parseFloat(horas) || 0 } }));
   };
   const pesoDe = (pessoaId) => (participacao[pessoaId]?.horas || 0) / HORAS_PADRAO_TURNO;
-
   const selecionados = pessoas.filter((p) => participacao[p.id]?.incluido);
   const garcons = selecionados.filter((p) => categoriaComissao(p.papel) === "garcom");
   const internos = selecionados.filter((p) => categoriaComissao(p.papel) === "interno");
@@ -626,7 +646,6 @@ function PremiacaoDoDia({ isAdmin }) {
   const poolInternos = taxaNum * 0.5;
   const valorPorPesoGarcom = pesoGarcons > 0 ? poolGarcons / pesoGarcons : 0;
   const valorPorPesoInterno = pesoInternos > 0 ? poolInternos / pesoInternos : 0;
-
   // Diarista: dois métodos, vale o maior. Método comissão = rateio da
   // taxa (pelo peso, calculado a partir das horas ÷ 8) + diária base do
   // cargo (pela matriz). Método hora = horas trabalhadas × valor/hora do
@@ -637,18 +656,15 @@ function PremiacaoDoDia({ isAdmin }) {
   // dia (o valor oficial dela é fechado por mês, no Fechamento mensal).
   const linhas = selecionados.map((p) => {
     const horas = participacao[p.id]?.horas || 0;
-
     if (p.papel === "gerente") {
       const total = round2(faturamentoBrutoDia * 0.02);
       return { pessoa: p, peso: 0, horas, comissao: 0, baseCategoriaValor: 0, metodoUsado: "gerente_previa", valorMetodoComissao: total, valorMetodoHora: null, total };
     }
-
     const peso = pesoDe(p.id);
     const valorPorPeso = categoriaComissao(p.papel) === "garcom" ? valorPorPesoGarcom : valorPorPesoInterno;
     const comissao = peso * valorPorPeso;
     const baseCategoriaValor = peso * (parseFloat(baseCategoria[p.papel]) || 0);
     const m = matriz[p.papel] || { valor_hora: 0 };
-
     if (p.tipo_contrato === "diarista") {
       const valorMetodoComissao = comissao + baseCategoriaValor;
       const valorMetodoHora = horas * (m.valor_hora || 0);
@@ -662,21 +678,22 @@ function PremiacaoDoDia({ isAdmin }) {
     const total = comissao;
     return { pessoa: p, peso, horas, comissao, baseCategoriaValor: 0, metodoUsado: null, valorMetodoComissao: comissao, valorMetodoHora: null, total };
   });
-
   const salvarPremiacao = async () => {
     if (selecionados.length === 0) { setErro("Marque quem trabalhou hoje."); return; }
     if (isAdmin && taxaNum <= 0) { setErro("Informe a taxa de serviço do dia."); return; }
     setSalvando(true);
     setErro("");
-
-    // A presença (quem trabalhou + horas) sempre salva, mesmo sem admin —
-    // é isso que qualquer pessoa aprovada pode registrar. Os valores
-    // calculados (comissão etc.) só entram quando tem taxa de serviço
-    // definida, o que só admin faz.
+    // A presença (quem trabalhou + horário + horas) sempre salva, mesmo
+    // sem admin — é isso que qualquer pessoa aprovada pode registrar. Os
+    // valores calculados (comissão etc.) só entram quando tem taxa de
+    // serviço definida, o que só admin faz.
     for (const p of selecionados) {
       const part = participacao[p.id] || {};
       await supabase.from("presencas_diarias").upsert({
         pessoa_id: p.id, dia, peso: pesoDe(p.id), horas_trabalhadas: part.horas || 0,
+        hora_entrada: part.entrada || null,
+        hora_saida: part.saida || null,
+        intervalo_minutos: parseInt(part.intervalo) || 0,
       }, { onConflict: "pessoa_id,dia" });
     }
     if (taxaNum > 0) {
@@ -700,7 +717,6 @@ function PremiacaoDoDia({ isAdmin }) {
     setMensagem(taxaNum > 0 ? "Escala e valores do dia salvos." : "Escala do dia salva — falta um administrador definir a taxa de serviço pra calcular os valores.");
     await carregar(); // recarrega já travado em modo leitura
   };
-
   // Dia já preenchido: mostra um resumo travado (não a tela de marcação),
   // com os valores calculados de verdade que foram salvos (não recalcula
   // com a matriz atual, que pode ter mudado desde então). Só admin vê o
@@ -712,24 +728,22 @@ function PremiacaoDoDia({ isAdmin }) {
     const idsComPremiacao = new Set(premiacoesSalvas.map((pr) => pr.pessoa_id));
     const pessoasSemPremiacao = pessoas.filter((p) => participacao[p.id]?.incluido && !idsComPremiacao.has(p.id));
     const taxaNumSalva = parseFloat(taxaServico) || 0;
-
     return (
       <div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <input type="date" value={dia} onChange={(e) => setDia(e.target.value)} style={inputStyle} />
         </div>
         <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 14, display: "flex", alignItems: "center", gap: 4 }}>
-          <Lock size={13} /> Já preenchida — modo leitura
+          <Lock size={13} /> Já preenchida — modo leitura{!isAdmin ? " (só administradores editam)" : ""}
         </div>
         {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-
         <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
           {linhasSalvas.map((l, idx) => (
             <div key={l.pessoa_id} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <div style={{ fontSize: 13, color: "#22231F" }}>{l.pessoa.nome}</div>
-                  <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[l.pessoa.papel]}{l.pessoa.tipo_contrato === "diarista" ? " · diarista" : ""} · {participacao[l.pessoa_id]?.horas || 0}h</div>
+                  <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[l.pessoa.papel]}{l.pessoa.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[l.pessoa_id])}</div>
                 </div>
                 {isAdmin && <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{brl(l.total_dia)}</div>}
               </div>
@@ -743,20 +757,18 @@ function PremiacaoDoDia({ isAdmin }) {
           {pessoasSemPremiacao.map((p, idx) => (
             <div key={p.id} style={{ padding: "10px 14px", borderTop: (linhasSalvas.length + idx) > 0 ? "1px solid #F0EBDD" : "none" }}>
               <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
-              <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""} · {participacao[p.id]?.horas || 0}h</div>
+              <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[p.id])}</div>
             </div>
           ))}
           {linhasSalvas.length === 0 && pessoasSemPremiacao.length === 0 && (
             <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Ninguém marcado nesse dia.</div>
           )}
         </div>
-
         {isAdmin && taxaNumSalva > 0 && (
           <div style={{ background: "#F6F1E7", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#8A8778", marginBottom: 16, display: "flex", justifyContent: "space-between" }}>
             <span>Taxa de serviço do dia</span><span style={{ color: "#22231F", fontWeight: 700 }}>{brl(taxaNumSalva)}</span>
           </div>
         )}
-
         {isAdmin && (
           <button onClick={() => setModoLeitura(false)} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
             <Pencil size={15} /> Editar
@@ -765,20 +777,17 @@ function PremiacaoDoDia({ isAdmin }) {
       </div>
     );
   }
-
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
         <input type="date" value={dia} onChange={(e) => setDia(e.target.value)} style={inputStyle} />
       </div>
-
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <>
           {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
           {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-
           {isAdmin ? (
             <div style={{ ...cardStyle, marginBottom: 14 }}>
               <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 6 }}>Taxa de serviço do dia (janela 17h–03h)</div>
@@ -792,43 +801,84 @@ function PremiacaoDoDia({ isAdmin }) {
               {taxaAutomatica === true && <div style={{ fontSize: 11, color: "#0F6E56", marginTop: 6 }}>Encontrado automaticamente no CardápioWeb.</div>}
             </div>
           ) : (
-            <div style={{ ...avisoStyle }}>Só administradores veem e definem a taxa de serviço e os valores calculados. Marque abaixo quem trabalhou e as horas — um administrador completa o resto.</div>
+            <div style={{ ...avisoStyle }}>Só administradores veem e definem a taxa de serviço e os valores calculados. Marque abaixo quem trabalhou e o horário — um administrador completa o resto.</div>
           )}
-
           <div style={sectionLabel}>Quem trabalhou hoje</div>
           <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
             {pessoas.map((p) => {
-              const part = participacao[p.id] || { incluido: false, horas: 0 };
+              const part = participacao[p.id] || { incluido: false, horas: 0, entrada: "", saida: "", intervalo: 0 };
+              const horasCalculadas = horasDoPonto(part.entrada, part.saida, part.intervalo);
+              const viraODia = part.entrada && part.saida && minutosDoHorario(part.saida) <= minutosDoHorario(part.entrada);
               return (
                 <div key={p.id} style={{ ...cardStyle, padding: "10px 12px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <input type="checkbox" checked={part.incluido} onChange={() => alternarIncluido(p.id)} />
-                    <div style={{ flex: 1 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
                       <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""}</div>
                     </div>
                     {part.incluido && (
-                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        <span style={{ fontSize: 11, color: "#8A8778" }}>horas trabalhadas</span>
-                        <input type="number" step="0.5" min="0" value={part.horas} onChange={(e) => alterarHoras(p.id, e.target.value)}
-                          style={{ width: 50, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                      </div>
+                      horasCalculadas !== null ? (
+                        // Horário preenchido: as horas viram resultado, não campo.
+                        <div style={{ background: "#F6F1E7", border: "1px solid #E8E2D2", borderRadius: 6, padding: "5px 9px", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}>
+                          = <strong style={{ color: "#0F6E56" }}>{horasCalculadas.toLocaleString("pt-BR")} h</strong>
+                        </div>
+                      ) : (
+                        // Sem entrada e saída, continua digitado à mão — é
+                        // assim que os dias antigos e os casos fora do
+                        // padrão seguem funcionando.
+                        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                          <span style={{ fontSize: 11, color: "#8A8778" }}>horas</span>
+                          <input type="number" step="0.5" min="0" value={part.horas} onChange={(e) => alterarHoras(p.id, e.target.value)}
+                            style={{ width: 50, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                        </div>
+                      )
                     )}
                   </div>
+                  {part.incluido && (
+                    <>
+                      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginTop: 10, paddingTop: 10, borderTop: "1px dashed #E8E2D2", flexWrap: "wrap" }}>
+                        <div style={{ flex: 1, minWidth: 74 }}>
+                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Entrada</label>
+                          <input type="time" value={part.entrada || ""} onChange={(e) => alterarPonto(p.id, "entrada", e.target.value)}
+                            style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: `1px solid ${part.entrada ? "#37A0E5" : "#E8E2D2"}`, fontSize: 12, background: "#FFFFFF" }} />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 74 }}>
+                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Saída</label>
+                          <input type="time" value={part.saida || ""} onChange={(e) => alterarPonto(p.id, "saida", e.target.value)}
+                            style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: `1px solid ${part.saida ? "#37A0E5" : "#E8E2D2"}`, fontSize: 12, background: "#FFFFFF" }} />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 74 }}>
+                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Intervalo (min)</label>
+                          <input type="number" min="0" step="5" value={part.intervalo || 0} onChange={(e) => alterarPonto(p.id, "intervalo", e.target.value)}
+                            style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                        </div>
+                      </div>
+                      {viraODia && (
+                        <div style={{ fontSize: 11, color: "#185FA5", marginTop: 6 }}>
+                          Saiu depois da meia-noite — contando como madrugada do dia seguinte.
+                        </div>
+                      )}
+                      {horasCalculadas === null && (part.entrada || part.saida) && (
+                        <div style={{ fontSize: 11, color: "#8A6A0F", marginTop: 6 }}>
+                          Falta {part.entrada ? "a saída" : "a entrada"} pra calcular — enquanto isso vale a hora digitada.
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               );
             })}
             {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Cadastre pessoas na aba "Pessoas" primeiro.</div>}
           </div>
           <div style={{ fontSize: 11, color: "#8A8778", marginTop: -10, marginBottom: 16 }}>
-            A divisão da comissão usa as horas como peso (turno padrão de {HORAS_PADRAO_TURNO}h = peso 1) — não precisa preencher nada além das horas.
+            A divisão da comissão usa as horas como peso (turno padrão de {HORAS_PADRAO_TURNO}h = peso 1). Preenchendo entrada e saída, as horas saem da conta sozinhas.
           </div>
-
           {isAdmin && selecionados.length > 0 && (
             <>
               <div style={sectionLabel}>Valores por cargo</div>
               <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>
-                Diária base e valor da hora — só leitura aqui. Pra mudar, vai em Equipe &gt; Matriz de cargos.
+                Diária base e valor da hora — só leitura aqui. Pra mudar, vai em Gente e Gestão &gt; Matriz de cargos.
               </div>
               <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
                 {[...new Set(selecionados.map((p) => p.papel))].map((papel) => (
@@ -841,7 +891,6 @@ function PremiacaoDoDia({ isAdmin }) {
               </div>
             </>
           )}
-
           {isAdmin && selecionados.length > 0 && taxaNum > 0 && (
             <>
               <div style={sectionLabel}>Resultado</div>
@@ -881,7 +930,6 @@ function PremiacaoDoDia({ isAdmin }) {
               </div>
             </>
           )}
-
           <button onClick={salvarPremiacao} disabled={salvando} style={{ ...btnPrimary, width: "100%" }}>
             {salvando ? <Loader2 size={16} /> : <Check size={16} />} Calcular e salvar
           </button>
@@ -890,7 +938,6 @@ function PremiacaoDoDia({ isAdmin }) {
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Fechamento mensal
 // ---------------------------------------------------------------------------
@@ -906,26 +953,22 @@ function FechamentoMensal() {
   const [carregando, setCarregando] = useState(true);
   const [lancados, setLancados] = useState(new Set()); // descrições já lançadas no Plano de Contas
   const [lancando, setLancando] = useState(null); // nome sendo lançado agora
-
   const limitesDoMes = useCallback(() => {
     const [ano, mes] = mesRef.split("-").map(Number);
     const inicio = `${mesRef}-01`;
     const fim = new Date(ano, mes, 0).toISOString().slice(0, 10);
     return { inicio, fim };
   }, [mesRef]);
-
   const carregar = useCallback(async () => {
     setCarregando(true);
     setErro("");
     const { inicio, fim } = limitesDoMes();
-
     const [{ data: premiacoes }, { data: pessoasData }, { data: faturamentoData }] = await Promise.all([
       supabase.from("premiacoes_diarias").select("pessoa_id, dia, total_dia, pessoa:pessoas(nome, papel, tipo_contrato)").gte("dia", inicio).lte("dia", fim),
       supabase.from("pessoas").select("*").eq("ativo", true),
       supabase.from("faturamento_mensal").select("*").eq("mes_referencia", mesRef).maybeSingle(),
     ]);
     setFaturamentoMes(faturamentoData || null);
-
     const mapaSalario = Object.fromEntries((pessoasData || []).map((p) => [p.id, p]));
     const porPessoa = {};
     (premiacoes || []).forEach((pr) => {
@@ -939,7 +982,6 @@ function FechamentoMensal() {
       return { ...v, salarioBase, total: v.comissao + salarioBase };
     });
     setLinhas(listaRegistrados.sort((a, b) => a.nome.localeCompare(b.nome)));
-
     const listaGerentes = (pessoasData || []).filter((p) => p.papel === "gerente").map((p) => {
       const faturamentoBruto = faturamentoData?.faturamento_bruto || 0;
       const doisPorcento = faturamentoBruto * 0.02;
@@ -947,14 +989,11 @@ function FechamentoMensal() {
       return { nome: p.nome, salarioBase, faturamentoBruto, doisPorcento, total: salarioBase + doisPorcento };
     });
     setGerentes(listaGerentes);
-
     const { data: contasPessoas } = await supabase.from("contas_pagar").select("descricao").eq("centro_custo", "pessoas");
     setLancados(new Set((contasPessoas || []).map((c) => c.descricao)));
-
     setCarregando(false);
   }, [mesRef, limitesDoMes]);
   useEffect(() => { carregar(); }, [carregar]);
-
   const lancarPessoa = async (nome, valor) => {
     setLancando(nome);
     setErro("");
@@ -970,7 +1009,6 @@ function FechamentoMensal() {
     if (error) { setErro(error.message); return; }
     setLancados((prev) => new Set(prev).add(descricao));
   };
-
   const buscarFaturamento = async () => {
     setBuscandoFaturamento(true);
     setErro("");
@@ -989,7 +1027,6 @@ function FechamentoMensal() {
     if (errSalvar) { setErro(errSalvar.message); return; }
     carregar();
   };
-
   const abrirExtrato = async (nome) => {
     const { inicio, fim } = limitesDoMes();
     const { data } = await supabase
@@ -1001,16 +1038,13 @@ function FechamentoMensal() {
     setExtrato(data || []);
     setPessoaAberta(nome);
   };
-
   const mudarMes = (delta) => {
     const [ano, mes] = mesRef.split("-").map(Number);
     const d = new Date(ano, mes - 1 + delta, 1);
     setMesRef(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
   };
-
   const nomeMes = new Date(`${mesRef}-01T12:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
   const total = linhas.reduce((s, l) => s + l.total, 0) + gerentes.reduce((s, g) => s + g.total, 0);
-
   if (pessoaAberta) {
     return (
       <div>
@@ -1050,7 +1084,6 @@ function FechamentoMensal() {
       </div>
     );
   }
-
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
@@ -1061,7 +1094,6 @@ function FechamentoMensal() {
       </div>
       <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 10 }}>Só pessoas registradas — diaristas já recebem por dia.</div>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
@@ -1102,7 +1134,6 @@ function FechamentoMensal() {
             })}
             {linhas.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Nenhuma premiação registrada nesse mês ainda.</div>}
           </div>
-
           <div style={sectionLabel}>Gerência</div>
           <div style={{ ...cardStyle, marginBottom: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1115,7 +1146,6 @@ function FechamentoMensal() {
               </button>
             </div>
           </div>
-
           {gerentes.length > 0 && (
             <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
               {gerentes.map((g, idx) => {
@@ -1147,7 +1177,6 @@ function FechamentoMensal() {
               })}
             </div>
           )}
-
           {(linhas.length > 0 || gerentes.length > 0) && (
             <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px", fontSize: 13, color: "#8A8778" }}>
               <span>Total geral do mês</span><span style={{ fontWeight: 700, color: "#22231F" }}>{brl(total)}</span>
@@ -1158,11 +1187,8 @@ function FechamentoMensal() {
     </div>
   );
 }
-
 function round2(n) { return Math.round(n * 100) / 100; }
-
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
-const itemRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10, padding: "10px 12px" };
 const inputStyle = { padding: "9px 10px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF", color: "#22231F" };
 const ghostIconBtn = { border: "none", background: "none", color: "#8A8778", cursor: "pointer", padding: 2, display: "flex" };
 const btnPrimary = { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
