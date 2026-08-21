@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
@@ -6,6 +6,24 @@ function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", c
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
 function ehFimDeSemana(data) { const dia = data.getDay(); return dia === 0 || dia === 5 || dia === 6; }
 function diasNoMes(ano, mesIndex0) { return new Date(ano, mesIndex0 + 1, 0).getDate(); }
+
+// Data no fuso local (America/Sao_Paulo), NUNCA via toISOString().
+// toISOString() converte pra UTC e, como estamos em UTC-3, depois das 21h
+// ele já devolve o dia seguinte — o que fazia o Dashboard contar um dia a
+// mais no "realizado do mês".
+function ymd(d) {
+  const ano = d.getFullYear();
+  const mes = String(d.getMonth() + 1).padStart(2, "0");
+  const dia = String(d.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}`;
+}
+function somarDias(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function esperar(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+const JANELA_DIAS = 90;       // histórico usado nas médias e no comparativo
+const TAMANHO_FATIA = 6;      // dias por chamada da Edge Function
+const PAUSA_ENTRE_FATIAS = 20000;   // 20s — a função já espera 12s entre dias
+const PAUSA_APOS_LIMITE = 75000;    // se o CardápioWeb reclamar, espera mais
 
 const CENTRO_CUSTO_LABEL = {
   pessoas: "Pessoas", insumos: "Insumos", utensilios: "Utensílios", manutencao: "Consertos e manutenção",
@@ -17,18 +35,29 @@ const CENTRO_CUSTO_LABEL = {
 // comparativo semana a semana vs mês anterior) com os custos do Plano
 // de Contas (o que já foi lançado nesse mês + a média histórica dos
 // meses anteriores pro que falta), pra chegar num lucro previsto.
+//
+// O faturamento vem da tabela `vendas_diarias` (cache), populada pela
+// Edge Function `sincronizar-vendas-diarias` — que roda sozinha todo dia
+// às 4h via pg_cron. NÃO chama mais o CardápioWeb ao vivo: 90 dias de
+// histórico estouravam o limite de 5 consultas/minuto.
 export default function Dashboard() {
   const [carregando, setCarregando] = useState(true);
-  const [buscandoVendas, setBuscandoVendas] = useState(false);
+  const [recalculando, setRecalculando] = useState(false);
   const [erro, setErro] = useState("");
   const [faturamento, setFaturamento] = useState(null);
   const [custos, setCustos] = useState(null);
+  const [cache, setCache] = useState(null); // { total, ultimoDia, atualizadoEm, faltando }
+  const [sincronizando, setSincronizando] = useState(false);
+  const [progresso, setProgresso] = useState(null); // { fatia, totalFatias, diasFeitos, totalDias, de, ate }
+  const cancelarRef = useRef(false);
 
+  // ------------------------------------------------------------------
+  // Custos (Plano de Contas) — igual ao que já existia
+  // ------------------------------------------------------------------
   const buscarCustos = React.useCallback(async () => {
     const { data } = await supabase.from("contas_pagar").select("valor_total, data_vencimento, centro_custo, categoria");
     const hoje = new Date();
-    const anoMesAtual = hoje.toISOString().slice(0, 7);
-
+    const anoMesAtual = ymd(hoje).slice(0, 7);
     // já lançado esse mês (por vencimento) — o que já sabemos que vem
     const jaLancadoMes = (data || []).filter((c) => c.data_vencimento?.startsWith(anoMesAtual));
     const totalJaLancado = jaLancadoMes.reduce((s, c) => s + (c.valor_total || 0), 0);
@@ -37,7 +66,6 @@ export default function Dashboard() {
       const chave = c.centro_custo || "sem_centro";
       porCentroCusto[chave] = (porCentroCusto[chave] || 0) + (c.valor_total || 0);
     });
-
     // média histórica dos meses anteriores, por centro de custo — só
     // pra estimar o que ainda não foi lançado esse mês (ex.: conta de
     // luz que só chega dia 20)
@@ -61,7 +89,6 @@ export default function Dashboard() {
     Object.entries(mediaMensalPorCentro).forEach(([centro, valores]) => {
       mediaPorCentro[centro] = round2(valores.reduce((s, v) => s + v, 0) / valores.length);
     });
-
     // previsto do mês = o que já foi lançado + a média histórica dos
     // centros que ainda não tiveram nada lançado esse mês (evita somar
     // duas vezes um centro que já lançou)
@@ -69,55 +96,85 @@ export default function Dashboard() {
     Object.entries(mediaPorCentro).forEach(([centro, media]) => {
       if (!(centro in porCentroCusto)) totalPrevisto += media;
     });
-
     setCustos({ totalJaLancado, totalPrevisto, porCentroCusto, mediaPorCentro });
   }, []);
 
-  const buscarFaturamento = async () => {
-    setBuscandoVendas(true);
-    setErro("");
+  // ------------------------------------------------------------------
+  // Cache de vendas — um select simples, sem chamada externa
+  // ------------------------------------------------------------------
+  const listaDaJanela = React.useCallback(() => {
+    // do dia (hoje - 90) até ONTEM. Hoje fica de fora porque o dia ainda
+    // não fechou no CardápioWeb.
     const hoje = new Date();
-    const inicio = new Date(hoje);
-    inicio.setDate(inicio.getDate() - 90); // cobre o mês atual + anterior + uma base de 30 dias pra média
+    const dias = [];
+    for (let i = JANELA_DIAS; i >= 1; i--) dias.push(ymd(somarDias(hoje, -i)));
+    return dias;
+  }, []);
 
-    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
-      body: { data_inicio: `${inicio.toISOString().slice(0, 10)}T00:00:00-03:00`, data_fim: `${hoje.toISOString().slice(0, 10)}T23:59:59-03:00` },
+  const buscarCache = React.useCallback(async () => {
+    const dias = listaDaJanela();
+    const { data, error } = await supabase
+      .from("vendas_diarias")
+      .select("dia, faturamento_bruto, atualizado_em")
+      .gte("dia", dias[0])
+      .lte("dia", dias[dias.length - 1])
+      .order("dia", { ascending: true });
+    if (error) { setErro(error.message); return null; }
+    const linhas = data || [];
+    const presentes = new Set(linhas.map((l) => l.dia));
+    const faltando = dias.filter((d) => !presentes.has(d));
+    let atualizadoEm = null;
+    linhas.forEach((l) => {
+      if (l.atualizado_em && (!atualizadoEm || l.atualizado_em > atualizadoEm)) atualizadoEm = l.atualizado_em;
     });
-    if (error) { setErro(await extrairErroFuncao(error)); setBuscandoVendas(false); return; }
-    if (data?.error) { setErro(data.error); setBuscandoVendas(false); return; }
+    setCache({
+      total: linhas.length,
+      ultimoDia: linhas.length ? linhas[linhas.length - 1].dia : null,
+      atualizadoEm,
+      faltando,
+    });
+    return linhas;
+  }, [listaDaJanela]);
 
+  // ------------------------------------------------------------------
+  // Toda a matemática de previsão — idêntica à versão anterior, só que
+  // alimentada pelo cache em vez da resposta do CardápioWeb
+  // ------------------------------------------------------------------
+  const calcularFaturamento = React.useCallback((linhas) => {
+    if (!linhas || linhas.length === 0) { setFaturamento(null); return; }
+    const hoje = new Date();
     const porDia = {};
-    (data.pedidos || []).forEach((p) => {
-      if (p.status !== "closed") return;
-      const dia = String(p.created_at).slice(0, 10);
-      porDia[dia] = (porDia[dia] || 0) + (p.total || 0);
-    });
+    linhas.forEach((l) => { porDia[l.dia] = Number(l.faturamento_bruto) || 0; });
 
     // médias de dia útil e fim de semana, últimos 30 dias
     let somaUtil = 0, nUtil = 0, somaFds = 0, nFds = 0;
     for (let i = 1; i <= 30; i++) {
-      const d = new Date(hoje); d.setDate(d.getDate() - i);
-      const chave = d.toISOString().slice(0, 10);
-      const valor = porDia[chave] || 0;
+      const d = somarDias(hoje, -i);
+      const chave = ymd(d);
+      if (!(chave in porDia)) continue; // dia sem cache não entra na média
+      const valor = porDia[chave];
       if (ehFimDeSemana(d)) { somaFds += valor; nFds++; } else { somaUtil += valor; nUtil++; }
     }
     const mediaUtil = nUtil > 0 ? somaUtil / nUtil : 0;
     const mediaFds = nFds > 0 ? somaFds / nFds : 0;
 
-    // mês atual: realizado até hoje + previsto pros dias que faltam
+    // mês atual: realizado até hoje + previsto pros dias que faltam.
+    // O cache vai só até ONTEM (o dia de hoje ainda não fechou no
+    // CardápioWeb), então hoje entra como PREVISTO, não como realizado —
+    // senão o dia sumiria da conta, não entrando em nenhum dos dois.
     const anoAtual = hoje.getFullYear(), mesAtual = hoje.getMonth();
     const totalDiasMes = diasNoMes(anoAtual, mesAtual);
+    const temHojeNoCache = ymd(hoje) in porDia;
     let realizadoMes = 0;
     for (let dia = 1; dia <= hoje.getDate(); dia++) {
       const chave = `${anoAtual}-${String(mesAtual + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
       realizadoMes += porDia[chave] || 0;
     }
     let previstoRestoMes = 0;
-    for (let dia = hoje.getDate() + 1; dia <= totalDiasMes; dia++) {
+    for (let dia = hoje.getDate() + (temHojeNoCache ? 1 : 0); dia <= totalDiasMes; dia++) {
       const d = new Date(anoAtual, mesAtual, dia);
       previstoRestoMes += ehFimDeSemana(d) ? mediaFds : mediaUtil;
     }
-
     // mês seguinte inteiro, só com a média (não tem realizado ainda)
     const proxMesIndex = mesAtual + 1, proxAno = proxMesIndex > 11 ? anoAtual + 1 : anoAtual, proxMesNorm = proxMesIndex % 12;
     const diasProxMes = diasNoMes(proxAno, proxMesNorm);
@@ -126,7 +183,6 @@ export default function Dashboard() {
       const d = new Date(proxAno, proxMesNorm, dia);
       previstoProxMes += ehFimDeSemana(d) ? mediaFds : mediaUtil;
     }
-
     // comparativo semana a semana: mês atual (até hoje) vs mesmas
     // semanas do mês anterior — semana = blocos de 7 dias corridos do
     // mês (1-7, 8-14, 15-21, 22-28, 29+)
@@ -151,7 +207,6 @@ export default function Dashboard() {
       if (somaAtual === 0 && somaAnterior === 0 && diaIni > hoje.getDate()) continue;
       semanas.push({ label: `Semana ${semana + 1}`, atual: round2(somaAtual), anterior: round2(somaAnterior) });
     }
-
     setFaturamento({
       realizadoMes: round2(realizadoMes),
       previstoRestoMes: round2(previstoRestoMes),
@@ -159,29 +214,167 @@ export default function Dashboard() {
       previstoProxMes: round2(previstoProxMes),
       mediaUtil: round2(mediaUtil),
       mediaFds: round2(mediaFds),
+      diasNaMedia: nUtil + nFds,
       semanas,
     });
-    setBuscandoVendas(false);
+  }, []);
+
+  const atualizar = async () => {
+    setRecalculando(true);
+    setErro("");
+    const linhas = await buscarCache();
+    calcularFaturamento(linhas);
+    await buscarCustos();
+    setRecalculando(false);
+  };
+
+  // ------------------------------------------------------------------
+  // Carga inicial do histórico — fatiada, com pausa, e retomável
+  // ------------------------------------------------------------------
+  const popularHistorico = async () => {
+    setErro("");
+    cancelarRef.current = false;
+    setSincronizando(true);
+
+    const dias = listaDaJanela();
+    // relê o cache na hora, pra não trabalhar em cima de estado velho
+    const linhas = await buscarCache();
+    const presentes = new Set((linhas || []).map((l) => l.dia));
+
+    // fatias de dias corridos; pula inteira a fatia que já está toda no cache
+    const fatias = [];
+    for (let i = 0; i < dias.length; i += TAMANHO_FATIA) {
+      const bloco = dias.slice(i, i + TAMANHO_FATIA);
+      if (bloco.every((d) => presentes.has(d))) continue;
+      fatias.push(bloco);
+    }
+
+    if (fatias.length === 0) {
+      setSincronizando(false);
+      setProgresso(null);
+      await atualizar();
+      return;
+    }
+
+    const totalDias = fatias.reduce((s, f) => s + f.length, 0);
+    let diasFeitos = 0;
+
+    for (let i = 0; i < fatias.length; i++) {
+      if (cancelarRef.current) break;
+      const bloco = fatias[i];
+      const de = bloco[0], ate = bloco[bloco.length - 1];
+      setProgresso({ fatia: i + 1, totalFatias: fatias.length, diasFeitos, totalDias, de, ate });
+
+      let tentativas = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { data, error } = await supabase.functions.invoke("sincronizar-vendas-diarias", {
+          body: { data_inicio: de, data_fim: ate },
+        });
+        let msg = "";
+        if (error) msg = await extrairErroFuncao(error);
+        else if (data?.error) msg = data.error;
+        if (!msg) break;
+
+        const ehLimite = /limit|429|consultas por minuto|rate/i.test(msg);
+        if (ehLimite && tentativas < 2) {
+          tentativas++;
+          setProgresso({ fatia: i + 1, totalFatias: fatias.length, diasFeitos, totalDias, de, ate, esperando: true });
+          await esperar(PAUSA_APOS_LIMITE);
+          if (cancelarRef.current) break;
+          continue;
+        }
+        setErro(`${msg} — parou em ${de}. Clique de novo em "Continuar carga" que ele retoma daqui.`);
+        setSincronizando(false);
+        setProgresso(null);
+        await atualizar();
+        return;
+      }
+
+      if (cancelarRef.current) break;
+      diasFeitos += bloco.length;
+      setProgresso({ fatia: i + 1, totalFatias: fatias.length, diasFeitos, totalDias, de, ate });
+      if (i < fatias.length - 1) await esperar(PAUSA_ENTRE_FATIAS);
+    }
+
+    setSincronizando(false);
+    setProgresso(null);
+    if (cancelarRef.current) setErro("Carga interrompida. Os dias já baixados ficaram salvos — clique em \"Continuar carga\" quando quiser retomar.");
+    await atualizar();
   };
 
   React.useEffect(() => {
     (async () => {
       setCarregando(true);
-      await buscarCustos();
+      const [linhas] = await Promise.all([buscarCache(), buscarCustos()]);
+      calcularFaturamento(linhas);
       setCarregando(false);
     })();
-  }, [buscarCustos]);
+  }, [buscarCache, buscarCustos, calcularFaturamento]);
 
   const lucroPrevisto = faturamento && custos ? round2(faturamento.totalMes - custos.totalPrevisto) : null;
+  const faltando = cache?.faltando?.length || 0;
+  const cacheVazio = !cache || cache.total === 0;
+  const cacheParcial = !cacheVazio && faltando > 0;
+  const pct = progresso && progresso.totalDias > 0 ? Math.round((progresso.diasFeitos / progresso.totalDias) * 100) : 0;
+
+  function dataHoraCurta(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
 
   return (
     <div>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
 
-      {!faturamento && (
-        <button onClick={buscarFaturamento} disabled={buscandoVendas} style={{ ...btnPrimary, width: "100%", display: "flex", justifyContent: "center", gap: 6, marginBottom: 16 }}>
-          {buscandoVendas ? <Loader2 size={16} /> : <RefreshCw size={16} />} Calcular previsão de faturamento
-        </button>
+      {/* Carga inicial em andamento */}
+      {sincronizando && progresso && (
+        <div style={{ ...cardStyle, marginBottom: 14 }}>
+          <div style={labelStyle}>Carregando histórico</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>Fatia {progresso.fatia} de {progresso.totalFatias}</div>
+          <div style={barraStyle}><div style={{ ...barraFillStyle, width: `${pct}%` }} /></div>
+          <div style={{ fontSize: 10, color: "#8A8778" }}>
+            {progresso.diasFeitos} de {progresso.totalDias} dias · buscando {progresso.de} a {progresso.ate}
+          </div>
+          {progresso.esperando && (
+            <div style={{ fontSize: 10, color: "#7A6A1E", marginTop: 4 }}>
+              O CardápioWeb pediu pra esperar — aguardando pra tentar essa fatia de novo.
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: "#8A8778", marginTop: 6 }}>
+            Pausa de {PAUSA_ENTRE_FATIAS / 1000}s entre fatias, pra respeitar o limite de 5 consultas/min. Pode deixar a aba aberta e ir fazer outra coisa.
+          </div>
+          <button onClick={() => { cancelarRef.current = true; }} style={{ ...btnGhost, width: "100%", marginTop: 10 }}>Interromper</button>
+        </div>
+      )}
+
+      {/* Cache vazio ou incompleto */}
+      {!carregando && !sincronizando && (cacheVazio || cacheParcial) && (
+        <>
+          <div style={avisoStyle}>
+            <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+            <div style={{ fontSize: 13 }}>
+              {cacheVazio
+                ? "O histórico de vendas ainda não foi carregado. Sem ele a previsão não tem base de cálculo."
+                : `Faltam ${faltando} dias no histórico. A previsão até funciona, mas fica menos confiável.`}
+            </div>
+          </div>
+          <button onClick={popularHistorico} style={{ ...btnPrimary, width: "100%", display: "flex", justifyContent: "center", gap: 6, marginBottom: 6 }}>
+            <RefreshCw size={16} /> {cacheVazio ? "Popular histórico inicial" : "Continuar carga"}
+          </button>
+          <div style={{ fontSize: 10, color: "#8A8778", textAlign: "center", marginBottom: 16 }}>
+            {faltando} dias faltando · cerca de {Math.max(1, Math.round((faltando / TAMANHO_FATIA) * (PAUSA_ENTRE_FATIAS / 1000 + TAMANHO_FATIA * 12) / 60))} min
+          </div>
+        </>
+      )}
+
+      {/* Status do cache */}
+      {!carregando && !cacheVazio && (
+        <div style={statusStyle}>
+          <span style={{ ...dotStyle, background: cacheParcial ? "#C08A2E" : "#0F6E56" }} />
+          Cache com {cache.total} dias · atualizado {dataHoraCurta(cache.atualizadoEm)}
+        </div>
       )}
 
       {carregando ? (
@@ -202,18 +395,15 @@ export default function Dashboard() {
                   <div style={{ fontSize: 10, color: "#8A8778" }}>Já lançado {brl(custos.totalJaLancado)}</div>
                 </div>
               </div>
-
               <div style={{ ...cardStyle, textAlign: "center", background: "#F6F1E7", marginBottom: 16 }}>
                 <div style={labelStyle}>Lucro previsto do mês</div>
                 <div style={{ fontSize: 24, fontWeight: 800, color: lucroPrevisto >= 0 ? "#0F6E56" : "#A32D2D" }}>{brl(lucroPrevisto)}</div>
               </div>
-
               <div style={{ ...cardStyle, marginBottom: 16 }}>
                 <div style={labelStyle}>Previsão pro mês seguinte</div>
                 <div style={{ fontSize: 18, fontWeight: 700, color: "#22231F" }}>{brl(faturamento.previstoProxMes)}</div>
-                <div style={{ fontSize: 10, color: "#8A8778" }}>Baseado na média de dia útil ({brl(faturamento.mediaUtil)}) e fim de semana ({brl(faturamento.mediaFds)}) dos últimos 30 dias</div>
+                <div style={{ fontSize: 10, color: "#8A8778" }}>Baseado na média de dia útil ({brl(faturamento.mediaUtil)}) e fim de semana ({brl(faturamento.mediaFds)}) dos últimos 30 dias{faturamento.diasNaMedia < 30 ? ` — só ${faturamento.diasNaMedia} dias disponíveis no cache` : ""}</div>
               </div>
-
               {faturamento.semanas.length > 0 && (
                 <>
                   <div style={sectionLabel}>Semana a semana — mês atual vs mês anterior</div>
@@ -233,7 +423,6 @@ export default function Dashboard() {
                   </div>
                 </>
               )}
-
               <div style={sectionLabel}>Custos por centro de custo</div>
               <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
                 {Object.entries(custos.porCentroCusto).sort((a, b) => b[1] - a[1]).map(([centro, valor], idx) => (
@@ -244,6 +433,12 @@ export default function Dashboard() {
                 ))}
                 {Object.keys(custos.porCentroCusto).length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Nenhuma conta lançada esse mês ainda.</div>}
               </div>
+
+              {!sincronizando && (
+                <button onClick={atualizar} disabled={recalculando} style={{ ...btnGhost, width: "100%", display: "flex", justifyContent: "center", gap: 6, marginTop: 16 }}>
+                  {recalculando ? <Loader2 size={14} /> : <RefreshCw size={14} />} Atualizar
+                </button>
+              )}
             </>
           )}
         </>
@@ -257,4 +452,9 @@ const sectionLabel = { fontSize: 12, fontWeight: 800, letterSpacing: 0.4, textTr
 const labelStyle = { fontSize: 10, color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 };
 const valorGrande = { fontSize: 17, fontWeight: 700, color: "#22231F" };
 const btnPrimary = { background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
+const btnGhost = { background: "#FFFFFF", color: "#55534A", border: "1px solid #E8E2D2", borderRadius: 10, padding: "10px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" };
 const avisoStyle = { display: "flex", gap: 8, background: "#FBF3D9", border: "1px solid #E8D48A", color: "#7A6A1E", borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 };
+const statusStyle = { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#8A8778", marginBottom: 12, padding: "0 2px" };
+const dotStyle = { width: 6, height: 6, borderRadius: "50%", flex: "none" };
+const barraStyle = { height: 7, borderRadius: 99, background: "#E3DDCB", overflow: "hidden", margin: "10px 0 7px" };
+const barraFillStyle = { height: "100%", background: "#22231F", borderRadius: 99, transition: "width .3s" };
