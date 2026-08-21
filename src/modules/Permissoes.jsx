@@ -395,4 +395,9 @@ const btnSecondary = { background: "#F6F1E7", border: "1px solid #E8E2D2", color
 const linkBtn = { background: "none", border: "none", color: "#8A6A0F", fontSize: 12, fontWeight: 600, cursor: "pointer", padding: 0 };
 const inputStyle = { boxSizing: "border-box", padding: "10px 12px", borderRadius: 10, border: "1px solid #E8E2D2", fontSize: 14, background: "#FFFFFF", color: "#22231F" };
 const iconBtn = { width: 34, height: 34, borderRadius: 8, border: "1px solid #E8E2D2", background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#22231F" };
+// Abas Cargos / Usuários. Faltavam neste arquivo — os outros módulos têm os
+// mesmos dois, e a ausência aqui derrubava a tela inteira com
+// "ReferenceError: Can't find variable: tabBtn".
+const tabBtn = { flex: 1, padding: "9px 10px", borderRadius: 8, border: "1px solid #E8E2D2", background: "#FFFFFF", color: "#8A8778", fontSize: 13, fontWeight: 600, cursor: "pointer" };
+const tabBtnAtivo = { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" };
 const avisoStyle = { display: "flex", gap: 8, background: "#FBF3D9", border: "1px solid #E8D48A", color: "#7A6A1E", borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 };
