@@ -21,7 +21,8 @@ function somarDias(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); re
 function esperar(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 const JANELA_DIAS = 90;       // histórico usado nas médias e no comparativo
-const TAMANHO_FATIA = 6;      // dias por chamada da Edge Function
+const TAMANHO_FATIA = 4;      // dias por chamada da Edge Function
+const SEGUNDOS_POR_DIA = 25;  // estimativa: histórico + detalhe de cada pedido
 const PAUSA_ENTRE_FATIAS = 20000;   // 20s — a função já espera 12s entre dias
 const PAUSA_APOS_LIMITE = 75000;    // se o CardápioWeb reclamar, espera mais
 
@@ -364,7 +365,7 @@ export default function Dashboard() {
             <RefreshCw size={16} /> {cacheVazio ? "Popular histórico inicial" : "Continuar carga"}
           </button>
           <div style={{ fontSize: 10, color: "#8A8778", textAlign: "center", marginBottom: 16 }}>
-            {faltando} dias faltando · cerca de {Math.max(1, Math.round((faltando / TAMANHO_FATIA) * (PAUSA_ENTRE_FATIAS / 1000 + TAMANHO_FATIA * 12) / 60))} min
+            {faltando} dias faltando · cerca de {Math.max(1, Math.round((faltando / TAMANHO_FATIA) * (PAUSA_ENTRE_FATIAS / 1000 + TAMANHO_FATIA * SEGUNDOS_POR_DIA) / 60))} min
           </div>
         </>
       )}
