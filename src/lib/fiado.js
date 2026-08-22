@@ -110,25 +110,112 @@ export async function buscarFiadoNoPeriodo(dataInicio, dataFim) {
   return { lancamentos, erro: "", doCache, completados, diasFaltando: dias };
 }
 
-// Casa cada lançamento com uma pessoa da equipe, pelo nome. Devolve
-// também o que sobrou sem dono — normalmente cliente de verdade, não
-// alguém da equipe.
-export function agruparPorPessoa(lancamentos, pessoas) {
+// Casa cada lançamento com uma pessoa da equipe.
+//
+// Duas fontes de ligação: o nome do próprio cadastro, e os apelidos da
+// tabela `fiado_apelidos` — porque o caixa escreve de jeitos diferentes
+// ("Yan" numa noite, "Yan Ramos" na outra) e uma pessoa precisa poder ter
+// vários. O que sobra volta em `semDono`, já agrupado por nome, que é a
+// fila de "falta vincular".
+export function agruparPorPessoa(lancamentos, pessoas, apelidos = []) {
   const porNome = new Map();
   (pessoas || []).forEach((p) => {
-    const chaves = [p.nome, p.nome_fiado].filter(Boolean).map(normalizaNome);
-    chaves.forEach((c) => { if (c && !porNome.has(c)) porNome.set(c, p.id); });
+    const c = normalizaNome(p.nome);
+    if (c && !porNome.has(c)) porNome.set(c, p.id);
+  });
+  // Apelido explícito vence o nome do cadastro: foi alguém que decidiu.
+  (apelidos || []).forEach((a) => {
+    const c = normalizaNome(a.apelido);
+    if (c) porNome.set(c, a.pessoa_id);
   });
 
   const porPessoa = {};
-  const semDono = [];
+  const semDonoPorNome = new Map();
   (lancamentos || []).forEach((l) => {
     const pessoaId = l.nomeCliente ? porNome.get(normalizaNome(l.nomeCliente)) : null;
-    if (!pessoaId) { semDono.push(l); return; }
+    if (!pessoaId) {
+      const chave = l.nomeCliente || "(sem nome no pedido)";
+      if (!semDonoPorNome.has(chave)) semDonoPorNome.set(chave, { nome: chave, lancamentos: [], total: 0 });
+      const g = semDonoPorNome.get(chave);
+      g.lancamentos.push(l);
+      g.total += Number(l.valor) || 0;
+      return;
+    }
     if (!porPessoa[pessoaId]) porPessoa[pessoaId] = [];
     porPessoa[pessoaId].push(l);
   });
-  return { porPessoa, semDono };
+
+  const semDonoAgrupado = [...semDonoPorNome.values()].sort((a, b) => b.total - a.total);
+  const semDono = semDonoAgrupado.flatMap((g) => g.lancamentos);
+  return { porPessoa, semDono, semDonoAgrupado };
+}
+
+// Palpite de quem é o dono de um nome do caixa. NUNCA aplica sozinho —
+// devolve candidatos pra pessoa confirmar. Casar "Ana" automaticamente
+// poderia cobrar da Ana Paula o que era da Janayna, e o erro só apareceria
+// no dia em que alguém reclamasse do acerto.
+export function sugerirPessoa(nomeCliente, pessoas) {
+  const alvo = normalizaNome(nomeCliente);
+  if (!alvo) return { candidatos: [] };
+  const partesAlvo = alvo.split(" ").filter(Boolean);
+  const candidatos = [];
+
+  for (const p of pessoas || []) {
+    const nome = normalizaNome(p.nome);
+    if (!nome) continue;
+    const partes = nome.split(" ").filter(Boolean);
+    let motivo = "";
+    let forca = 0;
+
+    if (nome === alvo) { motivo = "nome idêntico"; forca = 100; }
+    else if (nome.startsWith(alvo + " ")) { motivo = "é o começo do nome dela"; forca = 80; }
+    else if (alvo.startsWith(nome + " ")) { motivo = "contém o nome do cadastro"; forca = 75; }
+    else if (partesAlvo.every((t) => partes.includes(t))) { motivo = "todos os nomes batem"; forca = 70; }
+    else if (partesAlvo.length === 1 && partes.includes(partesAlvo[0])) { motivo = "é um dos nomes dela"; forca = 50; }
+
+    if (motivo) candidatos.push({ pessoa: p, motivo, forca });
+  }
+
+  candidatos.sort((a, b) => b.forca - a.forca);
+  return { candidatos };
+}
+
+export async function carregarApelidos() {
+  const { data } = await supabase.from("fiado_apelidos").select("apelido, pessoa_id");
+  return data || [];
+}
+
+export async function vincularApelido(apelido, pessoaId) {
+  const { data: userData } = await supabase.auth.getUser();
+  const { error } = await supabase.from("fiado_apelidos").upsert(
+    { apelido: String(apelido).trim(), pessoa_id: pessoaId, criado_por: userData?.user?.id || null },
+    { onConflict: "apelido" }
+  );
+  return { error };
+}
+
+export async function desvincularApelido(apelido) {
+  const { error } = await supabase.from("fiado_apelidos").delete().eq("apelido", String(apelido).trim());
+  return { error };
+}
+
+export async function ignorarNome(nomeCliente, motivo) {
+  const { data: userData } = await supabase.auth.getUser();
+  const { error } = await supabase.from("fiado_ignorados").upsert(
+    { nome_cliente: String(nomeCliente).trim(), motivo: motivo || null, criado_por: userData?.user?.id || null },
+    { onConflict: "nome_cliente" }
+  );
+  return { error };
+}
+
+export async function carregarIgnorados() {
+  const { data } = await supabase.from("fiado_ignorados").select("nome_cliente");
+  return new Set((data || []).map((r) => normalizaNome(r.nome_cliente)));
+}
+
+export async function desfazerIgnorar(nomeCliente) {
+  const { error } = await supabase.from("fiado_ignorados").delete().eq("nome_cliente", String(nomeCliente).trim());
+  return { error };
 }
 
 // Quais desses pedidos já foram descontados. O `in` do PostgREST tem
