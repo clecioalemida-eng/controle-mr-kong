@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload, Lock } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+// Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
+// collation do banco e às vezes joga nome acentuado ou em maiúscula pro
+// fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
+// "Água" junto de "Agua" e "ALFACE" junto de "Alface".
+function porNome(a, b) {
+  return String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR", { sensitivity: "base" });
+}
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function hoje() { return new Date().toISOString().slice(0, 10); }
 async function abrirDocumento(path) {
@@ -137,7 +144,7 @@ function PrevisaoDeEscala() {
       supabase.from("previsoes_escala_dias").select("fechada").eq("dia", dia).maybeSingle(),
     ]);
     if (error) setErro(error.message);
-    setPessoas(pessoasData || []);
+    setPessoas([...(pessoasData || [])].sort(porNome));
     setPrevistos(new Set((previsoesData || []).map((p) => p.pessoa_id)));
     setFechada(statusData?.fechada || false);
     setCarregando(false);
@@ -302,7 +309,7 @@ function Pessoas({ isAdmin }) {
     setCarregando(true);
     const { data, error } = await supabase.from("pessoas").select("*").order("nome");
     if (error) setErro(error.message);
-    setPessoas(data || []);
+    setPessoas([...(data || [])].sort(porNome));
     setCarregando(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
@@ -522,7 +529,7 @@ function PremiacaoDoDia({ isAdmin }) {
         supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle(),
         supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
       ]);
-      setPessoas(pessoasData || []);
+      setPessoas([...(pessoasData || [])].sort(porNome));
       setPremiacoesSalvas(premiacoesData || []);
       // Trava só quando a premiação já foi calculada — aí sim o dia está
       // fechado e mexer sem querer estraga valor pago. Antes isso travava
