@@ -39,6 +39,7 @@ function categoriaComissao(papel) {
 // peso 0,75, por exemplo). Simplifica pra só uma pergunta em vez de duas
 // pra mesma coisa.
 const HORAS_PADRAO_TURNO = 8;
+const SO_ADMIN = "Só administradores dão baixa em fiado ou lançam pagamento.";
 // Turno da casa. Registrado tem horário fixo, então já abre preenchido —
 // só mexe quem fugiu do padrão. Diarista varia, então só o intervalo vem
 // pronto (é sempre 1 hora) e entrada/saída ficam em branco de propósito.
@@ -457,7 +458,7 @@ function Pessoas({ isAdmin }) {
                   <div><span style={{ color: "#8A8778" }}>Documento anexado: </span><span style={p.documento_path ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.documento_path ? "sim" : "nenhum"}</span></div>
                 </div>
               )}
-              {isAdmin && fiadoId === p.id && <FiadoDaPessoa pessoa={p} pessoas={pessoas} />}
+              {isAdmin && fiadoId === p.id && <FiadoDaPessoa pessoa={p} pessoas={pessoas} isAdmin={isAdmin} />}
               {editandoId === p.id && (
                 <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} isAdmin={isAdmin} nomesFiado={nomesFiado} pessoas={pessoas} />
               )}
@@ -527,7 +528,11 @@ function LinhaPix({ pessoa }) {
   );
 }
 
-function useFiadoEquipe(pessoas) {
+// `souAdmin` entra aqui como segunda tranca. A tela ja esconde tudo de
+// quem nao e administrador, e o banco recusa por RLS de qualquer jeito —
+// mas se um dia um botao escapar do gate da tela, o erro que aparece e
+// uma mensagem clara em vez de um erro cru de permissao do Postgres.
+function useFiadoEquipe(pessoas, souAdmin = false) {
   const [inicio, setInicio] = useState(() => diasAtrasISO(60));
   const [fim, setFim] = useState(() => hoje());
   const [buscando, setBuscando] = useState(false);
@@ -577,6 +582,7 @@ function useFiadoEquipe(pessoas) {
   };
 
   const vincular = async (nome, pessoaId) => {
+    if (!souAdmin) { setErro(SO_ADMIN); return; }
     setErro("");
     const { error } = await vincularApelido(nome, pessoaId);
     if (error) {
@@ -594,6 +600,7 @@ function useFiadoEquipe(pessoas) {
   };
 
   const ignorar = async (nome) => {
+    if (!souAdmin) { setErro(SO_ADMIN); return; }
     setErro("");
     const { error } = await ignorarNome(nome, "cliente");
     if (error) { setErro(error.message); return; }
@@ -619,6 +626,7 @@ function useFiadoEquipe(pessoas) {
   // Baixa de UMA pessoa. E o que a tela do dia fechado usa: ali nao existe
   // "Calcular e salvar", o acerto e pessoa por pessoa, na hora de pagar.
   const baixarUm = async (pessoaId, origem, referencia) => {
+    if (!souAdmin) { setErro(SO_ADMIN); return { error: { message: SO_ADMIN } }; }
     const abertos = emAbertoDe(pessoaId);
     if (abertos.length === 0) return { error: null };
     const { error } = await darBaixa(pessoaId, abertos, origem, referencia);
@@ -633,6 +641,7 @@ function useFiadoEquipe(pessoas) {
 
   // Desfaz a baixa dessa pessoa no periodo — o consumo volta pra "em aberto".
   const estornarDe = async (pessoaId) => {
+    if (!souAdmin) { setErro(SO_ADMIN); return; }
     const jaBaixados = (porPessoa?.[pessoaId] || []).filter((l) => baixados.has(l.pedidoId));
     if (jaBaixados.length === 0) return;
     const { error } = await estornarBaixa(jaBaixados.map((l) => l.pedidoId));
@@ -649,6 +658,7 @@ function useFiadoEquipe(pessoas) {
 
   // Grava as baixas de todo mundo que esta marcado pra abater.
   const baixarTodos = async (origem, referencia) => {
+    if (!souAdmin) return { error: null };
     if (!porPessoa) return { error: null };
     for (const pessoaId of Object.keys(porPessoa)) {
       if (!vaiAbater(pessoaId)) continue;
@@ -1114,8 +1124,8 @@ function ChipFiado({ fiado, pessoaId }) {
 }
 
 // Extrato de uma pessoa so, aberto pelo icone no cartao dela.
-function FiadoDaPessoa({ pessoa, pessoas = [] }) {
-  const fiado = useFiadoEquipe(pessoas.length ? pessoas : [pessoa]);
+function FiadoDaPessoa({ pessoa, pessoas = [], isAdmin = false }) {
+  const fiado = useFiadoEquipe(pessoas.length ? pessoas : [pessoa], isAdmin);
   const [estornando, setEstornando] = useState(null);
   const abertos = fiado.emAbertoDe(pessoa.id);
   const todos = fiado.porPessoa?.[pessoa.id] || [];
@@ -1333,7 +1343,7 @@ function PremiacaoDoDia({ isAdmin }) {
   const [sujos, setSujos] = useState(() => new Set());
   const [salvandoPessoa, setSalvandoPessoa] = useState(null);
   const [jaTemPresenca, setJaTemPresenca] = useState(false);
-  const fiado = useFiadoEquipe(pessoas);
+  const fiado = useFiadoEquipe(pessoas, isAdmin);
   const [pagamentoDoDia, setPagamentoDoDia] = useState(null);
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -2084,8 +2094,10 @@ function FechamentoMensal() {
   const [extrato, setExtrato] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [pessoas, setPessoas] = useState([]);
+  // A aba Fechamento mensal so aparece pra administrador (SUBABAS.soAdmin),
+  // entao quem chega aqui ja passou pelo gate.
   const [vales, setVales] = useState({}); // pessoa_id -> { valor, data_pagamento }
-  const fiado = useFiadoEquipe(pessoas);
+  const fiado = useFiadoEquipe(pessoas, true);
   const [lancados, setLancados] = useState(new Set()); // descrições já lançadas no Plano de Contas
   const [lancando, setLancando] = useState(null); // nome sendo lançado agora
   const limitesDoMes = useCallback(() => {
