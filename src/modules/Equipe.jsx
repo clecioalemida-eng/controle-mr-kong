@@ -821,6 +821,150 @@ function PainelSemDono({ fiado, pessoas }) {
   );
 }
 
+// Pagamento das diarias da noite.
+//
+// So diarista entra: registrado e gerente recebem no fechamento do mes,
+// mesmo tendo comissao calculada todo dia. Misturar os dois pagaria o
+// registrado duas vezes.
+//
+// Um lancamento por noite, na conta 4.2 (Diarias), ja quitado — porque o
+// diarista e pago na saida, nao vira conta a pagar. E dai que o DRE passa
+// a enxergar o custo de pessoal que faltava.
+function PagamentoDasDiarias({ dia, linhasSalvas, fiado, pagamento, aoMudar, setErro }) {
+  const [gravando, setGravando] = useState(false);
+  const [desfazendo, setDesfazendo] = useState(false);
+
+  const diaristas = linhasSalvas.filter(
+    (l) => l.pessoa?.tipo_contrato === "diarista" && l.pessoa?.papel !== "gerente"
+  );
+  const bruto = diaristas.reduce((s2, l) => s2 + (Number(l.total_dia) || 0), 0);
+  const fiadoAberto = fiado.buscou
+    ? diaristas.reduce((s2, l) => s2 + fiado.saldoDe(l.pessoa_id), 0)
+    : 0;
+  const liquido = Math.max(0, bruto - fiadoAberto);
+
+  if (pagamento) {
+    const desfazer = async () => {
+      setDesfazendo(true);
+      setErro("");
+      // Ordem importa: tira o registro do dia primeiro, pra nunca sobrar
+      // "pago" apontando pra uma conta que ja nao existe.
+      await supabase.from("pagamentos_diaria").delete().eq("dia", dia);
+      if (pagamento.conta_pagar_id) {
+        await supabase.from("contas_pagar").delete().eq("id", pagamento.conta_pagar_id);
+      }
+      // O fiado descontado nesse pagamento volta a ficar em aberto.
+      const { data: baixas } = await supabase
+        .from("fiado_baixas").select("pedido_id")
+        .eq("origem", "escala").eq("referencia", dia);
+      if (baixas?.length) {
+        await estornarBaixa(baixas.map((b) => b.pedido_id));
+      }
+      setDesfazendo(false);
+      aoMudar();
+    };
+    return (
+      <div style={{ ...cardStyle, marginBottom: 12, borderColor: "#C4DBA6", background: "#F7FBF2" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <Check size={16} color="#27500A" />
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#27500A" }}>
+              Diárias pagas — {brl(pagamento.valor_liquido)}
+            </div>
+            <div style={{ fontSize: 11, color: "#8A8778" }}>
+              {pagamento.qtd_pessoas} diarista(s) · bruto {brl(pagamento.valor_bruto)}
+              {Number(pagamento.valor_fiado) > 0 ? ` · fiado ${brl(pagamento.valor_fiado)} descontado` : ""}
+              {" · lançado no Plano de Contas em 4.2 Diárias"}
+            </div>
+          </div>
+          <button onClick={desfazer} disabled={desfazendo} style={{ ...linkBtn, fontSize: 11 }}>
+            {desfazendo ? "desfazendo…" : "desfazer"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (diaristas.length === 0) return null;
+
+  const pagar = async () => {
+    setGravando(true);
+    setErro("");
+    const descricao = `Diárias ${dia.split("-").reverse().join("/")} — ${diaristas.length} pessoa(s)`;
+    const obs = fiadoAberto > 0 ? `Fiado de ${brl(fiadoAberto)} descontado.` : null;
+
+    const { data: contaId, error } = await supabase.rpc("lancar_despesa_paga", {
+      p_descricao: descricao,
+      p_valor: liquido,
+      p_plano_conta: "4.2",
+      p_data: dia,
+      p_observacao: obs,
+    });
+    if (error) { setErro(error.message); setGravando(false); return; }
+
+    // Baixa do fiado de quem foi descontado agora. Se falhar, a conta ja
+    // existe — por isso o aviso e explicito em vez de silencioso.
+    if (fiadoAberto > 0) {
+      for (const l of diaristas) {
+        if (fiado.saldoDe(l.pessoa_id) > 0) {
+          const r = await fiado.baixarUm(l.pessoa_id, "escala", dia);
+          if (r?.error) { setErro("Pagamento lançado, mas o fiado de " + l.pessoa.nome + " não baixou: " + r.error.message); }
+        }
+      }
+    }
+
+    const { data: userData } = await supabase.auth.getUser();
+    const { error: errReg } = await supabase.from("pagamentos_diaria").insert({
+      dia,
+      conta_pagar_id: contaId,
+      valor_bruto: bruto,
+      valor_fiado: fiadoAberto,
+      valor_liquido: liquido,
+      qtd_pessoas: diaristas.length,
+      pago_por: userData?.user?.id || null,
+    });
+    if (errReg) { setErro(errReg.message); setGravando(false); return; }
+
+    setGravando(false);
+    aoMudar();
+  };
+
+  return (
+    <div style={{ ...cardStyle, marginBottom: 12 }}>
+      <div style={sectionLabel}>Pagamento das diárias</div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778", padding: "3px 0" }}>
+        <span>{diaristas.length} diarista(s) · bruto</span>
+        <span style={{ color: "#22231F" }}>{brl(bruto)}</span>
+      </div>
+      {fiado.buscou && fiadoAberto > 0 && (
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#A32D2D", padding: "3px 0" }}>
+          <span>(–) Fiado em aberto</span>
+          <span style={{ fontWeight: 700 }}>{brl(fiadoAberto)}</span>
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 800, color: "#22231F", padding: "6px 0 10px", borderTop: "1px solid #F0EBDD", marginTop: 4 }}>
+        <span>A pagar hoje</span><span>{brl(liquido)}</span>
+      </div>
+      {!fiado.buscou && (
+        <div style={{ fontSize: 11, color: "#854F0B", marginBottom: 8 }}>
+          Você ainda não buscou o fiado. Se buscar antes, o desconto entra
+          neste pagamento — depois de lançado, só desfazendo.
+        </div>
+      )}
+      <button onClick={pagar} disabled={gravando || liquido <= 0}
+        style={{ ...btnPrimary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
+        {gravando ? <Loader2 size={15} /> : <Check size={15} />}
+        {gravando ? "Lançando…" : "Registrar pagamento e lançar no Plano de Contas"}
+      </button>
+      <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 6, lineHeight: 1.6 }}>
+        Entra como despesa já quitada na conta <b>4.2 Diárias</b>, com a data
+        de hoje. É isso que faz o custo aparecer no DRE. Registrado e gerente
+        não entram aqui — recebem no Fechamento mensal.
+      </div>
+    </div>
+  );
+}
+
 // Linha de fiado no acerto de um dia ja fechado. Aqui nao existe
 // "Calcular e salvar" — o desconto e uma acao explicita, pessoa por
 // pessoa, no momento de pagar. Por isso o botao "Dar baixa" em vez do
@@ -1122,6 +1266,7 @@ function PremiacaoDoDia({ isAdmin }) {
   const [salvandoPessoa, setSalvandoPessoa] = useState(null);
   const [jaTemPresenca, setJaTemPresenca] = useState(false);
   const fiado = useFiadoEquipe(pessoas);
+  const [pagamentoDoDia, setPagamentoDoDia] = useState(null);
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
@@ -1134,6 +1279,9 @@ function PremiacaoDoDia({ isAdmin }) {
         supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle(),
         supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
       ]);
+      const { data: pagDia } = await supabase
+        .from("pagamentos_diaria").select("*").eq("dia", dia).maybeSingle();
+      setPagamentoDoDia(pagDia || null);
       setPessoas([...(pessoasData || [])].sort(porNome));
       setPremiacoesSalvas(premiacoesData || []);
       // Trava só quando a premiação já foi calculada — aí sim o dia está
@@ -1502,6 +1650,16 @@ function PremiacaoDoDia({ isAdmin }) {
           </div>
         )}
         {isAdmin && (
+          <PagamentoDasDiarias
+            dia={dia}
+            linhasSalvas={linhasSalvas}
+            fiado={fiado}
+            pagamento={pagamentoDoDia}
+            aoMudar={carregar}
+            setErro={setErro}
+          />
+        )}
+        {isAdmin && (
           <button onClick={() => setModoLeitura(false)} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
             <Pencil size={15} /> Editar
           </button>
@@ -1719,6 +1877,132 @@ function PremiacaoDoDia({ isAdmin }) {
   );
 }
 // ---------------------------------------------------------------------------
+// Vales do mes — o adiantamento do dia 20
+//
+// O vale nao e uma despesa separada: e parte do salario do mes, pago
+// antes. Por isso vai pra mesma conta 4.1, na competencia do mes, e o
+// fechamento desconta o que ja foi adiantado. Se fosse lancado em conta
+// propria, o Pessoal do DRE apareceria inflado.
+// ---------------------------------------------------------------------------
+function ValesDoMes({ mesRef, pessoas, vales, aoMudar, setErro }) {
+  const [aberto, setAberto] = useState(false);
+  const [valores, setValores] = useState({});
+  const [lancando, setLancando] = useState(null);
+
+  // Quem recebe por mes: registrado e gerente. Diarista e pago na noite.
+  const mensalistas = pessoas.filter(
+    (p) => p.ativo !== false && (p.tipo_contrato === "registrado" || p.papel === "gerente")
+  );
+  const jaLancados = mensalistas.filter((p) => vales[p.id]);
+  const totalVales = jaLancados.reduce((s, p) => s + Number(vales[p.id].valor || 0), 0);
+  const [ano, mes] = mesRef.split("-");
+  const dia20 = `${ano}-${mes}-20`;
+
+  const lancar = async (pessoa) => {
+    const bruto = String(valores[pessoa.id] ?? "").replace(",", ".");
+    const valor = parseFloat(bruto);
+    if (!valor || isNaN(valor) || valor <= 0) { setErro("Informe o valor do vale de " + pessoa.nome + "."); return; }
+    setLancando(pessoa.id);
+    setErro("");
+    const { data: contaId, error } = await supabase.rpc("lancar_despesa_paga", {
+      p_descricao: `Vale ${dia20.split("-").reverse().join("/")} — ${pessoa.nome}`,
+      p_valor: valor,
+      p_plano_conta: "4.1",
+      p_data: dia20,
+      p_observacao: `Adiantamento do salário de ${mesRef}.`,
+    });
+    if (error) { setErro(error.message); setLancando(null); return; }
+    const { data: userData } = await supabase.auth.getUser();
+    const { error: errVale } = await supabase.from("vales_mensais").insert({
+      mes: mesRef, pessoa_id: pessoa.id, valor, data_pagamento: dia20,
+      conta_pagar_id: contaId, criado_por: userData?.user?.id || null,
+    });
+    if (errVale) { setErro(errVale.message); setLancando(null); return; }
+    setValores((v) => ({ ...v, [pessoa.id]: "" }));
+    setLancando(null);
+    aoMudar();
+  };
+
+  const desfazer = async (pessoa) => {
+    setLancando(pessoa.id);
+    setErro("");
+    const registro = vales[pessoa.id];
+    await supabase.from("vales_mensais").delete().eq("mes", mesRef).eq("pessoa_id", pessoa.id);
+    if (registro?.conta_pagar_id) {
+      await supabase.from("contas_pagar").delete().eq("id", registro.conta_pagar_id);
+    }
+    setLancando(null);
+    aoMudar();
+  };
+
+  if (mensalistas.length === 0) return null;
+
+  return (
+    <div style={{ ...cardStyle, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ ...sectionLabel, marginBottom: 0, flex: 1, minWidth: 120 }}>
+          Vales do dia 20
+        </div>
+        {totalVales > 0 && (
+          <span style={{ fontSize: 13, fontWeight: 800, color: "#185FA5" }}>{brl(totalVales)}</span>
+        )}
+        <button onClick={() => setAberto((a) => !a)} style={{ ...linkBtn, fontSize: 11 }}>
+          {aberto ? "fechar" : jaLancados.length > 0 ? `${jaLancados.length} lançado(s) · abrir` : "lançar"}
+        </button>
+      </div>
+
+      {aberto && (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 11.5, color: "#8A8778", lineHeight: 1.6 }}>
+            Adiantamento pago em <b>{dia20.split("-").reverse().join("/")}</b>. Vai
+            para a conta <b>4.1 Salários</b> como despesa já quitada, e o
+            fechamento do mês desconta automaticamente do que falta pagar.
+          </div>
+          {mensalistas.map((p) => {
+            const vale = vales[p.id];
+            return (
+              <div key={p.id} style={{ ...itemRowVale }}>
+                <div style={{ flex: 1, minWidth: 130 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F" }}>{p.nome}</div>
+                  <div style={{ fontSize: 11, color: "#8A8778" }}>
+                    {PAPEL_LABEL[p.papel]}
+                    {p.salario_base ? ` · salário ${brl(p.salario_base)}` : ""}
+                  </div>
+                </div>
+                {vale ? (
+                  <>
+                    <span style={{ ...pillFiado, background: "#37A0E522", border: "1px solid #37A0E540", color: "#185FA5" }}>
+                      vale {brl(vale.valor)} pago
+                    </span>
+                    <button onClick={() => desfazer(p)} disabled={lancando === p.id} style={{ ...linkBtn, fontSize: 11 }}>
+                      {lancando === p.id ? "..." : "desfazer"}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      value={valores[p.id] ?? ""}
+                      onChange={(e) => setValores((v) => ({ ...v, [p.id]: e.target.value }))}
+                      placeholder="Valor"
+                      inputMode="decimal"
+                      style={{ ...inputStyle, width: 96, padding: "7px 9px", fontSize: 12 }}
+                    />
+                    <button onClick={() => lancar(p)} disabled={lancando === p.id}
+                      style={{ ...btnMiniEscuro }}>
+                      {lancando === p.id ? "..." : "Lançar vale"}
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Fechamento mensal
 // ---------------------------------------------------------------------------
 function FechamentoMensal() {
@@ -1732,6 +2016,7 @@ function FechamentoMensal() {
   const [extrato, setExtrato] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [pessoas, setPessoas] = useState([]);
+  const [vales, setVales] = useState({}); // pessoa_id -> { valor, data_pagamento }
   const fiado = useFiadoEquipe(pessoas);
   const [lancados, setLancados] = useState(new Set()); // descrições já lançadas no Plano de Contas
   const [lancando, setLancando] = useState(null); // nome sendo lançado agora
@@ -1772,6 +2057,9 @@ function FechamentoMensal() {
       return { pessoaId: p.id, nome: p.nome, salarioBase, faturamentoBruto, doisPorcento, total: salarioBase + doisPorcento };
     });
     setGerentes(listaGerentes);
+    const { data: valesData } = await supabase
+      .from("vales_mensais").select("pessoa_id, valor, data_pagamento").eq("mes", mesRef);
+    setVales(Object.fromEntries((valesData || []).map((v) => [v.pessoa_id, v])));
     const { data: contasPessoas } = await supabase.from("contas_pagar").select("descricao").eq("centro_custo", "pessoas");
     setLancados(new Set((contasPessoas || []).map((c) => c.descricao)));
     setCarregando(false);
@@ -1785,13 +2073,22 @@ function FechamentoMensal() {
     setLancando(nome);
     setErro("");
     const desconto = pessoaId && fiado.buscou ? fiado.descontoDe(pessoaId) : 0;
-    const liquido = round2(valor - desconto);
+    // O vale do dia 20 ja foi lancado na conta 4.1 quando foi pago. Se o
+    // fechamento lancasse o salario cheio, o DRE contaria duas vezes.
+    const valeJaPago = pessoaId ? Number(vales[pessoaId]?.valor || 0) : 0;
+    const liquido = round2(valor - desconto - valeJaPago);
     const { data: userData } = await supabase.auth.getUser();
     const [ano, mes] = mesRef.split("-").map(Number);
     const fimMes = new Date(ano, mes, 0).toISOString().slice(0, 10);
     const descricao = `${nome} — Fechamento ${mesRef}`;
     const { error } = await supabase.from("contas_pagar").insert({
-      descricao: desconto > 0 ? `${descricao} (fiado ${brl(desconto)} descontado)` : descricao,
+      descricao: [
+        descricao,
+        desconto > 0 ? `fiado ${brl(desconto)}` : null,
+        valeJaPago > 0 ? `vale ${brl(valeJaPago)}` : null,
+      ].filter(Boolean).length > 1
+        ? `${descricao} (${[desconto > 0 ? `fiado ${brl(desconto)}` : null, valeJaPago > 0 ? `vale ${brl(valeJaPago)}` : null].filter(Boolean).join(" e ")} descontado)`
+        : descricao,
       valor_total: liquido, categoria: "pessoas", centro_custo: "pessoas",
       status: "pendente", data_vencimento: fimMes, criado_por: userData?.user?.id,
     });
@@ -1895,6 +2192,13 @@ function FechamentoMensal() {
         <>
           <BarraFiado fiado={fiado} aviso="Traz o que a equipe consumiu como fiado e ainda nao foi descontado, pra abater no acerto do mes." />
           <PainelSemDono fiado={fiado} pessoas={pessoas} />
+          <ValesDoMes
+            mesRef={mesRef}
+            pessoas={pessoas}
+            vales={vales}
+            aoMudar={carregar}
+            setErro={setErro}
+          />
           <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
               <span>Pessoa</span><span>Papel</span><span style={{ textAlign: "right" }}>Dias</span><span style={{ textAlign: "right" }}>Acumulado</span>
@@ -1917,11 +2221,20 @@ function FechamentoMensal() {
                       <div style={{ fontSize: 10, color: "#8A8778", marginTop: 2 }}>salário {brl(l.salarioBase)} + comissão {brl(l.comissao)}</div>
                     )}
                   </button>
-                  {fiado.buscou && fiado.saldoDe(l.pessoaId) > 0 && (
+                  {((fiado.buscou && fiado.saldoDe(l.pessoaId) > 0) || vales[l.pessoaId]) && (
                     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px 8px", flexWrap: "wrap" }}>
-                      <ChipFiado fiado={fiado} pessoaId={l.pessoaId} />
+                      {fiado.buscou && fiado.saldoDe(l.pessoaId) > 0 && (
+                        <ChipFiado fiado={fiado} pessoaId={l.pessoaId} />
+                      )}
+                      {vales[l.pessoaId] && (
+                        <span style={{ ...pillFiado, background: "#37A0E522", border: "1px solid #37A0E540", color: "#185FA5" }}>
+                          vale {brl(vales[l.pessoaId].valor)} pago
+                        </span>
+                      )}
                       <span style={{ fontSize: 11, color: "#8A8778" }}>
-                        a pagar <strong style={{ color: "#22231F" }}>{brl(l.total - fiado.descontoDe(l.pessoaId))}</strong>
+                        a pagar <strong style={{ color: "#22231F" }}>
+                          {brl(l.total - (fiado.buscou ? fiado.descontoDe(l.pessoaId) : 0) - Number(vales[l.pessoaId]?.valor || 0))}
+                        </strong>
                       </span>
                     </div>
                   )}
@@ -2006,6 +2319,11 @@ function round2(n) { return Math.round(n * 100) / 100; }
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
 const pillFiado = {
   fontSize: 11.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, whiteSpace: "nowrap",
+};
+const itemRowVale = {
+  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+  background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10,
+  padding: "8px 11px", flexWrap: "wrap",
 };
 const btnMiniEscuro = {
   background: "#22231F", color: "#F3EFE3", border: "1px solid #22231F", borderRadius: 8,
