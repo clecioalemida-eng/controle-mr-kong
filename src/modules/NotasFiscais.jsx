@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search, X, ExternalLink, RotateCcw,
+  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, EyeOff, Search, X, ExternalLink, RotateCcw,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
@@ -284,6 +284,29 @@ export default function NotasFiscais() {
 // Tela de conferência: revisar/editar os itens lidos antes de confirmar
 // ---------------------------------------------------------------------------
 function Conferencia({ documento, onVoltar }) {
+  // Nota original aberta ao lado dos itens. Conferir item a item com a
+  // nota noutra aba obriga a ficar trocando de janela e perdendo a linha
+  // — por isso ela abre aqui, fixa, e a lista continua rolando ao lado.
+  const [original, setOriginal] = useState(null);
+  const [abrindoOriginal, setAbrindoOriginal] = useState(false);
+
+  const abrirOriginal = async () => {
+    if (original) { setOriginal(null); return; }
+    setAbrindoOriginal(true);
+    const { data, error } = await supabase.storage
+      .from("notas-fiscais")
+      .createSignedUrl(documento.arquivo_path, 3600);
+    setAbrindoOriginal(false);
+    if (error || !data?.signedUrl) {
+      alert("Não consegui abrir o arquivo: " + (error?.message || ""));
+      return;
+    }
+    setOriginal({
+      url: data.signedUrl,
+      ehPdf: /\.pdf(\?|$)/i.test(documento.arquivo_path),
+    });
+  };
+
   const [itens, setItens] = useState([]);
   const [insumos, setInsumos] = useState([]);
   const [carregando, setCarregando] = useState(true);
@@ -638,10 +661,43 @@ function Conferencia({ documento, onVoltar }) {
           )}
           <div style={{ fontSize: 12, color: "#8A8778" }}>{fmtData(documento.data_documento || documento.criado_em)} · {itens.length} itens lidos pela IA</div>
         </div>
-        <button onClick={() => abrirPreview(documento.arquivo_path)} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-          <Eye size={14} /> Ver original
+        <button onClick={abrirOriginal} disabled={abrindoOriginal}
+          style={{
+            ...btnSecondary, display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
+            ...(original ? { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" } : {}),
+          }}>
+          {abrindoOriginal ? <Loader2 size={14} /> : original ? <EyeOff size={14} /> : <Eye size={14} />}
+          {original ? "Fechar original" : "Ver original"}
         </button>
       </div>
+
+      {original && (
+        <div style={painelOriginal}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#8A8778", flex: 1 }}>
+              Nota original
+            </span>
+            <button onClick={() => window.open(original.url, "_blank")} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+              <ExternalLink size={12} /> abrir em outra aba
+            </button>
+          </div>
+          {original.ehPdf ? (
+            <>
+              <iframe src={original.url} title="Nota original"
+                style={{ width: "100%", height: "58vh", border: "1px solid #E8E2D2", borderRadius: 8, background: "#FFFFFF" }} />
+              {/* Safari no iPhone costuma não renderizar PDF em iframe —
+                  se o quadro vier vazio, o link acima resolve. */}
+            </>
+          ) : (
+            <img src={original.url} alt="Nota original"
+              style={{ width: "100%", maxHeight: "58vh", objectFit: "contain", display: "block", borderRadius: 8, background: "#FFFFFF" }} />
+          )}
+          <div style={{ fontSize: 11, color: "#8A8778", marginTop: 6 }}>
+            Role a lista abaixo conferindo item a item. O painel fica aberto
+            até você clicar em "Fechar original".
+          </div>
+        </div>
+      )}
       {fornecedorAtual.id && historicoFornecedor.length > 0 && (
         <div style={{ ...cardStyle, marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Histórico com {fornecedorAtual.nome}</div>
@@ -1124,6 +1180,12 @@ const itemRow = { display: "flex", alignItems: "center", justifyContent: "space-
 const iconBox = { width: 36, height: 44, borderRadius: 6, background: "#F6F1E7", border: "1px solid #E8E2D2", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
 const ghostIconBtn = { border: "none", background: "none", color: "#8A8778", cursor: "pointer", padding: 2, display: "flex" };
 const iconBtnWrap = { border: "none", background: "none", padding: 0, cursor: "pointer", flexShrink: 0, display: "flex" };
+const painelOriginal = {
+  background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12,
+  padding: 12, marginBottom: 14,
+  position: "sticky", top: 8, zIndex: 5,
+  boxShadow: "0 6px 18px rgba(34,35,31,.08)",
+};
 const overlayStyle = { position: "fixed", inset: 0, background: "rgba(34,35,31,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 50 };
 const modalStyle = { background: "#F3EFE3", border: "1px solid #E8E2D2", borderRadius: 14, width: "min(680px, 94vw)", maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 12px 34px rgba(0,0,0,0.28)" };
 const modalBarra = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", borderBottom: "1px solid #E8E2D2", background: "#F6F1E7" };
