@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload, Lock } from "lucide-react";
+import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload, Lock, Receipt, X } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+import {
+  buscarFiadoNoPeriodo, agruparPorPessoa, carregarBaixas, darBaixa,
+  estornarBaixa, somar, diasAtrasISO,
+} from "../lib/fiado";
 // Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
 // collation do banco e às vezes joga nome acentuado ou em maiúscula pro
 // fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
@@ -303,8 +307,9 @@ function Pessoas({ isAdmin }) {
   const [editandoId, setEditandoId] = useState(null);
   const [novoAberto, setNovoAberto] = useState(false);
   const [expandidoId, setExpandidoId] = useState(null);
+  const [fiadoId, setFiadoId] = useState(null);
   const [busca, setBusca] = useState("");
-  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null });
+  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", pix: "", nome_fiado: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null });
   const carregar = useCallback(async () => {
     setCarregando(true);
     const { data, error } = await supabase.from("pessoas").select("*").order("nome");
@@ -313,10 +318,11 @@ function Pessoas({ isAdmin }) {
     setCarregando(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
-  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null }); setNovoAberto(true); setEditandoId(null); };
+  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", pix: "", nome_fiado: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null }); setNovoAberto(true); setEditandoId(null); };
   const abrirEdicao = (p) => {
     setForm({
       nome: p.nome, papel: p.papel, tipo_contrato: p.tipo_contrato, salario_base: p.salario_base ?? "",
+      pix: p.pix ?? "", nome_fiado: p.nome_fiado ?? "",
       cpf: p.cpf ?? "", telefone: p.telefone ?? "", email: p.email ?? "", data_nascimento: p.data_nascimento ?? "",
       documento_path: p.documento_path ?? null, arquivoDocumento: null,
     });
@@ -340,6 +346,8 @@ function Pessoas({ isAdmin }) {
       nome: form.nome.trim(),
       papel: form.papel,
       tipo_contrato: form.tipo_contrato,
+      pix: form.pix?.trim() || null,
+      nome_fiado: form.nome_fiado?.trim() || null,
       salario_base: form.tipo_contrato === "diarista" ? null : (parseFloat(form.salario_base) || 0),
       cpf: form.cpf.trim() || null,
       telefone: form.telefone.trim() || null,
@@ -398,6 +406,11 @@ function Pessoas({ isAdmin }) {
                 <button onClick={() => setExpandidoId(expandidoId === p.id ? null : p.id)} style={ghostIconBtn} aria-label="Ver todos os dados">
                   {expandidoId === p.id ? <EyeOff size={15} /> : <Eye size={15} />}
                 </button>
+                {isAdmin && (
+                  <button onClick={() => setFiadoId(fiadoId === p.id ? null : p.id)} style={ghostIconBtn} aria-label="Ver fiado desta pessoa" title="Fiado">
+                    <Receipt size={15} />
+                  </button>
+                )}
                 <button onClick={() => abrirEdicao(p)} style={ghostIconBtn} aria-label="Editar pessoa"><Pencil size={15} /></button>
                 <button onClick={() => alternarAtivo(p)} style={{ ...linkBtn, fontSize: 11 }}>{p.ativo ? "Desativar" : "Ativar"}</button>
               </div>
@@ -406,10 +419,13 @@ function Pessoas({ isAdmin }) {
                   <div><span style={{ color: "#8A8778" }}>CPF: </span><span style={p.cpf ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.cpf || "não preenchido"}</span></div>
                   <div><span style={{ color: "#8A8778" }}>Telefone: </span><span style={p.telefone ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.telefone || "não preenchido"}</span></div>
                   <div><span style={{ color: "#8A8778" }}>E-mail: </span><span style={p.email ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.email || "não preenchido"}</span></div>
+                  <div><span style={{ color: "#8A8778" }}>PIX: </span><span style={p.pix ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.pix || "não preenchido"}</span></div>
+                  <div><span style={{ color: "#8A8778" }}>Nome no fiado: </span><span style={p.nome_fiado ? { color: "#22231F" } : { color: "#8A8778" }}>{p.nome_fiado || "mesmo do cadastro"}</span></div>
                   <div><span style={{ color: "#8A8778" }}>Aniversário: </span><span style={p.data_nascimento ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.data_nascimento ? new Date(p.data_nascimento + "T12:00:00").toLocaleDateString("pt-BR") : "não preenchido"}</span></div>
                   <div><span style={{ color: "#8A8778" }}>Documento anexado: </span><span style={p.documento_path ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.documento_path ? "sim" : "nenhum"}</span></div>
                 </div>
               )}
+              {isAdmin && fiadoId === p.id && <FiadoDaPessoa pessoa={p} />}
               {editandoId === p.id && (
                 <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} isAdmin={isAdmin} />
               )}
@@ -430,6 +446,233 @@ function Pessoas({ isAdmin }) {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Fiado da equipe
+//
+// O consumo vem do CardapioWeb: pedido fechado pago como "fiado". O que
+// liga o pedido a pessoa e o nome do cliente digitado no caixa — por isso
+// existe o campo "Nome no fiado" no cadastro, pra quando o caixa escreve
+// apelido.
+//
+// Um pedido so pode ser descontado UMA vez: quem garante e a tabela
+// fiado_baixas, com o id do pedido como chave. E o que permite varrer 60
+// dias todo dia sem medo de abater o mesmo consumo de novo.
+// ---------------------------------------------------------------------------
+// A chave PIX aparece onde o acerto acontece — é ali que ela é usada.
+// O botão copia pro clipboard pra não ter erro de digitação numa chave
+// aleatória de 32 caracteres.
+function LinhaPix({ pessoa }) {
+  const [copiado, setCopiado] = useState(false);
+  if (!pessoa?.pix) {
+    return (
+      <div style={{ fontSize: 11, color: "#B4AF9E", marginTop: 2 }}>
+        PIX não cadastrado
+      </div>
+    );
+  }
+  const copiar = async () => {
+    try {
+      await navigator.clipboard.writeText(pessoa.pix);
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 1800);
+    } catch {
+      // Safari em contexto não seguro bloqueia o clipboard — nesse caso a
+      // chave continua visível na tela pra copiar na mão.
+      setCopiado(false);
+    }
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 11, color: "#8A8778" }}>PIX</span>
+      <span style={{ fontSize: 11, color: "#22231F", fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
+        {pessoa.pix}
+      </span>
+      <button onClick={copiar} style={{ ...linkBtn, fontSize: 10.5, padding: "2px 4px", color: copiado ? "#0F6E56" : "#8A8778" }}>
+        {copiado ? "copiado" : "copiar"}
+      </button>
+    </div>
+  );
+}
+
+function useFiadoEquipe(pessoas) {
+  const [inicio, setInicio] = useState(() => diasAtrasISO(60));
+  const [fim, setFim] = useState(() => hoje());
+  const [buscando, setBuscando] = useState(false);
+  const [erro, setErro] = useState("");
+  const [porPessoa, setPorPessoa] = useState(null); // null = ainda nao buscou
+  const [semDono, setSemDono] = useState([]);
+  const [baixados, setBaixados] = useState(() => new Map());
+  const [naoAbater, setNaoAbater] = useState(() => new Set());
+
+  const buscar = async () => {
+    setBuscando(true);
+    setErro("");
+    const { lancamentos, erro: e } = await buscarFiadoNoPeriodo(inicio, fim);
+    if (e) { setErro(e); setBuscando(false); return; }
+    const { porPessoa: mapa, semDono: sobra } = agruparPorPessoa(lancamentos, pessoas);
+    const baixas = await carregarBaixas(lancamentos.map((l) => l.pedidoId));
+    setPorPessoa(mapa);
+    setSemDono(sobra);
+    setBaixados(baixas);
+    setBuscando(false);
+  };
+
+  const emAbertoDe = (pessoaId) =>
+    (porPessoa?.[pessoaId] || []).filter((l) => !baixados.has(l.pedidoId));
+  const saldoDe = (pessoaId) => somar(emAbertoDe(pessoaId));
+  const vaiAbater = (pessoaId) => !naoAbater.has(pessoaId);
+  const alternarAbater = (pessoaId) => {
+    setNaoAbater((prev) => {
+      const novo = new Set(prev);
+      if (novo.has(pessoaId)) novo.delete(pessoaId); else novo.add(pessoaId);
+      return novo;
+    });
+  };
+  const descontoDe = (pessoaId) => (vaiAbater(pessoaId) ? saldoDe(pessoaId) : 0);
+
+  // Grava as baixas de todo mundo que esta marcado pra abater.
+  const baixarTodos = async (origem, referencia) => {
+    if (!porPessoa) return { error: null };
+    for (const pessoaId of Object.keys(porPessoa)) {
+      if (!vaiAbater(pessoaId)) continue;
+      const abertos = emAbertoDe(pessoaId);
+      if (abertos.length === 0) continue;
+      const { error } = await darBaixa(pessoaId, abertos, origem, referencia);
+      if (error) return { error };
+      setBaixados((prev) => {
+        const novo = new Map(prev);
+        abertos.forEach((l) => novo.set(l.pedidoId, { pedido_id: l.pedidoId, pessoa_id: pessoaId, valor: l.valor }));
+        return novo;
+      });
+    }
+    return { error: null };
+  };
+
+  return {
+    inicio, setInicio, fim, setFim, buscando, erro, buscar,
+    buscou: porPessoa !== null, porPessoa, semDono, baixados,
+    emAbertoDe, saldoDe, vaiAbater, alternarAbater, descontoDe, baixarTodos,
+  };
+}
+
+// Barra de busca do fiado, usada na Escala do dia e no Fechamento mensal.
+function BarraFiado({ fiado, aviso }) {
+  return (
+    <div style={{ ...cardStyle, padding: "10px 12px", marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <Receipt size={15} color="#8A8778" />
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F", flex: 1, minWidth: 90 }}>Fiado da equipe</span>
+        <input type="date" value={fiado.inicio} onChange={(e) => fiado.setInicio(e.target.value)} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }} />
+        <input type="date" value={fiado.fim} onChange={(e) => fiado.setFim(e.target.value)} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }} />
+        <button onClick={fiado.buscar} disabled={fiado.buscando} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", fontSize: 12 }}>
+          {fiado.buscando ? <Loader2 size={13} /> : <RefreshCw size={13} />} Buscar
+        </button>
+      </div>
+      {fiado.erro && <div style={{ fontSize: 12, color: "#A32D2D", marginTop: 8 }}>{fiado.erro}</div>}
+      {!fiado.buscou && !fiado.erro && (
+        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8, lineHeight: 1.6 }}>
+          {aviso} A busca vai no CardapioWeb, que aceita 5 consultas por
+          minuto — por isso ela so acontece quando voce clica.
+        </div>
+      )}
+      {fiado.buscou && fiado.semDono.length > 0 && (
+        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8 }}>
+          {fiado.semDono.length} lancamento(s) de fiado no periodo nao bateram com
+          ninguem da equipe — devem ser cliente mesmo. Se for alguem da casa,
+          preencha o "Nome no fiado" no cadastro dela.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// O controle de abater / nao abater de uma pessoa.
+function ChipFiado({ fiado, pessoaId }) {
+  const saldo = fiado.saldoDe(pessoaId);
+  if (!fiado.buscou || saldo <= 0) return null;
+  const abate = fiado.vaiAbater(pessoaId);
+  return (
+    <button
+      onClick={() => fiado.alternarAbater(pessoaId)}
+      title={abate ? "Descontando do acerto — clique para nao descontar" : "Nao esta descontando — clique para descontar"}
+      style={{
+        display: "flex", alignItems: "center", gap: 5, cursor: "pointer",
+        border: `1px solid ${abate ? "#F0999540" : "#E8E2D2"}`,
+        background: abate ? "#F0999522" : "#FFFFFF",
+        color: abate ? "#A32D2D" : "#8A8778",
+        borderRadius: 999, padding: "4px 10px", fontSize: 11.5, fontWeight: 700,
+        textDecoration: abate ? "none" : "line-through",
+      }}
+    >
+      {abate ? <Check size={12} /> : <X size={12} />}
+      fiado {brl(saldo)}
+    </button>
+  );
+}
+
+// Extrato de uma pessoa so, aberto pelo icone no cartao dela.
+function FiadoDaPessoa({ pessoa }) {
+  const fiado = useFiadoEquipe([pessoa]);
+  const [estornando, setEstornando] = useState(null);
+  const abertos = fiado.emAbertoDe(pessoa.id);
+  const todos = fiado.porPessoa?.[pessoa.id] || [];
+
+  const estornar = async (l) => {
+    setEstornando(l.pedidoId);
+    await estornarBaixa([l.pedidoId]);
+    setEstornando(null);
+    fiado.buscar();
+  };
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2" }}>
+      <BarraFiado fiado={fiado} aviso={`Procura o que ${pessoa.nome.split(" ")[0]} consumiu como fiado no periodo.`} />
+      {fiado.buscou && (
+        todos.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#8A8778" }}>
+            Nenhum fiado no periodo em nome de {pessoa.nome}
+            {pessoa.nome_fiado ? ` (nem de "${pessoa.nome_fiado}")` : ""}.
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}>
+              <span style={{ color: "#8A8778" }}>Em aberto</span>
+              <strong style={{ color: abertos.length ? "#A32D2D" : "#0F6E56" }}>{brl(somar(abertos))}</strong>
+            </div>
+            <div style={{ border: "1px solid #E8E2D2", borderRadius: 10, overflow: "hidden", background: "#FFFFFF" }}>
+              {todos.map((l, idx) => {
+                const baixado = fiado.baixados.has(l.pedidoId);
+                return (
+                  <div key={l.pedidoId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 11px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ color: "#22231F" }}>Pedido #{l.displayId}</div>
+                      <div style={{ fontSize: 10.5, color: "#8A8778" }}>
+                        {new Date(l.data).toLocaleDateString("pt-BR")}
+                        {l.nomeCliente ? ` · ${l.nomeCliente}` : ""}
+                      </div>
+                    </div>
+                    <span style={{ fontWeight: 700, color: baixado ? "#8A8778" : "#22231F", textDecoration: baixado ? "line-through" : "none" }}>
+                      {brl(l.valor)}
+                    </span>
+                    {baixado ? (
+                      <button onClick={() => estornar(l)} disabled={estornando === l.pedidoId} style={{ ...linkBtn, fontSize: 10.5 }}>
+                        {estornando === l.pedidoId ? "..." : "estornar"}
+                      </button>
+                    ) : (
+                      <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>em aberto</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )
+      )}
+    </div>
+  );
+}
+
 function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin }) {
   const fileRef = useRef(null);
   return (
@@ -470,6 +713,21 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin }) {
       </div>
       <input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
         placeholder="E-mail" style={inputStyle} />
+      <div>
+        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Chave PIX</label>
+        <input value={form.pix} onChange={(e) => setForm((f) => ({ ...f, pix: e.target.value }))}
+          placeholder="CPF, telefone, e-mail ou chave aleatória" style={inputStyle} />
+      </div>
+      <div>
+        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Nome no fiado do caixa</label>
+        <input value={form.nome_fiado} onChange={(e) => setForm((f) => ({ ...f, nome_fiado: e.target.value }))}
+          placeholder="Só se for diferente do nome acima" style={inputStyle} />
+        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 4 }}>
+          É por aqui que o painel liga o consumo fiado a esta pessoa. Preencha
+          quando o caixa digita apelido ou nome curto — "Zeca" no lugar de
+          "José Carlos", por exemplo.
+        </div>
+      </div>
       <div>
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Data de aniversário</label>
         <input type="date" value={form.data_nascimento} onChange={(e) => setForm((f) => ({ ...f, data_nascimento: e.target.value }))}
@@ -517,6 +775,7 @@ function PremiacaoDoDia({ isAdmin }) {
   const [sujos, setSujos] = useState(() => new Set());
   const [salvandoPessoa, setSalvandoPessoa] = useState(null);
   const [jaTemPresenca, setJaTemPresenca] = useState(false);
+  const fiado = useFiadoEquipe(pessoas);
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
@@ -793,6 +1052,13 @@ function PremiacaoDoDia({ isAdmin }) {
         if (error) { setErro(error.message); setSalvando(false); return; }
       }
     }
+    // Fiado: so agora, depois que os valores do dia fecharam. Cada
+    // pedido descontado vira uma linha em fiado_baixas e nao aparece mais
+    // como em aberto na proxima busca.
+    if (fiado.buscou) {
+      const { error: errFiado } = await fiado.baixarTodos("escala", dia);
+      if (errFiado) { setErro("Valores salvos, mas o fiado nao foi baixado: " + errFiado.message); }
+    }
     setSalvando(false);
     setSujos(new Set());
     setMensagem(taxaNum > 0 ? "Escala e valores do dia salvos." : "Escala do dia salva — falta um administrador definir a taxa de serviço pra calcular os valores.");
@@ -825,6 +1091,7 @@ function PremiacaoDoDia({ isAdmin }) {
                 <div>
                   <div style={{ fontSize: 13, color: "#22231F" }}>{l.pessoa.nome}</div>
                   <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[l.pessoa.papel]}{l.pessoa.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[l.pessoa_id])}</div>
+                  {isAdmin && <LinhaPix pessoa={l.pessoa} />}
                 </div>
                 {isAdmin && <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{brl(l.total_dia)}</div>}
               </div>
@@ -839,6 +1106,7 @@ function PremiacaoDoDia({ isAdmin }) {
             <div key={p.id} style={{ padding: "10px 14px", borderTop: (linhasSalvas.length + idx) > 0 ? "1px solid #F0EBDD" : "none" }}>
               <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
               <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[p.id])}</div>
+              {isAdmin && <LinhaPix pessoa={p} />}
             </div>
           ))}
           {linhasSalvas.length === 0 && pessoasSemPremiacao.length === 0 && (
@@ -994,6 +1262,7 @@ function PremiacaoDoDia({ isAdmin }) {
           {isAdmin && selecionados.length > 0 && taxaNum > 0 && (
             <>
               <div style={sectionLabel}>Resultado</div>
+              <BarraFiado fiado={fiado} aviso="Traz o que a equipe consumiu como fiado e ainda nao foi descontado, pra abater no acerto de hoje." />
               <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
                   <span>Pessoa</span><span style={{ textAlign: "right" }}>Método</span><span style={{ textAlign: "right" }}>Total do dia</span>
@@ -1010,6 +1279,17 @@ function PremiacaoDoDia({ isAdmin }) {
                       </span>
                       <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(l.total)}</span>
                     </div>
+                    {fiado.buscou && fiado.saldoDe(l.pessoa.id) > 0 && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                        <ChipFiado fiado={fiado} pessoaId={l.pessoa.id} />
+                        <span style={{ fontSize: 11, color: "#8A8778" }}>
+                          a pagar{" "}
+                          <strong style={{ color: "#22231F" }}>
+                            {brl(l.total - fiado.descontoDe(l.pessoa.id))}
+                          </strong>
+                        </span>
+                      </div>
+                    )}
                     {l.metodoUsado === "gerente_previa" && (
                       <div style={{ fontSize: 10, color: "#8A8778", marginTop: 4 }}>
                         2% de {brl(faturamentoBrutoDia)} (faturamento bruto do dia) — prévia informativa, o valor oficial fecha por mês
@@ -1067,6 +1347,8 @@ function FechamentoMensal() {
   const [pessoaAberta, setPessoaAberta] = useState(null);
   const [extrato, setExtrato] = useState([]);
   const [carregando, setCarregando] = useState(true);
+  const [pessoas, setPessoas] = useState([]);
+  const fiado = useFiadoEquipe(pessoas);
   const [lancados, setLancados] = useState(new Set()); // descrições já lançadas no Plano de Contas
   const [lancando, setLancando] = useState(null); // nome sendo lançado agora
   const limitesDoMes = useCallback(() => {
@@ -1093,16 +1375,17 @@ function FechamentoMensal() {
       porPessoa[pr.pessoa_id].dias += 1;
       porPessoa[pr.pessoa_id].comissao += pr.total_dia;
     });
+    setPessoas([...(pessoasData || [])].sort(porNome));
     const listaRegistrados = Object.entries(porPessoa).map(([pessoaId, v]) => {
       const salarioBase = mapaSalario[pessoaId]?.salario_base || 0;
-      return { ...v, salarioBase, total: v.comissao + salarioBase };
+      return { ...v, pessoaId, salarioBase, total: v.comissao + salarioBase };
     });
     setLinhas(listaRegistrados.sort((a, b) => a.nome.localeCompare(b.nome)));
     const listaGerentes = (pessoasData || []).filter((p) => p.papel === "gerente").map((p) => {
       const faturamentoBruto = faturamentoData?.faturamento_bruto || 0;
       const doisPorcento = faturamentoBruto * 0.02;
       const salarioBase = p.salario_base || 0;
-      return { nome: p.nome, salarioBase, faturamentoBruto, doisPorcento, total: salarioBase + doisPorcento };
+      return { pessoaId: p.id, nome: p.nome, salarioBase, faturamentoBruto, doisPorcento, total: salarioBase + doisPorcento };
     });
     setGerentes(listaGerentes);
     const { data: contasPessoas } = await supabase.from("contas_pagar").select("descricao").eq("centro_custo", "pessoas");
@@ -1110,19 +1393,31 @@ function FechamentoMensal() {
     setCarregando(false);
   }, [mesRef, limitesDoMes]);
   useEffect(() => { carregar(); }, [carregar]);
-  const lancarPessoa = async (nome, valor) => {
+  // O valor que vira conta a pagar é o LÍQUIDO: o acumulado do mês menos
+  // o fiado que a pessoa consumiu, quando marcado pra abater. O bruto
+  // continua guardado nas premiações diárias — o desconto é só no que sai
+  // do caixa.
+  const lancarPessoa = async (nome, valor, pessoaId) => {
     setLancando(nome);
     setErro("");
+    const desconto = pessoaId && fiado.buscou ? fiado.descontoDe(pessoaId) : 0;
+    const liquido = round2(valor - desconto);
     const { data: userData } = await supabase.auth.getUser();
     const [ano, mes] = mesRef.split("-").map(Number);
     const fimMes = new Date(ano, mes, 0).toISOString().slice(0, 10);
     const descricao = `${nome} — Fechamento ${mesRef}`;
     const { error } = await supabase.from("contas_pagar").insert({
-      descricao, valor_total: round2(valor), categoria: "pessoas", centro_custo: "pessoas",
+      descricao: desconto > 0 ? `${descricao} (fiado ${brl(desconto)} descontado)` : descricao,
+      valor_total: liquido, categoria: "pessoas", centro_custo: "pessoas",
       status: "pendente", data_vencimento: fimMes, criado_por: userData?.user?.id,
     });
+    if (error) { setLancando(null); setErro(error.message); return; }
+    if (desconto > 0) {
+      const { error: errFiado } = await darBaixa(pessoaId, fiado.emAbertoDe(pessoaId), "fechamento", mesRef);
+      if (errFiado) { setLancando(null); setErro("Conta lançada, mas o fiado não foi baixado: " + errFiado.message); return; }
+      fiado.buscar();
+    }
     setLancando(null);
-    if (error) { setErro(error.message); return; }
     setLancados((prev) => new Set(prev).add(descricao));
   };
   const buscarFaturamento = async () => {
@@ -1214,6 +1509,7 @@ function FechamentoMensal() {
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <>
+          <BarraFiado fiado={fiado} aviso="Traz o que a equipe consumiu como fiado e ainda nao foi descontado, pra abater no acerto do mes." />
           <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
               <span>Pessoa</span><span>Papel</span><span style={{ textAlign: "right" }}>Dias</span><span style={{ textAlign: "right" }}>Acumulado</span>
@@ -1231,15 +1527,24 @@ function FechamentoMensal() {
                       <span style={{ textAlign: "right", color: "#8A8778" }}>{l.dias}</span>
                       <span style={{ textAlign: "right", fontWeight: 700, color: "#22231F" }}>{brl(l.total)}</span>
                     </div>
+                    <LinhaPix pessoa={pessoas.find((x) => x.id === l.pessoaId)} />
                     {l.salarioBase > 0 && (
                       <div style={{ fontSize: 10, color: "#8A8778", marginTop: 2 }}>salário {brl(l.salarioBase)} + comissão {brl(l.comissao)}</div>
                     )}
                   </button>
+                  {fiado.buscou && fiado.saldoDe(l.pessoaId) > 0 && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px 8px", flexWrap: "wrap" }}>
+                      <ChipFiado fiado={fiado} pessoaId={l.pessoaId} />
+                      <span style={{ fontSize: 11, color: "#8A8778" }}>
+                        a pagar <strong style={{ color: "#22231F" }}>{brl(l.total - fiado.descontoDe(l.pessoaId))}</strong>
+                      </span>
+                    </div>
+                  )}
                   <div style={{ padding: "0 10px 10px" }}>
                     {jaLancado ? (
                       <span style={{ fontSize: 11, color: "#2F8F5B" }}>✓ Já lançado no Plano de Contas</span>
                     ) : (
-                      <button onClick={(e) => { e.stopPropagation(); lancarPessoa(l.nome, l.total); }} disabled={lancando === l.nome}
+                      <button onClick={(e) => { e.stopPropagation(); lancarPessoa(l.nome, l.total, l.pessoaId); }} disabled={lancando === l.nome}
                         style={{ ...linkBtn, fontSize: 11 }}>
                         {lancando === l.nome ? "Lançando…" : "+ Lançar no Plano de Contas"}
                       </button>
@@ -1269,7 +1574,8 @@ function FechamentoMensal() {
                 const jaLancado = lancados.has(descricaoLancamento);
                 return (
                   <div key={g.nome} style={{ padding: "12px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F", marginBottom: 4 }}>{g.nome}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{g.nome}</div>
+                    <div style={{ marginBottom: 4 }}><LinhaPix pessoa={pessoas.find((x) => x.id === g.pessoaId)} /></div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
                       <span>Salário base</span><span>{brl(g.salarioBase)}</span>
                     </div>
@@ -1279,11 +1585,19 @@ function FechamentoMensal() {
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, color: "#22231F", marginTop: 4, paddingTop: 4, borderTop: "1px solid #F0EBDD" }}>
                       <span>Total do mês</span><span>{brl(g.total)}</span>
                     </div>
+                    {fiado.buscou && fiado.saldoDe(g.pessoaId) > 0 && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                        <ChipFiado fiado={fiado} pessoaId={g.pessoaId} />
+                        <span style={{ fontSize: 11, color: "#8A8778" }}>
+                          a pagar <strong style={{ color: "#22231F" }}>{brl(g.total - fiado.descontoDe(g.pessoaId))}</strong>
+                        </span>
+                      </div>
+                    )}
                     <div style={{ marginTop: 6 }}>
                       {jaLancado ? (
                         <span style={{ fontSize: 11, color: "#2F8F5B" }}>✓ Já lançado no Plano de Contas</span>
                       ) : (
-                        <button onClick={() => lancarPessoa(g.nome, g.total)} disabled={lancando === g.nome} style={{ ...linkBtn, fontSize: 11 }}>
+                        <button onClick={() => lancarPessoa(g.nome, g.total, g.pessoaId)} disabled={lancando === g.nome} style={{ ...linkBtn, fontSize: 11 }}>
                           {lancando === g.nome ? "Lançando…" : "+ Lançar no Plano de Contas"}
                         </button>
                       )}
