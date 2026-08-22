@@ -5,6 +5,7 @@ import { podeVer } from "../lib/permissoes";
 import ConferenciaCaixa from "./ConferenciaCaixa";
 import ContasPagar from "./ContasPagar";
 import RelatorioFiado from "./RelatorioFiado";
+import DRE from "./DRE";
 // Saíram daqui, cada um pro módulo onde faz sentido:
 //   - Dashboard  -> módulo próprio (DashboardModulo.jsx)
 //   - Equipe     -> "Gente e Gestão" (GenteGestao.jsx)
@@ -19,7 +20,8 @@ const ABAS = [
   { chave: "pagamentos", label: "Pagamentos" },
   { chave: "fechamento", label: "Fechamento" },
   { chave: "conferencia", label: "Conferência de caixa" },
-  { chave: "contaspagar", label: "Plano de Contas" },
+  { chave: "contaspagar", label: "Contas a pagar" },
+  { chave: "dre", label: "DRE" },
   { chave: "fiado", label: "Fiado" },
 ];
 const NOMES_PAGAMENTO = {
@@ -104,6 +106,8 @@ export default function Financeiro({ onVoltar, abaInicial, permissoes }) {
               <ConferenciaCaixa />
             ) : aba === "contaspagar" ? (
               <ContasPagar />
+            ) : aba === "dre" ? (
+              <DRE permissoes={permissoes} />
             ) : aba === "fiado" ? (
               <RelatorioFiado />
             ) : (
