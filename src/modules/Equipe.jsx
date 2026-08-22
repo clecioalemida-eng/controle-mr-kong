@@ -504,12 +504,15 @@ function useFiadoEquipe(pessoas) {
   const [semDono, setSemDono] = useState([]);
   const [baixados, setBaixados] = useState(() => new Map());
   const [naoAbater, setNaoAbater] = useState(() => new Set());
+  const [fonte, setFonte] = useState(null); // { doCache, completados, diasFaltando }
 
   const buscar = async () => {
     setBuscando(true);
     setErro("");
-    const { lancamentos, erro: e } = await buscarFiadoNoPeriodo(inicio, fim);
+    const { lancamentos, erro: e, doCache, completados, diasFaltando } =
+      await buscarFiadoNoPeriodo(inicio, fim);
     if (e) { setErro(e); setBuscando(false); return; }
+    setFonte({ doCache, completados: completados || [], diasFaltando: diasFaltando || [] });
     const { porPessoa: mapa, semDono: sobra } = agruparPorPessoa(lancamentos, pessoas);
     const baixas = await carregarBaixas(lancamentos.map((l) => l.pedidoId));
     setPorPessoa(mapa);
@@ -551,7 +554,7 @@ function useFiadoEquipe(pessoas) {
 
   return {
     inicio, setInicio, fim, setFim, buscando, erro, buscar,
-    buscou: porPessoa !== null, porPessoa, semDono, baixados,
+    buscou: porPessoa !== null, porPessoa, semDono, baixados, fonte,
     emAbertoDe, saldoDe, vaiAbater, alternarAbater, descontoDe, baixarTodos,
   };
 }
@@ -572,8 +575,23 @@ function BarraFiado({ fiado, aviso }) {
       {fiado.erro && <div style={{ fontSize: 12, color: "#A32D2D", marginTop: 8 }}>{fiado.erro}</div>}
       {!fiado.buscou && !fiado.erro && (
         <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8, lineHeight: 1.6 }}>
-          {aviso} A busca vai no CardapioWeb, que aceita 5 consultas por
-          minuto — por isso ela so acontece quando voce clica.
+          {aviso} Sai do cache do painel, entao e instantanea. So o dia de
+          hoje, que o cron ainda nao sincronizou, e completado no
+          CardapioWeb na hora.
+        </div>
+      )}
+      {fiado.buscou && fiado.fonte && (
+        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8 }}>
+          {fiado.fonte.doCache} lancamento(s) vieram do cache do painel
+          {fiado.fonte.completados.length > 0
+            ? ` e ${fiado.fonte.completados.length} dia(s) ainda nao sincronizado(s) foram buscados no CardapioWeb agora.`
+            : "."}
+          {fiado.fonte.diasFaltando.length > 0 && fiado.fonte.completados.length === 0 && (
+            <span style={{ color: "#854F0B" }}>
+              {" "}Nao consegui completar os {fiado.fonte.diasFaltando.length} dia(s) mais
+              recentes no CardapioWeb — o consumo de hoje pode estar de fora.
+            </span>
+          )}
         </div>
       )}
       {fiado.buscou && fiado.semDono.length > 0 && (
