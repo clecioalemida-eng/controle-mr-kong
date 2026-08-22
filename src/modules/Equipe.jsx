@@ -26,6 +26,11 @@ function categoriaComissao(papel) {
 // peso 0,75, por exemplo). Simplifica pra só uma pergunta em vez de duas
 // pra mesma coisa.
 const HORAS_PADRAO_TURNO = 8;
+// Turno da casa. Registrado tem horário fixo, então já abre preenchido —
+// só mexe quem fugiu do padrão. Diarista varia, então só o intervalo vem
+// pronto (é sempre 1 hora) e entrada/saída ficam em branco de propósito.
+const TURNO_REGISTRADO = { entrada: "17:00", saida: "02:00" };
+const INTERVALO_PADRAO_MIN = 60;
 // ---------------------------------------------------------------------------
 // Ponto: entrada, saída e intervalo -> horas trabalhadas
 //
@@ -499,6 +504,12 @@ function PremiacaoDoDia({ isAdmin }) {
   const [mensagem, setMensagem] = useState("");
   const [modoLeitura, setModoLeitura] = useState(false);
   const [premiacoesSalvas, setPremiacoesSalvas] = useState([]);
+  // Quem tem alteração ainda não gravada. Sem isso a pessoa digita o
+  // horário, rola a tela, e não tem como saber se aquilo foi salvo — a
+  // queixa que originou o ícone por linha e a barra do rodapé.
+  const [sujos, setSujos] = useState(() => new Set());
+  const [salvandoPessoa, setSalvandoPessoa] = useState(null);
+  const [jaTemPresenca, setJaTemPresenca] = useState(false);
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
@@ -513,15 +524,29 @@ function PremiacaoDoDia({ isAdmin }) {
       ]);
       setPessoas(pessoasData || []);
       setPremiacoesSalvas(premiacoesData || []);
-      // Dia já preenchido (tem presença registrada) abre travado, em modo
-      // leitura — evita mexer sem querer no que já foi fechado. Só admin
-      // vê o botão de reabrir.
-      setModoLeitura((presencasData || []).length > 0);
+      // Trava só quando a premiação já foi calculada — aí sim o dia está
+      // fechado e mexer sem querer estraga valor pago. Antes isso travava
+      // com qualquer presença gravada, o que passou a atrapalhar depois
+      // que dá pra salvar o ponto de uma pessoa por vez: salvava um e o
+      // dia inteiro fechava, obrigando um administrador a reabrir pra
+      // continuar preenchendo os outros.
+      setModoLeitura((premiacoesData || []).length > 0);
+      setJaTemPresenca((presencasData || []).length > 0);
       setMatriz(Object.fromEntries((matrizData || []).map((m) => [m.papel, m])));
       const mapaPart = {};
       const idsPrevistos = new Set((previsoesData || []).map((p) => p.pessoa_id));
       (pessoasData || []).forEach((p) => {
-        mapaPart[p.id] = { incluido: idsPrevistos.has(p.id), horas: 0, entrada: "", saida: "", intervalo: 0 };
+        const registrado = p.tipo_contrato === "registrado";
+        const entrada = registrado ? TURNO_REGISTRADO.entrada : "";
+        const saida = registrado ? TURNO_REGISTRADO.saida : "";
+        const horas = horasDoPonto(entrada, saida, INTERVALO_PADRAO_MIN);
+        mapaPart[p.id] = {
+          incluido: idsPrevistos.has(p.id),
+          horas: horas === null ? 0 : horas,
+          entrada,
+          saida,
+          intervalo: INTERVALO_PADRAO_MIN,
+        };
       });
       (presencasData || []).forEach((pr) => {
         mapaPart[pr.pessoa_id] = {
@@ -530,10 +555,13 @@ function PremiacaoDoDia({ isAdmin }) {
           // O banco devolve "HH:MM:SS"; o input type=time quer "HH:MM".
           entrada: pr.hora_entrada ? String(pr.hora_entrada).slice(0, 5) : "",
           saida: pr.hora_saida ? String(pr.hora_saida).slice(0, 5) : "",
-          intervalo: pr.intervalo_minutos || 0,
+          // Aqui o `?? ` importa: intervalo 0 gravado de propósito não
+          // pode virar 60 por causa do padrão.
+          intervalo: pr.intervalo_minutos ?? INTERVALO_PADRAO_MIN,
         };
       });
       setParticipacao(mapaPart);
+      setSujos(new Set());
       // A diária base por cargo é persistente (vem da Matriz, coluna
       // diaria_base) — não se retype todo dia, só edita via lápis quando
       // precisar mudar (e aí passa a valer pros próximos dias também).
@@ -607,7 +635,16 @@ function PremiacaoDoDia({ isAdmin }) {
       setErro("Não tem pedido fechado nesse dia (17h–03h) — confira a data ou digite o valor manualmente.");
     }
   };
+  const marcarSujo = (pessoaId) => {
+    setSujos((prev) => {
+      const novo = new Set(prev);
+      novo.add(pessoaId);
+      return novo;
+    });
+    setMensagem("");
+  };
   const alternarIncluido = (pessoaId) => {
+    marcarSujo(pessoaId);
     setParticipacao((prev) => {
       const atual = prev[pessoaId] || {};
       const incluidoNovo = !atual.incluido;
@@ -615,7 +652,12 @@ function PremiacaoDoDia({ isAdmin }) {
       // evita começar em 0 e a pessoa esquecer de preencher. Se depois
       // ela informar entrada e saída, esse número é substituído pelo
       // cálculo.
-      const horas = incluidoNovo && !atual.horas ? HORAS_PADRAO_TURNO : (atual.horas || 0);
+      // Se já tem entrada e saída (caso do registrado, que abre
+      // preenchido), a hora vem do cálculo — não do chute de 8h.
+      const calculado = horasDoPonto(atual.entrada, atual.saida, atual.intervalo);
+      const horas = calculado !== null
+        ? calculado
+        : (incluidoNovo && !atual.horas ? HORAS_PADRAO_TURNO : (atual.horas || 0));
       return { ...prev, [pessoaId]: { ...atual, incluido: incluidoNovo, horas } };
     });
   };
@@ -624,6 +666,7 @@ function PremiacaoDoDia({ isAdmin }) {
   // dois não dá pra calcular nada, e o valor digitado à mão continua
   // valendo.
   const alterarPonto = (pessoaId, campo, valor) => {
+    marcarSujo(pessoaId);
     setParticipacao((prev) => {
       const atual = prev[pessoaId] || {};
       const novo = { ...atual, [campo]: valor };
@@ -633,6 +676,7 @@ function PremiacaoDoDia({ isAdmin }) {
     });
   };
   const alterarHoras = (pessoaId, horas) => {
+    marcarSujo(pessoaId);
     setParticipacao((prev) => ({ ...prev, [pessoaId]: { ...prev[pessoaId], horas: parseFloat(horas) || 0 } }));
   };
   const pesoDe = (pessoaId) => (participacao[pessoaId]?.horas || 0) / HORAS_PADRAO_TURNO;
@@ -678,6 +722,35 @@ function PremiacaoDoDia({ isAdmin }) {
     const total = comissao;
     return { pessoa: p, peso, horas, comissao, baseCategoriaValor: 0, metodoUsado: null, valorMetodoComissao: comissao, valorMetodoHora: null, total };
   });
+  // Grava o ponto de UMA pessoa, na hora. Salva só a presença — os
+  // valores (comissão, diária) continuam saindo no "Calcular e salvar",
+  // porque o rateio da taxa de serviço depende de quem mais trabalhou no
+  // dia: não dá pra fechar o dinheiro de uma pessoa isolada.
+  const salvarPonto = async (pessoa) => {
+    setSalvandoPessoa(pessoa.id);
+    setErro("");
+    const part = participacao[pessoa.id] || {};
+    let error = null;
+    if (part.incluido) {
+      ({ error } = await supabase.from("presencas_diarias").upsert({
+        pessoa_id: pessoa.id, dia, peso: pesoDe(pessoa.id), horas_trabalhadas: part.horas || 0,
+        hora_entrada: part.entrada || null,
+        hora_saida: part.saida || null,
+        intervalo_minutos: parseInt(part.intervalo) || 0,
+      }, { onConflict: "pessoa_id,dia" }));
+    } else {
+      // Desmarcou: tira do dia, senão a presença antiga fica para trás.
+      ({ error } = await supabase.from("presencas_diarias").delete()
+        .eq("pessoa_id", pessoa.id).eq("dia", dia));
+    }
+    setSalvandoPessoa(null);
+    if (error) { setErro(error.message); return; }
+    setSujos((prev) => {
+      const novo = new Set(prev);
+      novo.delete(pessoa.id);
+      return novo;
+    });
+  };
   const salvarPremiacao = async () => {
     if (selecionados.length === 0) { setErro("Marque quem trabalhou hoje."); return; }
     if (isAdmin && taxaNum <= 0) { setErro("Informe a taxa de serviço do dia."); return; }
@@ -714,6 +787,7 @@ function PremiacaoDoDia({ isAdmin }) {
       }
     }
     setSalvando(false);
+    setSujos(new Set());
     setMensagem(taxaNum > 0 ? "Escala e valores do dia salvos." : "Escala do dia salva — falta um administrador definir a taxa de serviço pra calcular os valores.");
     await carregar(); // recarrega já travado em modo leitura
   };
@@ -804,19 +878,38 @@ function PremiacaoDoDia({ isAdmin }) {
             <div style={{ ...avisoStyle }}>Só administradores veem e definem a taxa de serviço e os valores calculados. Marque abaixo quem trabalhou e o horário — um administrador completa o resto.</div>
           )}
           <div style={sectionLabel}>Quem trabalhou hoje</div>
+          {jaTemPresenca && sujos.size === 0 && (
+            <div style={{ fontSize: 11, color: "#0F6E56", marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}>
+              <Check size={13} /> Ponto deste dia já gravado — pode continuar editando; só fecha de vez no "Calcular e salvar".
+            </div>
+          )}
           <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
             {pessoas.map((p) => {
               const part = participacao[p.id] || { incluido: false, horas: 0, entrada: "", saida: "", intervalo: 0 };
+              const sujo = sujos.has(p.id);
               const horasCalculadas = horasDoPonto(part.entrada, part.saida, part.intervalo);
               const viraODia = part.entrada && part.saida && minutosDoHorario(part.saida) <= minutosDoHorario(part.entrada);
               return (
-                <div key={p.id} style={{ ...cardStyle, padding: "10px 12px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div key={p.id} style={{
+                  ...cardStyle, padding: "10px 12px",
+                  borderColor: sujo ? "#E8A33D" : "#E8E2D2",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                     <input type="checkbox" checked={part.incluido} onChange={() => alternarIncluido(p.id)} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
+                      <div style={{ fontSize: 13, color: "#22231F", display: "flex", alignItems: "center", gap: 6 }}>
+                        {p.nome}
+                        {sujo && <span title="Alteração ainda não salva" style={pontoSujo} />}
+                      </div>
                       <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""}</div>
                     </div>
+                    {sujo && (
+                      <button onClick={() => salvarPonto(p)} disabled={salvandoPessoa === p.id}
+                        title="Salvar o ponto desta pessoa agora"
+                        style={btnSalvarLinha}>
+                        {salvandoPessoa === p.id ? <Loader2 size={13} /> : <Check size={13} />} Salvar
+                      </button>
+                    )}
                     {part.incluido && (
                       horasCalculadas !== null ? (
                         // Horário preenchido: as horas viram resultado, não campo.
@@ -933,6 +1026,22 @@ function PremiacaoDoDia({ isAdmin }) {
           <button onClick={salvarPremiacao} disabled={salvando} style={{ ...btnPrimary, width: "100%" }}>
             {salvando ? <Loader2 size={16} /> : <Check size={16} />} Calcular e salvar
           </button>
+          {/* Espaço para a barra fixa não cobrir o botão acima. */}
+          {sujos.size > 0 && <div style={{ height: 78 }} />}
+          {sujos.size > 0 && (
+            <div style={barraFixa}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, maxWidth: 760, margin: "0 auto", flexWrap: "wrap" }}>
+                <span style={pontoSujo} />
+                <div style={{ flex: 1, minWidth: 130, fontSize: 12.5, color: "#22231F" }}>
+                  <strong>{sujos.size}</strong> {sujos.size === 1 ? "pessoa" : "pessoas"} com alteração não salva
+                </div>
+                <button onClick={salvarPremiacao} disabled={salvando}
+                  style={{ ...btnPrimary, padding: "10px 16px", fontSize: 13, borderRadius: 8 }}>
+                  {salvando ? <Loader2 size={15} /> : <Check size={15} />} Salvar escala
+                </button>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -1189,6 +1298,20 @@ function FechamentoMensal() {
 }
 function round2(n) { return Math.round(n * 100) / 100; }
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
+const pontoSujo = {
+  width: 8, height: 8, borderRadius: "50%", background: "#E8A33D",
+  display: "inline-block", flexShrink: 0,
+};
+const btnSalvarLinha = {
+  display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
+  background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 8,
+  padding: "6px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+};
+const barraFixa = {
+  position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 40,
+  background: "#FBF3D9", borderTop: "1px solid #E8D48A",
+  padding: "12px 16px", boxShadow: "0 -4px 16px rgba(34,35,31,.10)",
+};
 const inputStyle = { padding: "9px 10px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF", color: "#22231F" };
 const ghostIconBtn = { border: "none", background: "none", color: "#8A8778", cursor: "pointer", padding: 2, display: "flex" };
 const btnPrimary = { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
