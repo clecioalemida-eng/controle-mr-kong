@@ -1047,6 +1047,52 @@ function PagamentoDasDiarias({ dia, linhasSalvas, fiado, pagamento, aoMudar, set
   );
 }
 
+// Tirar alguem de um dia ja fechado, sem reabrir a escala inteira.
+//
+// Antes o unico jeito era Editar -> desmarcar -> Calcular e salvar, o que
+// recalcula o rateio de todo mundo. E o caso do registrado que entrou na
+// escala por engano: precisa sair, e os outros precisam receber a fatia
+// dele de volta. Por isso o aviso e explicito.
+function BotaoTirarDoDia({ pessoa, dia, aoTirar, setErro }) {
+  const [confirmando, setConfirmando] = useState(false);
+  const [tirando, setTirando] = useState(false);
+
+  const tirar = async () => {
+    setTirando(true);
+    setErro("");
+    const [{ error: e1 }, { error: e2 }] = await Promise.all([
+      supabase.from("premiacoes_diarias").delete().eq("dia", dia).eq("pessoa_id", pessoa.id),
+      supabase.from("presencas_diarias").delete().eq("dia", dia).eq("pessoa_id", pessoa.id),
+    ]);
+    setTirando(false);
+    if (e1 || e2) { setErro((e1 || e2).message); return; }
+    setConfirmando(false);
+    aoTirar();
+  };
+
+  if (!confirmando) {
+    return (
+      <button onClick={() => setConfirmando(true)} style={{ ...linkBtn, fontSize: 10.5, padding: "2px 0", marginTop: 3 }}>
+        tirar deste dia
+      </button>
+    );
+  }
+  return (
+    <div style={{ ...avisoStyle, marginTop: 6, padding: "9px 11px", alignItems: "center", flexWrap: "wrap" }}>
+      <div style={{ flex: 1, minWidth: 170, fontSize: 12 }}>
+        Tirar <b>{pessoa.nome}</b> deste dia? O valor dela some, mas a comissão
+        dos outros <b>não</b> é recalculada sozinha — para redistribuir, use
+        Editar e depois Calcular e salvar.
+      </div>
+      <button onClick={tirar} disabled={tirando}
+        style={{ ...btnMiniEscuro, background: "#A32D2D", borderColor: "#A32D2D" }}>
+        {tirando ? "..." : "Tirar"}
+      </button>
+      <button onClick={() => setConfirmando(false)} style={{ ...linkBtn, fontSize: 11 }}>cancelar</button>
+    </div>
+  );
+}
+
 // Linha de fiado no acerto de um dia ja fechado. Aqui nao existe
 // "Calcular e salvar" — o desconto e uma acao explicita, pessoa por
 // pessoa, no momento de pagar. Por isso o botao "Dar baixa" em vez do
@@ -1602,6 +1648,21 @@ function PremiacaoDoDia({ isAdmin }) {
     if (isAdmin && taxaNum <= 0) { setErro("Informe a taxa de serviço do dia."); return; }
     setSalvando(true);
     setErro("");
+    // Quem foi DESMARCADO some do dia. Sem isto, marcar alguém, salvar, e
+    // depois desmarcar e salvar de novo deixava a presença e a premiação
+    // antigas para trás — a pessoa continuava recebendo comissão de um dia
+    // que não trabalhou. Vale inclusive para registrado.
+    const idsDoDia = selecionados.map((p) => p.id);
+    if (idsDoDia.length > 0) {
+      await supabase.from("presencas_diarias").delete()
+        .eq("dia", dia).not("pessoa_id", "in", `(${idsDoDia.join(",")})`);
+      await supabase.from("premiacoes_diarias").delete()
+        .eq("dia", dia).not("pessoa_id", "in", `(${idsDoDia.join(",")})`);
+    } else {
+      await supabase.from("presencas_diarias").delete().eq("dia", dia);
+      await supabase.from("premiacoes_diarias").delete().eq("dia", dia);
+    }
+
     // A presença (quem trabalhou + horário + horas) sempre salva, mesmo
     // sem admin — é isso que qualquer pessoa aprovada pode registrar. Os
     // valores calculados (comissão etc.) só entram quando tem taxa de
@@ -1687,10 +1748,21 @@ function PremiacaoDoDia({ isAdmin }) {
                 </div>
                 {isAdmin && <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{brl(l.total_dia)}</div>}
               </div>
-              {isAdmin && l.metodo_usado && (
+              {isAdmin && (
                 <div style={{ fontSize: 10, color: "#0F6E56", marginTop: 4 }}>
-                  ✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}
+                  {l.metodo_usado === "gerente_previa" ? (
+                    // Gerente não entra na divisão da taxa. O texto genérico
+                    // fazia parecer que ela dividia o bolo com a equipe.
+                    <>Prévia de 2% do faturamento bruto do dia — o oficial fecha no mês</>
+                  ) : l.metodo_usado ? (
+                    <>✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}</>
+                  ) : (
+                    <>✓ Fatia da comissão do dia: {brl(l.total_dia)} — salário fecha no mês</>
+                  )}
                 </div>
+              )}
+              {isAdmin && (
+                <BotaoTirarDoDia pessoa={l.pessoa} dia={dia} aoTirar={carregar} setErro={setErro} />
               )}
               {isAdmin && (
                 <FiadoNoAcerto fiado={fiado} pessoaId={l.pessoa_id} dia={dia} valorDoDia={l.total_dia} />
@@ -1916,6 +1988,11 @@ function PremiacaoDoDia({ isAdmin }) {
                             {brl(l.total - fiado.descontoDe(l.pessoa.id))}
                           </strong>
                         </span>
+                      </div>
+                    )}
+                    {l.metodoUsado === null && (
+                      <div style={{ fontSize: 10, color: "#8A8778", marginTop: 4 }}>
+                        Registrado: leva só a fatia da comissão do dia — o salário fecha no Fechamento mensal
                       </div>
                     )}
                     {l.metodoUsado === "gerente_previa" && (
@@ -2307,7 +2384,9 @@ function FechamentoMensal() {
                 <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(e.total_dia)}</span>
               </div>
               <div style={{ fontSize: 10, color: "#8A8778", marginTop: 3 }}>
-                {e.metodo_usado ? (
+                {e.metodo_usado === "gerente_previa" ? (
+                  <span>Prévia de 2% do faturamento bruto do dia</span>
+                ) : e.metodo_usado ? (
                   <>
                     <span style={{ fontWeight: e.metodo_usado === "comissao" ? 700 : 400, color: e.metodo_usado === "comissao" ? "#0F6E56" : "#8A8778" }}>
                       Taxa de serviço + diária base: {brl(e.valor_metodo_comissao)}
