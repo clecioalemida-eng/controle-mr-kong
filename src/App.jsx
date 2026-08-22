@@ -9,7 +9,7 @@ import Financeiro from "./modules/Financeiro";
 import Marketing from "./modules/Marketing";
 import Comercial from "./modules/Comercial";
 import Sac from "./modules/Sac";
-import Rastreabilidade from "./modules/Rastreabilidade";
+import SupplyChain from "./modules/SupplyChain";
 import Permissoes from "./modules/Permissoes";
 import DashboardModulo from "./modules/DashboardModulo";
 import GenteGestao from "./modules/GenteGestao";
@@ -26,7 +26,7 @@ const COMPONENTES_MODULO = {
   marketing: Marketing,
   comercial: Comercial,
   sac: Sac,
-  rastreabilidade: Rastreabilidade,
+  supply: SupplyChain,
 };
 export default function App() {
   const [carregandoAuth, setCarregandoAuth] = useState(true);
