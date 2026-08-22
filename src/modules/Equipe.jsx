@@ -271,6 +271,7 @@ function MatrizCargos() {
   };
   return (
     <div>
+      <ComoDivideComissao />
       <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
         Único lugar de editar esses dois valores por cargo. Diária base é somada à taxa de serviço rateada (método "por taxa de serviço" do diarista); valor da hora é usado no método "por hora". A Escala do dia só mostra esses valores, não edita mais aqui.
       </div>
@@ -280,12 +281,15 @@ function MatrizCargos() {
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
-            <span>Cargo</span><span style={{ textAlign: "right" }}>Diária base</span><span style={{ textAlign: "right" }}>Valor hora</span>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr 0.9fr 0.9fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+            <span>Cargo</span><span>Bolo da comissão</span><span style={{ textAlign: "right" }}>Diária base</span><span style={{ textAlign: "right" }}>Valor hora</span>
           </div>
           {linhas.map((l, idx) => (
-            <div key={l.papel} style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center" }}>
+            <div key={l.papel} style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr 0.9fr 0.9fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center" }}>
               <span style={{ fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[l.papel]}</span>
+              <span style={l.papel === "gerente" ? seloFora : categoriaComissao(l.papel) === "garcom" ? seloGarcom : seloInterna}>
+                {l.papel === "gerente" ? "não entra" : categoriaComissao(l.papel) === "garcom" ? "garçons · 50%" : "equipe interna · 50%"}
+              </span>
               <input type="number" step="0.01" value={l.diaria_base} onChange={(e) => alterar(l.papel, "diaria_base", e.target.value)}
                 style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
               <input type="number" step="0.01" value={l.valor_hora} onChange={(e) => alterar(l.papel, "valor_hora", e.target.value)}
@@ -1521,31 +1525,35 @@ function PremiacaoDoDia({ isAdmin }) {
   const selecionados = pessoas.filter((p) => participacao[p.id]?.incluido);
   const garcons = selecionados.filter((p) => categoriaComissao(p.papel) === "garcom");
   const internos = selecionados.filter((p) => categoriaComissao(p.papel) === "interno");
-  const pesoGarcons = garcons.reduce((s, p) => s + pesoDe(p.id), 0);
-  const pesoInternos = internos.reduce((s, p) => s + pesoDe(p.id), 0);
   const taxaNum = parseFloat(taxaServico) || 0;
   const poolGarcons = taxaNum * 0.5;
   const poolInternos = taxaNum * 0.5;
-  const valorPorPesoGarcom = pesoGarcons > 0 ? poolGarcons / pesoGarcons : 0;
-  const valorPorPesoInterno = pesoInternos > 0 ? poolInternos / pesoInternos : 0;
-  // Diarista: dois métodos, vale o maior. Método comissão = rateio da
-  // taxa (pelo peso, calculado a partir das horas ÷ 8) + diária base do
-  // cargo (pela matriz). Método hora = horas trabalhadas × valor/hora do
-  // cargo (pela matriz). Registrado não entra nessa comparação — só
-  // recebe a comissão do dia (o salário dele é mensal, somado no
-  // Fechamento mensal). Gerente não entra na divisão da taxa de serviço
-  // de jeito nenhum — só mostra uma PRÉVIA do 2% do faturamento bruto do
-  // dia (o valor oficial dela é fechado por mês, no Fechamento mensal).
+  // A taxa de serviço racha ao meio e cada metade é dividida POR CABEÇA,
+  // não por hora: quem estava na noite leva a mesma fatia do seu bolo.
+  // Até 22/08/2026 o rateio era proporcional às horas — estava errado em
+  // relação à regra da casa, e por isso quem esticava o turno levava mais
+  // comissão que os colegas do mesmo bolo.
+  const comissaoPorGarcom = garcons.length > 0 ? poolGarcons / garcons.length : 0;
+  const comissaoPorInterno = internos.length > 0 ? poolInternos / internos.length : 0;
+  // Diarista: dois métodos, vale o maior.
+  //   comissão = diária base CHEIA do cargo + a fatia da taxa
+  //   hora     = horas trabalhadas × valor/hora do cargo
+  // A base é cheia mesmo em jornada curta: trabalhou aquela noite, leva a
+  // base do cargo. (Antes ela era multiplicada pelo peso das horas, o que
+  // inflava a base de quem passava das 8h.)
+  // Registrado não entra nessa comparação — só recebe a comissão do dia
+  // (o salário dele é mensal, somado no Fechamento mensal). Gerente não
+  // entra na divisão de jeito nenhum — só mostra uma PRÉVIA do 2% do
+  // faturamento bruto do dia (o oficial fecha por mês).
   const linhas = selecionados.map((p) => {
     const horas = participacao[p.id]?.horas || 0;
     if (p.papel === "gerente") {
       const total = round2(faturamentoBrutoDia * 0.02);
       return { pessoa: p, peso: 0, horas, comissao: 0, baseCategoriaValor: 0, metodoUsado: "gerente_previa", valorMetodoComissao: total, valorMetodoHora: null, total };
     }
-    const peso = pesoDe(p.id);
-    const valorPorPeso = categoriaComissao(p.papel) === "garcom" ? valorPorPesoGarcom : valorPorPesoInterno;
-    const comissao = peso * valorPorPeso;
-    const baseCategoriaValor = peso * (parseFloat(baseCategoria[p.papel]) || 0);
+    const peso = pesoDe(p.id); // guardado na presença como informação; não rateia mais
+    const comissao = categoriaComissao(p.papel) === "garcom" ? comissaoPorGarcom : comissaoPorInterno;
+    const baseCategoriaValor = parseFloat(baseCategoria[p.papel]) || 0;
     const m = matriz[p.papel] || { valor_hora: 0 };
     if (p.tipo_contrato === "diarista") {
       const valorMetodoComissao = comissao + baseCategoriaValor;
@@ -2081,6 +2089,73 @@ function ValesDoMes({ mesRef, pessoas, vales, aoMudar, setErro }) {
 }
 
 // ---------------------------------------------------------------------------
+// A regra da comissão, escrita onde ela é configurada
+//
+// Ela morava só no código. Quem abria a Matriz via dois numeros por cargo e
+// nenhuma pista de como o dinheiro da noite se reparte — e era a duvida que
+// mais voltava.
+// ---------------------------------------------------------------------------
+function ComoDivideComissao() {
+  const [aberto, setAberto] = useState(false);
+  return (
+    <div style={{ ...cardStyle, marginBottom: 14, padding: 12 }}>
+      <button onClick={() => setAberto((a) => !a)}
+        style={{ background: "none", border: "none", padding: 0, cursor: "pointer", width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ ...sectionLabel, marginBottom: 0, flex: 1 }}>Como a comissão do dia é dividida</span>
+        <span style={{ fontSize: 11, color: "#8A8778" }}>{aberto ? "fechar" : "ver a regra"}</span>
+      </button>
+
+      {aberto && (
+        <div style={{ marginTop: 12 }}>
+          {/* o racha ao meio */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 150, background: "#37A0E522", border: "1px solid #37A0E555", borderRadius: 10, padding: "10px 12px" }}>
+              <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, textTransform: "uppercase", color: "#185FA5" }}>Garçons · 50%</div>
+              <div style={{ fontSize: 12, color: "#8A8778", marginTop: 3 }}>dividido por cabeça entre os garçons da noite</div>
+            </div>
+            <div style={{ flex: 1, minWidth: 150, background: "#FAC77540", border: "1px solid #FAC77599", borderRadius: 10, padding: "10px 12px" }}>
+              <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, textTransform: "uppercase", color: "#854F0B" }}>Equipe interna · 50%</div>
+              <div style={{ fontSize: 12, color: "#8A8778", marginTop: 3 }}>caixa · bar · chapa · cozinha · limpeza</div>
+            </div>
+          </div>
+
+          <div style={{ background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10, padding: "11px 13px", marginTop: 10, fontSize: 12.5, lineHeight: 2, fontVariantNumeric: "tabular-nums" }}>
+            <span style={{ color: "#8A8778" }}>fatia de cada um &nbsp;=&nbsp;</span> metade da taxa <span style={{ color: "#8A8778" }}>÷</span> quantas pessoas naquele bolo<br />
+            <span style={{ color: "#8A8778" }}>método comissão =&nbsp;</span> diária base do cargo <span style={{ color: "#8A8778" }}>+</span> fatia<br />
+            <span style={{ color: "#8A8778" }}>método hora &nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;</span> horas trabalhadas <span style={{ color: "#8A8778" }}>×</span> valor da hora
+          </div>
+
+          <div style={{ fontSize: 12, color: "#8A8778", marginTop: 10, lineHeight: 1.7 }}>
+            <b style={{ color: "#22231F" }}>Por cabeça, não por hora.</b> Quem esticou o turno não leva
+            comissão maior que o colega do mesmo bolo — o que muda com as horas
+            é só o método hora.
+            <div style={{ marginTop: 6 }}>
+              <b style={{ color: "#22231F" }}>A diária base é cheia.</b> Trabalhou a noite, leva a base do
+              cargo, mesmo em jornada curta.
+            </div>
+            <div style={{ marginTop: 6 }}>
+              <b style={{ color: "#22231F" }}>Diarista recebe o maior dos dois métodos.</b> Registrado leva
+              só a fatia da comissão — o salário dele fecha no mês. Gerente não
+              entra na divisão: recebe 2% do faturamento bruto, também no mês.
+            </div>
+          </div>
+
+          <div style={{ ...avisoStyle, marginTop: 10 }}>
+            <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+            <div style={{ fontSize: 12 }}>
+              Dias fechados antes de 22/08/2026 foram calculados pela regra
+              antiga, que rateava por hora e inflava a base. Para recalcular um
+              deles, abra a Escala do dia, clique em <b>Editar</b> e depois em
+              <b> Calcular e salvar</b>.
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Fechamento mensal
 // ---------------------------------------------------------------------------
 function FechamentoMensal() {
@@ -2397,6 +2472,13 @@ function FechamentoMensal() {
 }
 function round2(n) { return Math.round(n * 100) / 100; }
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
+const seloBase = {
+  fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999,
+  textTransform: "uppercase", letterSpacing: 0.3, textAlign: "center", whiteSpace: "nowrap",
+};
+const seloGarcom = { ...seloBase, background: "#37A0E522", color: "#185FA5", border: "1px solid #37A0E555" };
+const seloInterna = { ...seloBase, background: "#FAC77540", color: "#854F0B", border: "1px solid #FAC77599" };
+const seloFora = { ...seloBase, background: "#F6F1E7", color: "#8A8778", border: "1px solid #E8E2D2" };
 const pillFiado = {
   fontSize: 11.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, whiteSpace: "nowrap",
 };
