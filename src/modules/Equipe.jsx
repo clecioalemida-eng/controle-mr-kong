@@ -3,7 +3,7 @@ import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, Chevron
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import {
   buscarFiadoNoPeriodo, agruparPorPessoa, carregarBaixas, darBaixa,
-  estornarBaixa, somar, diasAtrasISO,
+  estornarBaixa, somar, diasAtrasISO, normalizaNome,
 } from "../lib/fiado";
 // Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
 // collation do banco e às vezes joga nome acentuado ou em maiúscula pro
@@ -308,6 +308,10 @@ function Pessoas({ isAdmin }) {
   const [novoAberto, setNovoAberto] = useState(false);
   const [expandidoId, setExpandidoId] = useState(null);
   const [fiadoId, setFiadoId] = useState(null);
+  // Nomes que realmente aparecem nos pedidos fiado. Viram sugestão no
+  // campo "Nome no fiado", pra ninguém precisar adivinhar como o caixa
+  // escreveu. Sai do cache — não custa consulta ao CardápioWeb.
+  const [nomesFiado, setNomesFiado] = useState([]);
   const [busca, setBusca] = useState("");
   const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", pix: "", nome_fiado: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null });
   const carregar = useCallback(async () => {
@@ -315,8 +319,18 @@ function Pessoas({ isAdmin }) {
     const { data, error } = await supabase.from("pessoas").select("*").order("nome");
     if (error) setErro(error.message);
     setPessoas([...(data || [])].sort(porNome));
+    if (isAdmin) {
+      const { data: nomes } = await supabase.rpc("nomes_fiado_conhecidos", {
+        p_inicio: diasAtrasISO(90),
+        p_fim: hoje(),
+      });
+      setNomesFiado(nomes || []);
+    }
     setCarregando(false);
-  }, []);
+    // `isAdmin` na dependência de propósito: ele começa null (carregando)
+    // e só depois vira true. Sem isso o callback congelaria no null e as
+    // sugestões de nome nunca chegariam a carregar.
+  }, [isAdmin]);
   useEffect(() => { carregar(); }, [carregar]);
   const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", pix: "", nome_fiado: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null }); setNovoAberto(true); setEditandoId(null); };
   const abrirEdicao = (p) => {
@@ -427,7 +441,7 @@ function Pessoas({ isAdmin }) {
               )}
               {isAdmin && fiadoId === p.id && <FiadoDaPessoa pessoa={p} />}
               {editandoId === p.id && (
-                <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} isAdmin={isAdmin} />
+                <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} isAdmin={isAdmin} nomesFiado={nomesFiado} pessoas={pessoas} />
               )}
             </div>
           ))}
@@ -440,7 +454,7 @@ function Pessoas({ isAdmin }) {
         </button>
       ) : (
         <div style={cardStyle}>
-          <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setNovoAberto(false)} isAdmin={isAdmin} />
+          <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setNovoAberto(false)} isAdmin={isAdmin} nomesFiado={nomesFiado} pessoas={pessoas} />
         </div>
       )}
     </div>
@@ -691,8 +705,17 @@ function FiadoDaPessoa({ pessoa }) {
   );
 }
 
-function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin }) {
+function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin, nomesFiado = [], pessoas = [] }) {
   const fileRef = useRef(null);
+  // Nome que já pertence a outra pessoa não deve ser oferecido de novo —
+  // dois cadastros apontando pro mesmo nome fariam o mesmo consumo ser
+  // cobrado duas vezes.
+  const jaUsados = new Set(
+    (pessoas || [])
+      .filter((p) => p.nome_fiado && p.nome_fiado !== form.nome_fiado)
+      .map((p) => normalizaNome(p.nome_fiado))
+  );
+  const sugestoes = (nomesFiado || []).filter((n) => !jaUsados.has(normalizaNome(n.nome_cliente)));
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2", display: "grid", gap: 8 }}>
       <input value={form.nome} onChange={(e) => setForm((f) => ({ ...f, nome: e.target.value }))}
@@ -734,17 +757,63 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin }) {
       <div>
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Chave PIX</label>
         <input value={form.pix} onChange={(e) => setForm((f) => ({ ...f, pix: e.target.value }))}
-          placeholder="CPF, telefone, e-mail ou chave aleatória" style={inputStyle} />
+          placeholder="CPF, telefone, e-mail ou chave aleatória" style={inputStyle} autoComplete="off" name="chave-pix" />
       </div>
       <div>
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Nome no fiado do caixa</label>
-        <input value={form.nome_fiado} onChange={(e) => setForm((f) => ({ ...f, nome_fiado: e.target.value }))}
-          placeholder="Só se for diferente do nome acima" style={inputStyle} />
-        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 4 }}>
+        <input
+          value={form.nome_fiado}
+          onChange={(e) => setForm((f) => ({ ...f, nome_fiado: e.target.value }))}
+          placeholder="Só se for diferente do nome acima"
+          style={inputStyle}
+          list="sugestoes-fiado"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          name="nome-no-fiado"
+        />
+        <datalist id="sugestoes-fiado">
+          {sugestoes.map((n) => (
+            <option key={n.nome_cliente} value={n.nome_cliente}>
+              {n.pedidos} pedido(s) · {brl(n.total)}
+            </option>
+          ))}
+        </datalist>
+        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 4, lineHeight: 1.6 }}>
           É por aqui que o painel liga o consumo fiado a esta pessoa. Preencha
           quando o caixa digita apelido ou nome curto — "Zeca" no lugar de
           "José Carlos", por exemplo.
         </div>
+        {sugestoes.length > 0 ? (
+          <div style={{ marginTop: 6 }}>
+            <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 4 }}>
+              Nomes que aparecem no fiado dos últimos 90 dias — clique pra usar:
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {sugestoes.slice(0, 12).map((n) => (
+                <button
+                  key={n.nome_cliente}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, nome_fiado: n.nome_cliente }))}
+                  title={`${n.pedidos} pedido(s) · ${brl(n.total)}`}
+                  style={{
+                    border: "1px solid #E8E2D2", background: form.nome_fiado === n.nome_cliente ? "#22231F" : "#FFFFFF",
+                    color: form.nome_fiado === n.nome_cliente ? "#F3EFE3" : "#22231F",
+                    borderRadius: 999, padding: "4px 10px", fontSize: 11.5, cursor: "pointer",
+                  }}
+                >
+                  {n.nome_cliente} <span style={{ opacity: 0.6 }}>{brl(n.total)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: "#8A8778", marginTop: 6 }}>
+            Nenhum nome no fiado dos últimos 90 dias ainda — ou o cache do
+            painel não tem pedidos nesse período.
+          </div>
+        )}
       </div>
       <div>
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Data de aniversário</label>
