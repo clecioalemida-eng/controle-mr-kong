@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search, X, ExternalLink,
+  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search, X, ExternalLink, RotateCcw,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
@@ -43,6 +43,21 @@ const STATUS_ESTILO = {
   confirmado: { background: "#2F8F5B22", color: "#0F6E56" },
   erro: { background: "#F0999522", color: "#A32D2D" },
 };
+// Quem é administrador. A tela usa isso só pra decidir o que mostrar —
+// quem barra de verdade é a função reverter_conferencia_nota() no banco,
+// que recusa qualquer chamada de não-admin. Esconder botão não é controle
+// de acesso.
+function useIsAdmin() {
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    supabase.auth.getUser().then(async ({ data }) => {
+      if (!data?.user) return;
+      const { data: perfil } = await supabase.from("perfis").select("is_admin").eq("id", data.user.id).maybeSingle();
+      setIsAdmin(perfil?.is_admin || false);
+    });
+  }, []);
+  return isAdmin;
+}
 export default function NotasFiscais() {
   const [tela, setTela] = useState("lista"); // lista | conferencia
   const [documentos, setDocumentos] = useState([]);
@@ -53,6 +68,8 @@ export default function NotasFiscais() {
   const [busca, setBusca] = useState("");
   // Documento aberto na miniatura sobre a página (null = fechada)
   const [preview, setPreview] = useState(null);
+  const [revertendo, setRevertendo] = useState(null); // id da nota sendo revertida
+  const isAdmin = useIsAdmin();
   const inputRef = useRef(null);
 
   // Abre a miniatura dentro da própria página. Usa a mesma URL assinada
@@ -83,6 +100,26 @@ export default function NotasFiscais() {
     setCarregando(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
+  // Reverte uma nota já confirmada. Tudo acontece dentro de uma função do
+  // banco, numa transação só — ou desfaz estoque, conta a pagar e status
+  // juntos, ou não desfaz nada. Desfazer pela metade seria pior que não
+  // desfazer.
+  const reverterConferencia = async (d) => {
+    const nome = d.fornecedor || "fornecedor não identificado";
+    if (!window.confirm(
+      `Reverter a conferência da nota de "${nome}"?\n\n` +
+      "Isso apaga a entrada no estoque e a conta gerada no Plano de Contas, " +
+      "e devolve a nota para conferência com os itens preservados.\n\n" +
+      "O custo médio dos insumos NÃO volta ao valor anterior."
+    )) return;
+    setRevertendo(d.id);
+    setErro("");
+    const { data, error } = await supabase.rpc("reverter_conferencia_nota", { p_documento: d.id });
+    setRevertendo(null);
+    if (error) { setErro(error.message); return; }
+    if (data) window.alert(data);
+    carregar();
+  };
   const excluirDocumento = async (d) => {
     if (!window.confirm(`Excluir a nota de "${d.fornecedor || "fornecedor não identificado"}"? Isso apaga o documento e os itens lidos — não dá pra desfazer.`)) return;
     const { error } = await supabase.from("documentos_compra").delete().eq("id", d.id);
@@ -187,6 +224,13 @@ export default function NotasFiscais() {
               {d.status !== "confirmado" && (
                 <button onClick={() => excluirDocumento(d)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Excluir documento">
                   <Trash2 size={16} />
+                </button>
+              )}
+              {d.status === "confirmado" && isAdmin && (
+                <button onClick={() => reverterConferencia(d)} disabled={revertendo === d.id}
+                  style={{ ...ghostIconBtn, color: "#8A6A0F" }}
+                  aria-label="Reverter conferência" title="Reverter conferência (só administrador)">
+                  {revertendo === d.id ? <Loader2 size={16} /> : <RotateCcw size={16} />}
                 </button>
               )}
               <span style={{ ...pill, ...STATUS_ESTILO[d.status], whiteSpace: "nowrap", flexShrink: 0 }}>{STATUS_LABEL[d.status]}</span>
@@ -528,7 +572,17 @@ function Conferencia({ documento, onVoltar }) {
         await supabase.from("insumo_sinonimos").insert({ nome_variante: item.nome_lido, insumo_id: item.insumo_id }).select();
       }
     }
-    await supabase.from("documentos_compra").update({ status: "confirmado", confirmado_em: new Date().toISOString() }).eq("id", documento.id);
+    // O valor do cabeçalho passa a ser a soma dos itens conferidos.
+    // Antes, o número que a IA leu da nota ficava para sempre no
+    // documento, mesmo depois de você corrigir os itens — e a lista
+    // mostrava um valor que não correspondia a nada (a nota da SIBELY
+    // aparecia como R$ 539.600 sendo que valeu R$ 549,40).
+    const valorConferido = round2(itens.reduce((s, it) => s + it.quantidade * it.preco_unitario, 0));
+    await supabase.from("documentos_compra").update({
+      status: "confirmado",
+      confirmado_em: new Date().toISOString(),
+      valor_total: valorConferido,
+    }).eq("id", documento.id);
     // Toda nota confirmada vira um registro em Contas a Pagar — pago ou a
     // pagar, mas sempre lá, pra ter o valor de toda compra num lugar só.
     // Boleto entra como pendente (com vencimento); pix/débito/crédito
