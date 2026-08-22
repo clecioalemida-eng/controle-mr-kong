@@ -21,19 +21,24 @@ export const CATALOGO = [
       { chave: "financeiro.pedidos",     nome: "Pedidos" },
       { chave: "financeiro.pagamentos",  nome: "Pagamentos" },
       { chave: "financeiro.fechamento",  nome: "Fechamento",           sensivel: true },
-      { chave: "financeiro.fichas",      nome: "Fichas técnicas" },
-      { chave: "financeiro.notas",       nome: "Notas" },
-      { chave: "financeiro.estoque",     nome: "Compras" },
       { chave: "financeiro.conferencia", nome: "Conferência de caixa" },
       { chave: "financeiro.contaspagar", nome: "Plano de Contas",      sensivel: true },
       { chave: "financeiro.fiado",       nome: "Fiado" },
-      { chave: "financeiro.curvaabc",    nome: "Curva ABC" },
+    ],
+  },
+  {
+    chave: "supply",
+    nome: "Supply Chain",
+    filhos: [
+      { chave: "supply.notas",    nome: "Notas" },
+      { chave: "supply.compras",  nome: "Compras" },
+      { chave: "supply.fichas",   nome: "Fichas técnicas" },
+      { chave: "supply.curvaabc", nome: "Curva ABC" },
     ],
   },
   { chave: "marketing",       nome: "Marketing" },
   { chave: "comercial",       nome: "Comercial" },
   { chave: "sac",             nome: "SAC" },
-  { chave: "rastreabilidade", nome: "Rastreabilidade" },
 ];
 
 export const TODAS_AS_CHAVES = CATALOGO.flatMap((m) => [m.chave, ...(m.filhos || []).map((f) => f.chave)]);
