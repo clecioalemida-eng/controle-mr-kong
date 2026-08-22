@@ -33,6 +33,7 @@ export const CATALOGO = [
     filhos: [
       { chave: "supply.notas",    nome: "Notas" },
       { chave: "supply.compras",  nome: "Compras" },
+      { chave: "supply.insumos",  nome: "Insumos" },
       { chave: "supply.fichas",   nome: "Fichas técnicas" },
       { chave: "supply.curvaabc", nome: "Curva ABC" },
     ],
