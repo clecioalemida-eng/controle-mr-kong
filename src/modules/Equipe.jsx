@@ -725,17 +725,43 @@ function PainelSemDono({ fiado, pessoas }) {
   const [aberto, setAberto] = useState({});
   const [escolha, setEscolha] = useState({});
   const [salvando, setSalvando] = useState(null);
+  const [feitos, setFeitos] = useState([]);
+  const [aviso, setAviso] = useState("");
   const fila = fiado.semDonoAgrupado || [];
 
-  if (!fiado.buscou || fila.length === 0) return null;
+  // Some quando a fila zera E não há nada recém-feito pra mostrar —
+  // senão o painel evaporava no último clique sem dizer o que aconteceu.
+  if (!fiado.buscou || (fila.length === 0 && feitos.length === 0)) return null;
   const totalPendente = fila.reduce((s, g) => s + g.total, 0);
 
-  const confirmar = async (nome) => {
-    const pessoaId = escolha[nome];
-    if (!pessoaId) return;
+  // Recebe o id efetivamente selecionado (o palpite conta como seleção),
+  // não o que estava guardado em `escolha`.
+  const confirmar = async (nome, pessoaId) => {
+    if (!pessoaId) { setAviso("Escolha a pessoa na lista antes de vincular."); return; }
+    setAviso("");
     setSalvando(nome);
+    const pessoa = pessoas.find((p) => p.id === pessoaId);
+    const grupo = fila.find((g) => g.nome === nome);
     await fiado.vincular(nome, pessoaId);
     setSalvando(null);
+    // A linha some da fila na hora, então a confirmação precisa viver
+    // fora dela — senão o clique parece não ter feito nada.
+    setFeitos((f) => [
+      { nome, pessoa: pessoa?.nome || "", valor: grupo?.total || 0, tipo: "vinculado" },
+      ...f,
+    ].slice(0, 6));
+  };
+
+  const marcarCliente = async (nome) => {
+    setAviso("");
+    setSalvando(nome);
+    const grupo = fila.find((g) => g.nome === nome);
+    await fiado.ignorar(nome);
+    setSalvando(null);
+    setFeitos((f) => [
+      { nome, pessoa: "", valor: grupo?.total || 0, tipo: "cliente" },
+      ...f,
+    ].slice(0, 6));
   };
 
   return (
@@ -746,15 +772,56 @@ function PainelSemDono({ fiado, pessoas }) {
         </span>
         <span style={{ fontSize: 13, fontWeight: 800, color: "#A32D2D" }}>{brl(totalPendente)}</span>
       </div>
-      <div style={{ fontSize: 11.5, color: "#8A8778", lineHeight: 1.6, marginBottom: 10 }}>
-        Esse consumo existe, mas o painel ainda nao sabe de quem e — entao
-        nao entra em acerto nenhum. Vincule cada nome a pessoa certa, ou
-        marque como cliente. Depois de vinculado, o painel reconhece sozinho.
-      </div>
+      {fila.length > 0 && (
+        <div style={{ fontSize: 11.5, color: "#8A8778", lineHeight: 1.6, marginBottom: 10 }}>
+          Esse consumo existe, mas o painel ainda não sabe de quem é — então
+          não entra em acerto nenhum. Vincule cada nome à pessoa certa, ou
+          marque como cliente. Depois de vinculado, o painel reconhece sozinho.
+        </div>
+      )}
+
+      {aviso && (
+        <div style={{ ...avisoStyle, marginBottom: 10 }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+          <div style={{ fontSize: 12.5 }}>{aviso}</div>
+        </div>
+      )}
+
+      {feitos.length > 0 && (
+        <div style={{
+          background: "#EAF3DE", border: "1px solid #C4DBA6", borderRadius: 10,
+          padding: "9px 11px", marginBottom: 10,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.4, color: "#27500A", marginBottom: 5 }}>
+            {feitos.length} resolvido(s) agora
+          </div>
+          {feitos.map((f, k) => (
+            <div key={`${f.nome}-${k}`} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#27500A", padding: "2px 0", flexWrap: "wrap" }}>
+              <Check size={13} style={{ flexShrink: 0 }} />
+              <b>{f.nome}</b>
+              {f.tipo === "vinculado" ? (
+                <>
+                  <span style={{ color: "#8A8778" }}>→</span>
+                  <span>{f.pessoa}</span>
+                  <span style={{ color: "#8A8778" }}>· {brl(f.valor)} foram para o acerto</span>
+                </>
+              ) : (
+                <span style={{ color: "#8A8778" }}>marcado como cliente · {brl(f.valor)} fora do acerto</span>
+              )}
+            </div>
+          ))}
+          {fila.length === 0 && (
+            <div style={{ fontSize: 11.5, color: "#27500A", marginTop: 6, paddingTop: 6, borderTop: "1px solid #C4DBA6" }}>
+              Fila zerada. Da próxima vez esses nomes já vão direto para a
+              pessoa certa, sem passar por aqui.
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {fila.map((g) => {
-          const { candidatos } = sugerirPessoa(g.nome, pessoas);
+          const { candidatos } = sugerirPessoa(g.nome, pessoas, fiado.apelidos);
           const sugerido = candidatos[0];
           const valorSelect = escolha[g.nome] ?? (sugerido ? sugerido.pessoa.id : "");
           return (
@@ -793,11 +860,12 @@ function PainelSemDono({ fiado, pessoas }) {
                     <option key={p.id} value={p.id}>{p.nome}</option>
                   ))}
                 </select>
-                <button onClick={() => confirmar(g.nome)} disabled={!valorSelect || salvando === g.nome}
+                <button onClick={() => confirmar(g.nome, valorSelect)} disabled={!valorSelect || salvando === g.nome}
                   style={{ ...btnPrimary, padding: "7px 12px", fontSize: 12, borderRadius: 8 }}>
                   {salvando === g.nome ? "..." : "Vincular"}
                 </button>
-                <button onClick={() => fiado.ignorar(g.nome)} style={{ ...linkBtn, fontSize: 11 }}>
+                <button onClick={() => marcarCliente(g.nome)} disabled={salvando === g.nome}
+                  style={{ ...linkBtn, fontSize: 11 }}>
                   é cliente
                 </button>
               </div>
