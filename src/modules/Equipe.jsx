@@ -4,6 +4,8 @@ import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import {
   buscarFiadoNoPeriodo, agruparPorPessoa, carregarBaixas, darBaixa,
   estornarBaixa, somar, diasAtrasISO, normalizaNome,
+  carregarApelidos, vincularApelido, desvincularApelido,
+  ignorarNome, carregarIgnorados, sugerirPessoa,
 } from "../lib/fiado";
 // Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
 // collation do banco e às vezes joga nome acentuado ou em maiúscula pro
@@ -369,10 +371,26 @@ function Pessoas({ isAdmin }) {
       data_nascimento: form.data_nascimento || null,
       documento_path: documentoPath,
     };
-    const { error } = editandoId
-      ? await supabase.from("pessoas").update(payload).eq("id", editandoId)
-      : await supabase.from("pessoas").insert(payload);
+    const { data: salvo, error } = editandoId
+      ? await supabase.from("pessoas").update(payload).eq("id", editandoId).select("id").single()
+      : await supabase.from("pessoas").insert(payload).select("id").single();
     if (error) { setErro(error.message); return; }
+
+    // O campo "Nome no fiado" do formulário é atalho pra tabela de
+    // apelidos, que é onde o vínculo mora de verdade — uma pessoa pode ter
+    // vários nomes de caixa, e o formulário só edita um.
+    const apelido = form.nome_fiado?.trim();
+    if (apelido && salvo?.id) {
+      const { error: errApelido } = await vincularApelido(apelido, salvo.id);
+      if (errApelido) {
+        setErro(
+          errApelido.code === "23505"
+            ? `O nome "${apelido}" já está vinculado a outra pessoa. Desvincule lá antes de usar aqui.`
+            : errApelido.message
+        );
+        return;
+      }
+    }
     setNovoAberto(false); setEditandoId(null);
     carregar();
   };
@@ -439,7 +457,7 @@ function Pessoas({ isAdmin }) {
                   <div><span style={{ color: "#8A8778" }}>Documento anexado: </span><span style={p.documento_path ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.documento_path ? "sim" : "nenhum"}</span></div>
                 </div>
               )}
-              {isAdmin && fiadoId === p.id && <FiadoDaPessoa pessoa={p} />}
+              {isAdmin && fiadoId === p.id && <FiadoDaPessoa pessoa={p} pessoas={pessoas} />}
               {editandoId === p.id && (
                 <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} isAdmin={isAdmin} nomesFiado={nomesFiado} pessoas={pessoas} />
               )}
@@ -519,6 +537,8 @@ function useFiadoEquipe(pessoas) {
   const [baixados, setBaixados] = useState(() => new Map());
   const [naoAbater, setNaoAbater] = useState(() => new Set());
   const [fonte, setFonte] = useState(null); // { doCache, completados, diasFaltando }
+  const [semDonoAgrupado, setSemDonoAgrupado] = useState([]);
+  const [apelidos, setApelidos] = useState([]);
 
   const buscar = async () => {
     setBuscando(true);
@@ -527,12 +547,32 @@ function useFiadoEquipe(pessoas) {
       await buscarFiadoNoPeriodo(inicio, fim);
     if (e) { setErro(e); setBuscando(false); return; }
     setFonte({ doCache, completados: completados || [], diasFaltando: diasFaltando || [] });
-    const { porPessoa: mapa, semDono: sobra } = agruparPorPessoa(lancamentos, pessoas);
+    const [listaApelidos, ignorados] = await Promise.all([
+      carregarApelidos(),
+      carregarIgnorados(),
+    ]);
+    setApelidos(listaApelidos);
+    const { porPessoa: mapa, semDono: sobra, semDonoAgrupado: fila } =
+      agruparPorPessoa(lancamentos, pessoas, listaApelidos);
     const baixas = await carregarBaixas(lancamentos.map((l) => l.pedidoId));
     setPorPessoa(mapa);
     setSemDono(sobra);
+    // Nome marcado como cliente de verdade sai da fila, mas o consumo
+    // continua na lista geral — nada some do total.
+    setSemDonoAgrupado(fila.filter((g) => !ignorados.has(normalizaNome(g.nome))));
     setBaixados(baixas);
     setBuscando(false);
+  };
+
+  const vincular = async (nome, pessoaId) => {
+    const { error } = await vincularApelido(nome, pessoaId);
+    if (error) { setErro(error.message); return; }
+    await buscar();
+  };
+  const ignorar = async (nome) => {
+    const { error } = await ignorarNome(nome, "cliente");
+    if (error) { setErro(error.message); return; }
+    await buscar();
   };
 
   const emAbertoDe = (pessoaId) =>
@@ -569,6 +609,7 @@ function useFiadoEquipe(pessoas) {
   return {
     inicio, setInicio, fim, setFim, buscando, erro, buscar,
     buscou: porPessoa !== null, porPessoa, semDono, baixados, fonte,
+    semDonoAgrupado, apelidos, vincular, ignorar,
     emAbertoDe, saldoDe, vaiAbater, alternarAbater, descontoDe, baixarTodos,
   };
 }
@@ -608,13 +649,114 @@ function BarraFiado({ fiado, aviso }) {
           )}
         </div>
       )}
-      {fiado.buscou && fiado.semDono.length > 0 && (
-        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8 }}>
-          {fiado.semDono.length} lancamento(s) de fiado no periodo nao bateram com
-          ninguem da equipe — devem ser cliente mesmo. Se for alguem da casa,
-          preencha o "Nome no fiado" no cadastro dela.
-        </div>
-      )}
+
+    </div>
+  );
+}
+
+// A fila de "falta vincular": todo nome que aparece no fiado e ainda nao
+// pertence a ninguem da equipe. Enquanto nada estiver vinculado, e aqui
+// que voce enxerga o fiado inteiro — nada fica escondido.
+//
+// O palpite de dono e so palpite: quem confirma e voce. Casar "Ana"
+// sozinho poderia cobrar da Ana Paula o que era da Janayna, e o erro so
+// apareceria no dia em que alguem reclamasse do acerto.
+function PainelSemDono({ fiado, pessoas }) {
+  const [aberto, setAberto] = useState({});
+  const [escolha, setEscolha] = useState({});
+  const [salvando, setSalvando] = useState(null);
+  const fila = fiado.semDonoAgrupado || [];
+
+  if (!fiado.buscou || fila.length === 0) return null;
+  const totalPendente = fila.reduce((s, g) => s + g.total, 0);
+
+  const confirmar = async (nome) => {
+    const pessoaId = escolha[nome];
+    if (!pessoaId) return;
+    setSalvando(nome);
+    await fiado.vincular(nome, pessoaId);
+    setSalvando(null);
+  };
+
+  return (
+    <div style={{ ...cardStyle, padding: 12, marginBottom: 12, borderColor: "#E8A33D" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F", flex: 1, minWidth: 150 }}>
+          {fila.length} nome(s) no fiado ainda sem dono
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 800, color: "#A32D2D" }}>{brl(totalPendente)}</span>
+      </div>
+      <div style={{ fontSize: 11.5, color: "#8A8778", lineHeight: 1.6, marginBottom: 10 }}>
+        Esse consumo existe, mas o painel ainda nao sabe de quem e — entao
+        nao entra em acerto nenhum. Vincule cada nome a pessoa certa, ou
+        marque como cliente. Depois de vinculado, o painel reconhece sozinho.
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {fila.map((g) => {
+          const { candidatos } = sugerirPessoa(g.nome, pessoas);
+          const sugerido = candidatos[0];
+          const valorSelect = escolha[g.nome] ?? (sugerido ? sugerido.pessoa.id : "");
+          return (
+            <div key={g.nome} style={{ border: "1px solid #E8E2D2", borderRadius: 10, padding: "9px 11px", background: "#FFFFFF" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 130 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{g.nome}</div>
+                  <button onClick={() => setAberto((a) => ({ ...a, [g.nome]: !a[g.nome] }))} style={{ ...linkBtn, fontSize: 10.5, padding: 0 }}>
+                    {g.lancamentos.length} pedido(s) · ver {aberto[g.nome] ? "menos" : "quais"}
+                  </button>
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#A32D2D", fontVariantNumeric: "tabular-nums" }}>
+                  {brl(g.total)}
+                </span>
+              </div>
+
+              {aberto[g.nome] && (
+                <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed #E8E2D2" }}>
+                  {g.lancamentos.map((l) => (
+                    <div key={l.pedidoId} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#8A8778", padding: "2px 0" }}>
+                      <span>#{l.displayId} · {new Date(l.data).toLocaleDateString("pt-BR")}</span>
+                      <span>{brl(l.valor)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+                <select
+                  value={valorSelect}
+                  onChange={(e) => setEscolha((x) => ({ ...x, [g.nome]: e.target.value }))}
+                  style={{ ...inputStyle, flex: 1, minWidth: 160, padding: "7px 8px", fontSize: 12 }}
+                >
+                  <option value="">Vincular a…</option>
+                  {pessoas.map((p) => (
+                    <option key={p.id} value={p.id}>{p.nome}</option>
+                  ))}
+                </select>
+                <button onClick={() => confirmar(g.nome)} disabled={!valorSelect || salvando === g.nome}
+                  style={{ ...btnPrimary, padding: "7px 12px", fontSize: 12, borderRadius: 8 }}>
+                  {salvando === g.nome ? "..." : "Vincular"}
+                </button>
+                <button onClick={() => fiado.ignorar(g.nome)} style={{ ...linkBtn, fontSize: 11 }}>
+                  é cliente
+                </button>
+              </div>
+
+              {sugerido && !escolha[g.nome] && (
+                <div style={{ fontSize: 10.5, color: "#0F6E56", marginTop: 5 }}>
+                  Palpite: <b>{sugerido.pessoa.nome}</b> — {sugerido.motivo}
+                  {candidatos.length > 1 ? ` (e mais ${candidatos.length - 1} possível(is), confira antes)` : ""}
+                </div>
+              )}
+              {!sugerido && (
+                <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 5 }}>
+                  Nao achei ninguem parecido — deve ser cliente mesmo.
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -644,8 +786,8 @@ function ChipFiado({ fiado, pessoaId }) {
 }
 
 // Extrato de uma pessoa so, aberto pelo icone no cartao dela.
-function FiadoDaPessoa({ pessoa }) {
-  const fiado = useFiadoEquipe([pessoa]);
+function FiadoDaPessoa({ pessoa, pessoas = [] }) {
+  const fiado = useFiadoEquipe(pessoas.length ? pessoas : [pessoa]);
   const [estornando, setEstornando] = useState(null);
   const abertos = fiado.emAbertoDe(pessoa.id);
   const todos = fiado.porPessoa?.[pessoa.id] || [];
@@ -660,6 +802,7 @@ function FiadoDaPessoa({ pessoa }) {
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2" }}>
       <BarraFiado fiado={fiado} aviso={`Procura o que ${pessoa.nome.split(" ")[0]} consumiu como fiado no periodo.`} />
+      <PainelSemDono fiado={fiado} pessoas={pessoas.length ? pessoas : [pessoa]} />
       {fiado.buscou && (
         todos.length === 0 ? (
           <div style={{ fontSize: 12, color: "#8A8778" }}>
@@ -1350,6 +1493,7 @@ function PremiacaoDoDia({ isAdmin }) {
             <>
               <div style={sectionLabel}>Resultado</div>
               <BarraFiado fiado={fiado} aviso="Traz o que a equipe consumiu como fiado e ainda nao foi descontado, pra abater no acerto de hoje." />
+              <PainelSemDono fiado={fiado} pessoas={pessoas} />
               <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
                   <span>Pessoa</span><span style={{ textAlign: "right" }}>Método</span><span style={{ textAlign: "right" }}>Total do dia</span>
@@ -1597,6 +1741,7 @@ function FechamentoMensal() {
       ) : (
         <>
           <BarraFiado fiado={fiado} aviso="Traz o que a equipe consumiu como fiado e ainda nao foi descontado, pra abater no acerto do mes." />
+          <PainelSemDono fiado={fiado} pessoas={pessoas} />
           <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
               <span>Pessoa</span><span>Papel</span><span style={{ textAlign: "right" }}>Dias</span><span style={{ textAlign: "right" }}>Acumulado</span>
