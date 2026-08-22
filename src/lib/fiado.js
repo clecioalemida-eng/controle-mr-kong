@@ -154,26 +154,53 @@ export function agruparPorPessoa(lancamentos, pessoas, apelidos = []) {
 // devolve candidatos pra pessoa confirmar. Casar "Ana" automaticamente
 // poderia cobrar da Ana Paula o que era da Janayna, e o erro só apareceria
 // no dia em que alguém reclamasse do acerto.
-export function sugerirPessoa(nomeCliente, pessoas) {
+//
+// Aprende com o que já foi vinculado: os apelidos existentes entram na
+// comparação junto com o nome do cadastro. Assim, depois que "Vânia
+// kerche" foi ligada a alguém, "Vânia da Silva Kerche" passa a ser
+// sugerida pra mesma pessoa — sem você ter que ensinar de novo.
+export function sugerirPessoa(nomeCliente, pessoas, apelidos = []) {
   const alvo = normalizaNome(nomeCliente);
   if (!alvo) return { candidatos: [] };
   const partesAlvo = alvo.split(" ").filter(Boolean);
-  const candidatos = [];
 
+  // Cada pessoa carrega o nome do cadastro mais tudo que já foi vinculado
+  // a ela.
+  const apelidosPorPessoa = new Map();
+  (apelidos || []).forEach((a) => {
+    const lista = apelidosPorPessoa.get(a.pessoa_id) || [];
+    lista.push(normalizaNome(a.apelido));
+    apelidosPorPessoa.set(a.pessoa_id, lista);
+  });
+
+  const pontuar = (candidato) => {
+    const partes = candidato.split(" ").filter(Boolean);
+    if (candidato === alvo) return { motivo: "nome idêntico", forca: 100 };
+    if (candidato.startsWith(alvo + " ")) return { motivo: "é o começo do nome dela", forca: 80 };
+    if (alvo.startsWith(candidato + " ")) return { motivo: "contém o nome do cadastro", forca: 75 };
+    if (partesAlvo.every((t) => partes.includes(t))) return { motivo: "todos os nomes batem", forca: 70 };
+    if (partesAlvo.length === 1 && partes.includes(partesAlvo[0])) return { motivo: "é um dos nomes dela", forca: 50 };
+    // Sobrenome em comum com um apelido já vinculado — vale menos, mas é
+    // o que pega "Vânia da Silva Kerche" depois de "Vânia kerche".
+    const comuns = partesAlvo.filter((t) => t.length > 2 && partes.includes(t));
+    if (comuns.length >= 2) return { motivo: "dois nomes em comum", forca: 60 };
+    return null;
+  };
+
+  const candidatos = [];
   for (const p of pessoas || []) {
     const nome = normalizaNome(p.nome);
     if (!nome) continue;
-    const partes = nome.split(" ").filter(Boolean);
-    let motivo = "";
-    let forca = 0;
 
-    if (nome === alvo) { motivo = "nome idêntico"; forca = 100; }
-    else if (nome.startsWith(alvo + " ")) { motivo = "é o começo do nome dela"; forca = 80; }
-    else if (alvo.startsWith(nome + " ")) { motivo = "contém o nome do cadastro"; forca = 75; }
-    else if (partesAlvo.every((t) => partes.includes(t))) { motivo = "todos os nomes batem"; forca = 70; }
-    else if (partesAlvo.length === 1 && partes.includes(partesAlvo[0])) { motivo = "é um dos nomes dela"; forca = 50; }
-
-    if (motivo) candidatos.push({ pessoa: p, motivo, forca });
+    let melhor = pontuar(nome);
+    // Depois tenta contra o que já foi ensinado sobre essa pessoa.
+    for (const apelido of apelidosPorPessoa.get(p.id) || []) {
+      const r = pontuar(apelido);
+      if (r && (!melhor || r.forca > melhor.forca)) {
+        melhor = { motivo: `parecido com "${apelido}", que já é dela`, forca: Math.max(r.forca - 5, 40) };
+      }
+    }
+    if (melhor) candidatos.push({ pessoa: p, motivo: melhor.motivo, forca: melhor.forca });
   }
 
   candidatos.sort((a, b) => b.forca - a.forca);
