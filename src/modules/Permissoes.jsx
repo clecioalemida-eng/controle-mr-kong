@@ -19,6 +19,14 @@ const NIVEIS = [
 // aqui ele mora no cargo, e todo mundo do cargo herda. Trocar o cargo de
 // alguém é a única coisa que muda o acesso dessa pessoa.
 // ---------------------------------------------------------------------------
+// Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
+// collation do banco e às vezes joga nome acentuado ou em maiúscula pro
+// fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
+// "Água" junto de "Agua" e "ALFACE" junto de "Alface".
+function porNome(a, b) {
+  return String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR", { sensitivity: "base" });
+}
+
 export default function Permissoes({ abaInicial = "cargos", onVoltar, onMudou }) {
   const [aba, setAba] = useState(abaInicial);
   const [carregando, setCarregando] = useState(true);
@@ -45,7 +53,7 @@ export default function Permissoes({ abaInicial = "cargos", onVoltar, onMudou })
       ]);
     setMeuId(userData?.user?.id || null);
     if (erroCargos) { setErro("Erro ao carregar cargos: " + erroCargos.message); setCarregando(false); return; }
-    setCargos(cargosData || []);
+    setCargos([...(cargosData || [])].sort(porNome));
     setPerfis(perfisData || []);
     const mapa = {};
     (permsData || []).forEach((p) => {
@@ -137,8 +145,10 @@ export default function Permissoes({ abaInicial = "cargos", onVoltar, onMudou })
     carregar();
   };
 
-  const pendentes = perfis.filter((p) => p.status === "pendente");
-  const ativos = perfis.filter((p) => p.status !== "pendente");
+  // Pendentes continuam no topo (é o que precisa de ação), mas cada
+  // grupo em ordem alfabética — antes vinha por data de cadastro.
+  const pendentes = perfis.filter((p) => p.status === "pendente").sort(porNome);
+  const ativos = perfis.filter((p) => p.status !== "pendente").sort(porNome);
   const semCargo = ativos.filter((p) => !p.cargo_id && !p.is_admin).length;
 
   // ---- matriz de um cargo (tela cheia) ------------------------------------
