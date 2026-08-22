@@ -2,30 +2,25 @@ import React, { useState, useCallback } from "react";
 import { ChevronLeft, Loader2, AlertTriangle, RefreshCw, DollarSign } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import { podeVer } from "../lib/permissoes";
-import FichasTecnicas from "./FichasTecnicas";
-import NotasFiscais from "./NotasFiscais";
-import Estoque from "./Estoque";
 import ConferenciaCaixa from "./ConferenciaCaixa";
 import ContasPagar from "./ContasPagar";
 import RelatorioFiado from "./RelatorioFiado";
-import CurvaABC from "./CurvaABC";
-// Dashboard e Equipe saíram daqui:
-//   - Dashboard virou módulo próprio (src/modules/DashboardModulo.jsx)
-//   - Equipe virou "Gente e Gestão" (src/modules/GenteGestao.jsx)
-// Os dois tinham card na home e aba aqui dentro ao mesmo tempo; manter os
-// dois lugares significava duas permissões para a mesma tela.
+// Saíram daqui, cada um pro módulo onde faz sentido:
+//   - Dashboard  -> módulo próprio (DashboardModulo.jsx)
+//   - Equipe     -> "Gente e Gestão" (GenteGestao.jsx)
+//   - Notas, Compras, Fichas técnicas e Curva ABC -> "Supply Chain"
+//     (SupplyChain.jsx). São uma cadeia só: a nota dá entrada no estoque,
+//     o estoque alimenta o custo da ficha, a curva ABC mostra o que gira.
+//     Aqui dentro, obrigavam a liberar caixa e plano de contas pra quem
+//     só mexe com compras.
 const ABAS = [
   { chave: "vendas", label: "Vendas" },
   { chave: "pedidos", label: "Pedidos" },
   { chave: "pagamentos", label: "Pagamentos" },
   { chave: "fechamento", label: "Fechamento" },
-  { chave: "fichas", label: "Fichas técnicas" },
-  { chave: "notas", label: "Notas" },
-  { chave: "estoque", label: "Compras" },
   { chave: "conferencia", label: "Conferência de caixa" },
   { chave: "contaspagar", label: "Plano de Contas" },
   { chave: "fiado", label: "Fiado" },
-  { chave: "curvaabc", label: "Curva ABC" },
 ];
 const NOMES_PAGAMENTO = {
   money: "Dinheiro",
@@ -105,20 +100,12 @@ export default function Financeiro({ onVoltar, abaInicial, permissoes }) {
                 </button>
               ))}
             </div>
-            {aba === "fichas" ? (
-              <FichasTecnicas />
-            ) : aba === "notas" ? (
-              <NotasFiscais />
-            ) : aba === "estoque" ? (
-              <Estoque />
-            ) : aba === "conferencia" ? (
+            {aba === "conferencia" ? (
               <ConferenciaCaixa />
             ) : aba === "contaspagar" ? (
               <ContasPagar />
             ) : aba === "fiado" ? (
               <RelatorioFiado />
-            ) : aba === "curvaabc" ? (
-              <CurvaABC />
             ) : (
               <>
                 <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
