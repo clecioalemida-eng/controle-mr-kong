@@ -23,6 +23,14 @@ function diasAtras(n) {
 // Componente embutível — sem cabeçalho/moldura própria, pensado para viver
 // dentro de uma aba do módulo Financeiro (que já fornece o app-shell e o
 // título da tela). Mantém sua própria navegação interna (lista <-> editor).
+// Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
+// collation do banco e às vezes joga nome acentuado ou em maiúscula pro
+// fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
+// "Água" junto de "Agua" e "ALFACE" junto de "Alface".
+function porNome(a, b) {
+  return String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR", { sensitivity: "base" });
+}
+
 export default function FichasTecnicas() {
   const [tela, setTela] = useState("lista"); // lista | editor
   const [pratos, setPratos] = useState([]);
@@ -58,7 +66,7 @@ export default function FichasTecnicas() {
       const margemPct = p.preco_venda > 0 ? (margem / p.preco_venda) * 100 : 0;
       return { ...p, temFicha, custoTotal, custoZerado, margem, margemPct };
     });
-    setPratos(combinados);
+    setPratos([...combinados].sort(porNome));
     setCarregandoLista(false);
   }, []);
 
@@ -187,13 +195,13 @@ function EditorFicha({ prato, onVoltar }) {
       composto: it.insumo?.composto || false,
       quantidade: it.quantidade,
     })));
-    setInsumos(todosInsumos || []);
+    setInsumos([...(todosInsumos || [])].sort(porNome));
     setCarregando(false);
   }, [prato.id]);
 
   useEffect(() => { carregarTudo(); }, [carregarTudo]);
 
-  const insumosDisponiveis = insumos.filter((i) => !linhas.some((l) => l.insumo_id === i.id));
+  const insumosDisponiveis = insumos.filter((i) => !linhas.some((l) => l.insumo_id === i.id)).sort(porNome);
   const insumosSimples = insumos.filter((i) => !i.composto); // composto só pode ser feito de insumos simples
 
   const adicionarInsumo = () => {
@@ -306,7 +314,7 @@ function EditorFicha({ prato, onVoltar }) {
       custo_medio_atual: parseFloat(novoInsumoForm.custo) || 0,
     }).select().single();
     if (error) { setErro(error.message); return; }
-    setInsumos((prev) => [...prev, data].sort((a, b) => a.nome.localeCompare(b.nome)));
+    setInsumos((prev) => [...prev, data].sort(porNome));
     setLinhas((prev) => [...prev, { insumo_id: data.id, nome: data.nome, unidade: data.unidade, custo_medio_atual: data.custo_medio_atual, composto: false, quantidade: 1 }]);
     setNovoInsumoForm({ nome: "", unidade: "un", custo: 0 });
     setNovoInsumoAberto(false);
