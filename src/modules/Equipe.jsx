@@ -616,6 +616,37 @@ function useFiadoEquipe(pessoas) {
   };
   const descontoDe = (pessoaId) => (vaiAbater(pessoaId) ? saldoDe(pessoaId) : 0);
 
+  // Baixa de UMA pessoa. E o que a tela do dia fechado usa: ali nao existe
+  // "Calcular e salvar", o acerto e pessoa por pessoa, na hora de pagar.
+  const baixarUm = async (pessoaId, origem, referencia) => {
+    const abertos = emAbertoDe(pessoaId);
+    if (abertos.length === 0) return { error: null };
+    const { error } = await darBaixa(pessoaId, abertos, origem, referencia);
+    if (error) { setErro(error.message); return { error }; }
+    setBaixados((prev) => {
+      const novo = new Map(prev);
+      abertos.forEach((l) => novo.set(l.pedidoId, { pedido_id: l.pedidoId, pessoa_id: pessoaId, valor: l.valor }));
+      return novo;
+    });
+    return { error: null };
+  };
+
+  // Desfaz a baixa dessa pessoa no periodo — o consumo volta pra "em aberto".
+  const estornarDe = async (pessoaId) => {
+    const jaBaixados = (porPessoa?.[pessoaId] || []).filter((l) => baixados.has(l.pedidoId));
+    if (jaBaixados.length === 0) return;
+    const { error } = await estornarBaixa(jaBaixados.map((l) => l.pedidoId));
+    if (error) { setErro(error.message); return; }
+    setBaixados((prev) => {
+      const novo = new Map(prev);
+      jaBaixados.forEach((l) => novo.delete(l.pedidoId));
+      return novo;
+    });
+  };
+
+  const baixadoDe = (pessoaId) =>
+    (porPessoa?.[pessoaId] || []).filter((l) => baixados.has(l.pedidoId));
+
   // Grava as baixas de todo mundo que esta marcado pra abater.
   const baixarTodos = async (origem, referencia) => {
     if (!porPessoa) return { error: null };
@@ -639,6 +670,7 @@ function useFiadoEquipe(pessoas) {
     buscou: porPessoa !== null, porPessoa, semDono, baixados, fonte,
     semDonoAgrupado, apelidos, vincular, ignorar,
     emAbertoDe, saldoDe, vaiAbater, alternarAbater, descontoDe, baixarTodos,
+    baixarUm, estornarDe, baixadoDe,
   };
 }
 
@@ -785,6 +817,62 @@ function PainelSemDono({ fiado, pessoas }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// Linha de fiado no acerto de um dia ja fechado. Aqui nao existe
+// "Calcular e salvar" — o desconto e uma acao explicita, pessoa por
+// pessoa, no momento de pagar. Por isso o botao "Dar baixa" em vez do
+// chip que so marca intencao.
+function FiadoNoAcerto({ fiado, pessoaId, dia, valorDoDia }) {
+  const [gravando, setGravando] = useState(false);
+  if (!fiado.buscou) return null;
+
+  const saldo = fiado.saldoDe(pessoaId);
+  const jaBaixados = fiado.baixadoDe(pessoaId);
+  const totalBaixado = somar(jaBaixados);
+
+  if (saldo <= 0 && totalBaixado <= 0) return null;
+
+  const baixar = async () => {
+    setGravando(true);
+    await fiado.baixarUm(pessoaId, "escala", dia);
+    setGravando(false);
+  };
+  const estornar = async () => {
+    setGravando(true);
+    await fiado.estornarDe(pessoaId);
+    setGravando(false);
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+      {saldo > 0 ? (
+        <>
+          <span style={{ ...pillFiado, background: "#F0999522", border: "1px solid #F0999540", color: "#A32D2D" }}>
+            fiado em aberto {brl(saldo)}
+          </span>
+          {valorDoDia != null && (
+            <span style={{ fontSize: 11, color: "#8A8778" }}>
+              a pagar <strong style={{ color: "#22231F" }}>{brl(valorDoDia - saldo)}</strong>
+            </span>
+          )}
+          <button onClick={baixar} disabled={gravando}
+            style={{ ...btnMiniEscuro }}>
+            {gravando ? "..." : "Dar baixa"}
+          </button>
+        </>
+      ) : (
+        <>
+          <span style={{ ...pillFiado, background: "#EAF3DE", border: "1px solid #C4DBA6", color: "#27500A" }}>
+            fiado de {brl(totalBaixado)} descontado
+          </span>
+          <button onClick={estornar} disabled={gravando} style={{ ...linkBtn, fontSize: 11 }}>
+            {gravando ? "..." : "estornar"}
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -1333,6 +1421,11 @@ function PremiacaoDoDia({ isAdmin }) {
     const idsComPremiacao = new Set(premiacoesSalvas.map((pr) => pr.pessoa_id));
     const pessoasSemPremiacao = pessoas.filter((p) => participacao[p.id]?.incluido && !idsComPremiacao.has(p.id));
     const taxaNumSalva = parseFloat(taxaServico) || 0;
+    const totalDoDia = linhasSalvas.reduce((s2, l) => s2 + (Number(l.total_dia) || 0), 0);
+    // Só o que ainda está em aberto entra no "a pagar" — o que já foi
+    // baixado saiu num acerto anterior e não desconta de novo.
+    const fiadoEmAbertoDoDia = [...linhasSalvas.map((l) => l.pessoa_id), ...pessoasSemPremiacao.map((p) => p.id)]
+      .reduce((s2, id) => s2 + (fiado.buscou ? fiado.saldoDe(id) : 0), 0);
     return (
       <div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
@@ -1342,6 +1435,13 @@ function PremiacaoDoDia({ isAdmin }) {
           <Lock size={13} /> Já preenchida — modo leitura{!isAdmin ? " (só administradores editam)" : ""}
         </div>
         {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+        {isAdmin && (
+          <>
+            <div style={sectionLabel}>Fiado da equipe</div>
+            <BarraFiado fiado={fiado} aviso="Traz o que a equipe consumiu como fiado e ainda nao foi descontado, pra abater no pagamento deste dia." />
+            <PainelSemDono fiado={fiado} pessoas={pessoas} />
+          </>
+        )}
         <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
           {linhasSalvas.map((l, idx) => (
             <div key={l.pessoa_id} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
@@ -1358,6 +1458,9 @@ function PremiacaoDoDia({ isAdmin }) {
                   ✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}
                 </div>
               )}
+              {isAdmin && (
+                <FiadoNoAcerto fiado={fiado} pessoaId={l.pessoa_id} dia={dia} valorDoDia={l.total_dia} />
+              )}
             </div>
           ))}
           {pessoasSemPremiacao.map((p, idx) => (
@@ -1365,15 +1468,37 @@ function PremiacaoDoDia({ isAdmin }) {
               <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
               <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[p.id])}</div>
               {isAdmin && <LinhaPix pessoa={p} />}
+              {isAdmin && <FiadoNoAcerto fiado={fiado} pessoaId={p.id} dia={dia} valorDoDia={null} />}
             </div>
           ))}
           {linhasSalvas.length === 0 && pessoasSemPremiacao.length === 0 && (
             <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Ninguém marcado nesse dia.</div>
           )}
         </div>
-        {isAdmin && taxaNumSalva > 0 && (
-          <div style={{ background: "#F6F1E7", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#8A8778", marginBottom: 16, display: "flex", justifyContent: "space-between" }}>
-            <span>Taxa de serviço do dia</span><span style={{ color: "#22231F", fontWeight: 700 }}>{brl(taxaNumSalva)}</span>
+        {isAdmin && (
+          <div style={{ background: "#F6F1E7", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#8A8778", marginBottom: 16, display: "flex", flexDirection: "column", gap: 5 }}>
+            {taxaNumSalva > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span>Taxa de serviço do dia</span>
+                <span style={{ color: "#22231F", fontWeight: 700 }}>{brl(taxaNumSalva)}</span>
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Total do dia</span>
+              <span style={{ color: "#22231F", fontWeight: 700 }}>{brl(totalDoDia)}</span>
+            </div>
+            {fiado.buscou && fiadoEmAbertoDoDia > 0 && (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", color: "#A32D2D" }}>
+                  <span>(–) Fiado em aberto da equipe</span>
+                  <span style={{ fontWeight: 700 }}>{brl(fiadoEmAbertoDoDia)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 5, borderTop: "1px solid #E8E2D2" }}>
+                  <span style={{ color: "#22231F", fontWeight: 700 }}>A pagar</span>
+                  <span style={{ color: "#22231F", fontWeight: 800 }}>{brl(totalDoDia - fiadoEmAbertoDoDia)}</span>
+                </div>
+              </>
+            )}
           </div>
         )}
         {isAdmin && (
@@ -1879,6 +2004,13 @@ function FechamentoMensal() {
 }
 function round2(n) { return Math.round(n * 100) / 100; }
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
+const pillFiado = {
+  fontSize: 11.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, whiteSpace: "nowrap",
+};
+const btnMiniEscuro = {
+  background: "#22231F", color: "#F3EFE3", border: "1px solid #22231F", borderRadius: 8,
+  padding: "5px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
+};
 const pontoSujo = {
   width: 8, height: 8, borderRadius: "50%", background: "#E8A33D",
   display: "inline-block", flexShrink: 0,
