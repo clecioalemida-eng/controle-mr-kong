@@ -33,6 +33,14 @@ const FORMAS_PAGAMENTO_COMPRA = [
 ];
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
 
+// Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
+// collation do banco e às vezes joga nome acentuado ou em maiúscula pro
+// fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
+// "Água" junto de "Agua" e "ALFACE" junto de "Alface".
+function porNome(a, b) {
+  return String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR", { sensitivity: "base" });
+}
+
 export default function Estoque() {
   const [tela, setTela] = useState("lista"); // lista | extrato | compra_manual
   const [insumos, setInsumos] = useState([]);
@@ -54,7 +62,7 @@ export default function Estoque() {
       supabase.from("configuracoes").select("valor").eq("chave", "dias_estoque_compras").maybeSingle(),
     ]);
     if (error) { setErro(error.message); setCarregando(false); return; }
-    setInsumos(data || []);
+    setInsumos([...(data || [])].sort(porNome));
     if (configData) setDiasEstoque(configData.valor);
     setCarregando(false);
   }, []);
@@ -226,7 +234,7 @@ export default function Estoque() {
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <div className="list-grid">
-          {insumos.filter((i) => i.nome.toLowerCase().includes(busca.toLowerCase())).map((i) => {
+          {insumos.filter((i) => i.nome.toLowerCase().includes(busca.toLowerCase())).sort(porNome).map((i) => {
             const abaixoMinimo = i.estoque_minimo != null && i.estoque_atual < i.estoque_minimo;
             const sugestao = sugestaoCompra(i.id, i.estoque_atual);
             const consumoDia = consumoMedioDia(i.id);
