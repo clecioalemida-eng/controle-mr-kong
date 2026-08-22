@@ -4,6 +4,7 @@ import { podeVer } from "../lib/permissoes";
 import NotasFiscais from "./NotasFiscais";
 import Estoque from "./Estoque";
 import FichasTecnicas from "./FichasTecnicas";
+import Insumos from "./Insumos";
 import CurvaABC from "./CurvaABC";
 // ---------------------------------------------------------------------------
 // Supply Chain — a cadeia de suprimento inteira num lugar só.
@@ -20,6 +21,7 @@ import CurvaABC from "./CurvaABC";
 const ABAS = [
   { chave: "notas", label: "Notas" },
   { chave: "compras", label: "Compras" },
+  { chave: "insumos", label: "Insumos" },
   { chave: "fichas", label: "Fichas técnicas" },
   { chave: "curvaabc", label: "Curva ABC" },
 ];
@@ -52,6 +54,7 @@ export default function SupplyChain({ onVoltar, permissoes, abaInicial }) {
             </div>
             {aba === "notas" && <NotasFiscais />}
             {aba === "compras" && <Estoque />}
+            {aba === "insumos" && <Insumos permissoes={permissoes} />}
             {aba === "fichas" && <FichasTecnicas />}
             {aba === "curvaabc" && <CurvaABC />}
           </>
