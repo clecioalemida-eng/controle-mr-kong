@@ -300,6 +300,11 @@ export default function Insumos({ permissoes }) {
 //           tem movimento de estoque é recusado, com o motivo — apagar
 //           ali perderia o histórico em vez de corrigi-lo.
 //
+// Nem todo espelho é erro. Em REVENDA — cerveja, refrigerante, água — a
+// ficha é 1 para 1 de propósito: você compra pronto e vende pronto. Esses
+// ficam marcados como revenda e saem da fila, senão ela nunca zera e você
+// perde a referência do que ainda falta arrumar.
+//
 // Nada aqui toca em `pratos`. Produto de venda não é mexido.
 // =====================================================================
 function Limpeza({ aoMudar }) {
@@ -325,14 +330,17 @@ function Limpeza({ aoMudar }) {
 
   useEffect(() => { carregar(); }, [carregar]);
 
-  const espelhos = linhas.filter((l) => l.prato_mesmo_nome).length;
+  // Revenda sai da conta de espelhos: ali o espelho é o certo.
+  const espelhos = linhas.filter((l) => l.prato_mesmo_nome && !l.revenda).length;
+  const revendas = linhas.filter((l) => l.revenda).length;
   const soltos = linhas.filter((l) => l.fichas === 0 && l.movimentos_estoque === 0 && l.compoe_outro === 0).length;
 
   const visiveis = useMemo(() => {
     const q = chaveNome(busca);
     return linhas.filter((l) => {
       if (q && !chaveNome(l.nome).includes(q)) return false;
-      if (filtro === "espelho" && !l.prato_mesmo_nome) return false;
+      if (filtro === "espelho" && (!l.prato_mesmo_nome || l.revenda)) return false;
+      if (filtro === "revenda" && !l.revenda) return false;
       if (filtro === "soltos" && !(l.fichas === 0 && l.movimentos_estoque === 0 && l.compoe_outro === 0)) return false;
       if (filtro === "semcusto" && Number(l.custo_medio_atual)) return false;
       return true;
@@ -364,6 +372,19 @@ function Limpeza({ aoMudar }) {
     aoMudar?.();
   };
 
+  const marcarRevenda = async (ids, valor) => {
+    if (!ids.length) return;
+    setOcupado("lote"); setErro(""); setMsg(""); setResultado(null);
+    const { data, error } = await supabase.rpc("marcar_revenda", { p_ids: ids, p_revenda: valor });
+    setOcupado(null);
+    if (error) { setErro(error.message); return; }
+    setMsg(valor
+      ? `${data || ids.length} insumo(s) marcado(s) como revenda — saíram da fila.`
+      : `${data || ids.length} insumo(s) voltaram para a fila.`);
+    await carregar();
+    aoMudar?.();
+  };
+
   const excluirMarcados = async () => {
     if (marcados.size === 0) return;
     setOcupado("lote"); setErro(""); setMsg(""); setResultado(null);
@@ -385,11 +406,16 @@ function Limpeza({ aoMudar }) {
       <div style={{ ...avisoStyle, marginBottom: 12 }}>
         <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
         <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-          <b>{espelhos} insumo(s) têm um prato com o mesmo nome.</b> Isso é
-          sinal de espelho: o item de venda virou insumo por engano, e a
-          ficha dele aponta pra si mesma. O certo é <b>juntar</b> com o
-          insumo de verdade — "Adicional de granola" com "Granola" — e não
-          simplesmente excluir, senão a ficha do prato fica vazia.
+          <b>{espelhos} espelho(s) a resolver.</b> São insumos com um prato
+          de mesmo nome: o item de venda virou insumo por engano, e a ficha
+          aponta pra si mesma. O certo é <b>juntar</b> com o insumo de
+          verdade — "Adicional de granola" com "Granola" — e não excluir,
+          senão a ficha do prato fica vazia.
+          <div style={{ marginTop: 6 }}>
+            Cerveja, refrigerante e água também aparecem como espelho, mas
+            ali está <b>certo</b>: você compra pronto e vende pronto, a ficha
+            é 1 para 1. Marque esses como <b>revenda</b> e eles somem da fila.
+          </div>
         </div>
       </div>
 
@@ -400,8 +426,9 @@ function Limpeza({ aoMudar }) {
             style={{ ...inputStyle, width: "100%", paddingLeft: 30, boxSizing: "border-box" }} />
         </div>
         {[
-          { chave: "espelho", label: `Espelho de prato (${espelhos})` },
+          { chave: "espelho", label: `Espelho a resolver (${espelhos})` },
           { chave: "soltos", label: `Sem nada preso (${soltos})` },
+          { chave: "revenda", label: `Revenda (${revendas})` },
           { chave: "semcusto", label: "Sem custo" },
           { chave: "todos", label: `Todos (${linhas.length})` },
         ].map((f) => (
@@ -429,6 +456,10 @@ function Limpeza({ aoMudar }) {
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
         <button onClick={marcarTodosVisiveis} style={{ ...btnSecondary, padding: "7px 12px", fontSize: 12 }}>
           {visiveis.length > 0 && visiveis.every((l) => marcados.has(l.id)) ? "Desmarcar todos" : "Marcar todos da lista"}
+        </button>
+        <button onClick={() => marcarRevenda([...marcados], true)} disabled={marcados.size === 0 || ocupado === "lote"}
+          style={{ ...btnSecondary, padding: "7px 12px", fontSize: 12 }}>
+          Marcar {marcados.size || ""} como revenda
         </button>
         <div style={{ flex: 1 }} />
         <button onClick={excluirMarcados} disabled={marcados.size === 0 || ocupado === "lote"}
@@ -459,7 +490,8 @@ function Limpeza({ aoMudar }) {
                     {l.nome} <span style={{ fontWeight: 400, color: "#8A8778" }}>· {l.unidade}</span>
                   </div>
                   <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 4 }}>
-                    {l.prato_mesmo_nome && <span style={{ ...selo, background: "#FBF3D9", color: "#854F0B" }}>espelho de prato</span>}
+                    {l.revenda && <span style={{ ...selo, background: "#37A0E522", color: "#185FA5" }}>revenda</span>}
+                    {l.prato_mesmo_nome && !l.revenda && <span style={{ ...selo, background: "#FBF3D9", color: "#854F0B" }}>espelho de prato</span>}
                     {l.fichas > 0 && <span style={{ ...selo, background: "#37A0E522", color: "#185FA5" }}>{l.fichas} ficha(s)</span>}
                     {l.movimentos_estoque > 0 && <span style={{ ...selo, background: "#F6F1E7", color: "#8A8778" }}>{l.movimentos_estoque} mov. estoque</span>}
                     {l.itens_de_nota > 0 && <span style={{ ...selo, background: "#F6F1E7", color: "#8A8778" }}>{l.itens_de_nota} item(ns) de nota</span>}
@@ -480,6 +512,11 @@ function Limpeza({ aoMudar }) {
                     style={{ ...btnPrimary, padding: "7px 12px", fontSize: 12, borderRadius: 8 }}>
                     {ocupado === l.id ? "..." : "Juntar"}
                   </button>
+                  <button onClick={() => marcarRevenda([l.id], !l.revenda)} disabled={ocupado === "lote"}
+                    title={l.revenda ? "Voltar para a fila de faxina" : "Comprado pronto e vendido pronto — sai da fila"}
+                    style={{ ...linkBtn, fontSize: 11, whiteSpace: "nowrap" }}>
+                    {l.revenda ? "não é revenda" : "é revenda"}
+                  </button>
                 </div>
               </div>
             );
@@ -492,6 +529,9 @@ function Limpeza({ aoMudar }) {
         para o certo, apaga o errado, e ainda guarda o nome antigo como
         sinônimo — a próxima nota que chegar com aquele nome já cai no lugar
         certo. <b>Excluir</b> só passa em quem não tem nada preso.
+        <b> Revenda</b> não apaga nada: só tira da fila o que já está correto,
+        e o custo continua sendo o preço de <b>uma</b> unidade — caixa de 24
+        por R$ 120 dá R$ 5,00 na garrafa, não R$ 120.
       </div>
     </div>
   );
