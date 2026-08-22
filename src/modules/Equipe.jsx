@@ -539,40 +539,68 @@ function useFiadoEquipe(pessoas) {
   const [fonte, setFonte] = useState(null); // { doCache, completados, diasFaltando }
   const [semDonoAgrupado, setSemDonoAgrupado] = useState([]);
   const [apelidos, setApelidos] = useState([]);
+  // Os lançamentos crus ficam guardados. Vincular um nome não muda o que
+  // foi consumido — muda só de quem é. Reagrupar em memória é instantâneo;
+  // refazer a busca chamaria o CardápioWeb a cada clique e travaria no
+  // limite de 5 consultas por minuto logo no terceiro nome.
+  const [lancamentos, setLancamentos] = useState([]);
+  const [ignorados, setIgnorados] = useState(() => new Set());
 
-  const buscar = async () => {
-    setBuscando(true);
-    setErro("");
-    const { lancamentos, erro: e, doCache, completados, diasFaltando } =
-      await buscarFiadoNoPeriodo(inicio, fim);
-    if (e) { setErro(e); setBuscando(false); return; }
-    setFonte({ doCache, completados: completados || [], diasFaltando: diasFaltando || [] });
-    const [listaApelidos, ignorados] = await Promise.all([
-      carregarApelidos(),
-      carregarIgnorados(),
-    ]);
-    setApelidos(listaApelidos);
+  const reagrupar = (lista, listaApelidos, listaIgnorados) => {
     const { porPessoa: mapa, semDono: sobra, semDonoAgrupado: fila } =
-      agruparPorPessoa(lancamentos, pessoas, listaApelidos);
-    const baixas = await carregarBaixas(lancamentos.map((l) => l.pedidoId));
+      agruparPorPessoa(lista, pessoas, listaApelidos);
     setPorPessoa(mapa);
     setSemDono(sobra);
     // Nome marcado como cliente de verdade sai da fila, mas o consumo
     // continua na lista geral — nada some do total.
-    setSemDonoAgrupado(fila.filter((g) => !ignorados.has(normalizaNome(g.nome))));
+    setSemDonoAgrupado(fila.filter((g) => !listaIgnorados.has(normalizaNome(g.nome))));
+  };
+
+  const buscar = async () => {
+    setBuscando(true);
+    setErro("");
+    const { lancamentos: lista, erro: e, doCache, completados, diasFaltando } =
+      await buscarFiadoNoPeriodo(inicio, fim);
+    if (e) { setErro(e); setBuscando(false); return; }
+    setFonte({ doCache, completados: completados || [], diasFaltando: diasFaltando || [] });
+    const [listaApelidos, listaIgnorados] = await Promise.all([
+      carregarApelidos(),
+      carregarIgnorados(),
+    ]);
+    const baixas = await carregarBaixas(lista.map((l) => l.pedidoId));
+    setLancamentos(lista);
+    setApelidos(listaApelidos);
+    setIgnorados(listaIgnorados);
     setBaixados(baixas);
+    reagrupar(lista, listaApelidos, listaIgnorados);
     setBuscando(false);
   };
 
   const vincular = async (nome, pessoaId) => {
+    setErro("");
     const { error } = await vincularApelido(nome, pessoaId);
-    if (error) { setErro(error.message); return; }
-    await buscar();
+    if (error) {
+      setErro(
+        error.code === "23505"
+          ? `"${nome}" já está vinculado a outra pessoa.`
+          : error.message
+      );
+      return;
+    }
+    const novos = [...apelidos.filter((a) => normalizaNome(a.apelido) !== normalizaNome(nome)),
+                   { apelido: nome, pessoa_id: pessoaId }];
+    setApelidos(novos);
+    reagrupar(lancamentos, novos, ignorados);
   };
+
   const ignorar = async (nome) => {
+    setErro("");
     const { error } = await ignorarNome(nome, "cliente");
     if (error) { setErro(error.message); return; }
-    await buscar();
+    const novos = new Set(ignorados);
+    novos.add(normalizaNome(nome));
+    setIgnorados(novos);
+    reagrupar(lancamentos, apelidos, novos);
   };
 
   const emAbertoDe = (pessoaId) =>
@@ -742,15 +770,15 @@ function PainelSemDono({ fiado, pessoas }) {
                 </button>
               </div>
 
-              {sugerido && !escolha[g.nome] && (
+              {sugerido && escolha[g.nome] === undefined && (
                 <div style={{ fontSize: 10.5, color: "#0F6E56", marginTop: 5 }}>
                   Palpite: <b>{sugerido.pessoa.nome}</b> — {sugerido.motivo}
                   {candidatos.length > 1 ? ` (e mais ${candidatos.length - 1} possível(is), confira antes)` : ""}
                 </div>
               )}
-              {!sugerido && (
+              {!sugerido && !escolha[g.nome] && (
                 <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 5 }}>
-                  Nao achei ninguem parecido — deve ser cliente mesmo.
+                  Nao achei ninguem parecido — escolha na lista ou marque como cliente.
                 </div>
               )}
             </div>
