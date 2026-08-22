@@ -34,34 +34,80 @@ export function diasAtrasISO(n) {
   return d.toISOString().slice(0, 10);
 }
 
-// Busca no CardápioWeb todos os pedidos pagos como fiado no período.
-// Devolve { lancamentos, erro } — nunca lança.
+// Busca os lançamentos de fiado do período.
+//
+// A fonte é o `pedidos_cache`, que o cron das 4h enche com o payload cru
+// de todo pedido. Ler dali é uma consulta ao banco: instantânea e sem
+// limite. Antes isso ia direto no CardápioWeb, no mesmo endpoint de
+// histórico limitado a 5 consultas por minuto — uma janela de 60 dias
+// demorava e ainda disputava o limite com o Dashboard e a Curva ABC.
+//
+// O furo do cache é o dia de hoje, que só entra de madrugada. Por isso
+// `dias_sem_cache` diz quais dias faltam, e só esses são completados —
+// com UMA consulta ao proxy, numa janela de um ou dois dias.
+//
+// Devolve { lancamentos, erro, doCache, completados }.
 export async function buscarFiadoNoPeriodo(dataInicio, dataFim) {
-  const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
-    body: {
-      data_inicio: `${dataInicio}T00:00:00-03:00`,
-      data_fim: `${dataFim}T23:59:59-03:00`,
-    },
+  // ---- 1. o que já está em cache ---------------------------------------
+  const { data: cache, error: erroCache } = await supabase.rpc("fiado_periodo", {
+    p_inicio: dataInicio,
+    p_fim: dataFim,
   });
-  if (error) return { lancamentos: [], erro: error.message || "Não deu para consultar o CardápioWeb." };
-  if (data?.error) return { lancamentos: [], erro: data.error };
+  if (erroCache) {
+    return { lancamentos: [], erro: erroCache.message, doCache: 0, completados: [] };
+  }
 
-  const lancamentos = [];
-  for (const pedido of data?.pedidos || []) {
-    if (pedido.status !== "closed") continue;
-    for (const pgto of pedido.payments || []) {
-      if (pgto.payment_method !== "debt_book") continue;
-      lancamentos.push({
-        pedidoId: String(pedido.id),
-        displayId: pedido.display_id ?? pedido.id,
-        data: pedido.created_at,
-        valor: Number(pgto.total) || 0,
-        nomeCliente: pedido.customer?.name || null,
-      });
+  const lancamentos = (cache || []).map((r) => ({
+    pedidoId: String(r.pedido_id),
+    displayId: r.display_id ?? r.pedido_id,
+    data: r.criado_em || `${r.dia}T12:00:00`,
+    valor: Number(r.valor) || 0,
+    nomeCliente: r.nome_cliente || null,
+  }));
+  const doCache = lancamentos.length;
+  const vistos = new Set(lancamentos.map((l) => l.pedidoId));
+
+  // ---- 2. dias que o cron ainda não pegou ------------------------------
+  const { data: faltando } = await supabase.rpc("dias_sem_cache", {
+    p_inicio: dataInicio,
+    p_fim: dataFim,
+  });
+  const dias = (faltando || []).map((d) => (typeof d === "string" ? d : d.dia)).filter(Boolean);
+
+  // ---- 3. completa só esses, numa consulta só --------------------------
+  let completados = [];
+  if (dias.length > 0) {
+    const menor = dias[0];
+    const maior = dias[dias.length - 1];
+    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
+      body: {
+        data_inicio: `${menor}T00:00:00-03:00`,
+        data_fim: `${maior}T23:59:59-03:00`,
+      },
+    });
+    // Falhar aqui não invalida o resto: o que veio do cache continua
+    // valendo, e a tela avisa que os dias recentes ficaram de fora.
+    if (!error && !data?.error) {
+      for (const pedido of data?.pedidos || []) {
+        if (pedido.status !== "closed") continue;
+        if (vistos.has(String(pedido.id))) continue;
+        for (const pgto of pedido.payments || []) {
+          if (pgto.payment_method !== "debt_book") continue;
+          lancamentos.push({
+            pedidoId: String(pedido.id),
+            displayId: pedido.display_id ?? pedido.id,
+            data: pedido.created_at,
+            valor: Number(pgto.total) || 0,
+            nomeCliente: pedido.customer?.name || null,
+          });
+        }
+      }
+      completados = dias;
     }
   }
+
   lancamentos.sort((a, b) => new Date(b.data) - new Date(a.data));
-  return { lancamentos, erro: "" };
+  return { lancamentos, erro: "", doCache, completados, diasFaltando: dias };
 }
 
 // Casa cada lançamento com uma pessoa da equipe, pelo nome. Devolve
