@@ -55,6 +55,12 @@ function numeroBR(s) {
   const n = parseFloat(t);
   return isNaN(n) ? null : n;
 }
+// Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
+// collation do banco e às vezes joga nome acentuado ou em maiúscula pro
+// fim da lista.
+function porNome(a, b) {
+  return String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR", { sensitivity: "base" });
+}
 function brl(v) {
   return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
@@ -69,6 +75,7 @@ export default function Insumos({ permissoes }) {
   const [busca, setBusca] = useState("");
   const [filtro, setFiltro] = useState("todos");
   const [importando, setImportando] = useState(false);
+  const [modo, setModo] = useState("cadastro"); // cadastro | limpeza
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -79,7 +86,7 @@ export default function Insumos({ permissoes }) {
       supabase.from("prato_insumos").select("insumo_id"),
     ]);
     if (e1) setErro(e1.message);
-    setInsumos(ins || []);
+    setInsumos([...(ins || [])].sort(porNome));
     const contagem = {};
     (pi || []).forEach((r) => { contagem[r.insumo_id] = (contagem[r.insumo_id] || 0) + 1; });
     setUsos(contagem);
@@ -98,7 +105,7 @@ export default function Insumos({ permissoes }) {
       if (filtro === "semcusto" && Number(i.custo_medio_atual)) return false;
       if (filtro === "semficha" && usos[i.id]) return false;
       return true;
-    });
+    }).sort(porNome);
   }, [insumos, busca, filtro, usos]);
 
   const salvarCampo = async (insumo, campo, valorBruto) => {
@@ -169,6 +176,19 @@ export default function Insumos({ permissoes }) {
         />
       )}
 
+      {editar && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+          <button onClick={() => setModo("cadastro")}
+            style={{ ...chip, ...(modo === "cadastro" ? chipAtivo : {}) }}>Cadastro</button>
+          <button onClick={() => setModo("limpeza")}
+            style={{ ...chip, ...(modo === "limpeza" ? chipAtivo : {}) }}>Limpeza</button>
+        </div>
+      )}
+
+      {modo === "limpeza" ? (
+        <Limpeza aoMudar={carregar} />
+      ) : (
+      <>
       {editar && !importando && <NovoInsumo aoCriar={carregar} setErro={setErro} />}
 
       {erro && (
@@ -250,11 +270,228 @@ export default function Insumos({ permissoes }) {
         </div>
       )}
 
+      </>
+      )}
+
+      {modo === "cadastro" && (
       <div style={{ fontSize: 11, color: "#8A8778", marginTop: 12, lineHeight: 1.6 }}>
         O custo aqui é o <b>custo médio por unidade</b> — quanto custa uma unidade do
         insumo, na unidade escolhida. Se a caixa de 30 hambúrgueres sai por R$ 135, o custo do insumo
         "Hambúrguer" é R$ 4,50 e a unidade é <b>un</b>. Quando você confirma uma
         nota fiscal, esse número é atualizado sozinho pelo preço da compra.
+      </div>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Limpeza do cadastro
+//
+// O cadastro juntou duas coisas diferentes: insumo (o que se COMPRA) e
+// item de venda. Todo "Adicional de X" ganhou um insumo espelho, e a
+// ficha dele aponta pra si mesma — nunca vai gerar custo. Tem também
+// duplicata de compra: "Açai" e "Açaí 10kg" são o mesmo açaí.
+//
+// Duas ações, e a ordem importa:
+//   JUNTAR  move ficha, estoque e histórico do errado pro certo, e apaga
+//           o errado. É o que resolve "Adicional de granola" -> "Granola".
+//   EXCLUIR só serve pra quem não tem nada preso. Quem está em ficha ou
+//           tem movimento de estoque é recusado, com o motivo — apagar
+//           ali perderia o histórico em vez de corrigi-lo.
+//
+// Nada aqui toca em `pratos`. Produto de venda não é mexido.
+// =====================================================================
+function Limpeza({ aoMudar }) {
+  const [linhas, setLinhas] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busca, setBusca] = useState("");
+  const [filtro, setFiltro] = useState("espelho");
+  const [marcados, setMarcados] = useState(() => new Set());
+  const [destino, setDestino] = useState({});
+  const [ocupado, setOcupado] = useState(null);
+  const [resultado, setResultado] = useState(null);
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    const { data, error } = await supabase.rpc("insumos_para_limpeza");
+    if (error) setErro(error.message);
+    setLinhas([...(data || [])].sort(porNome));
+    setMarcados(new Set());
+    setCarregando(false);
+  }, []);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const espelhos = linhas.filter((l) => l.prato_mesmo_nome).length;
+  const soltos = linhas.filter((l) => l.fichas === 0 && l.movimentos_estoque === 0 && l.compoe_outro === 0).length;
+
+  const visiveis = useMemo(() => {
+    const q = chaveNome(busca);
+    return linhas.filter((l) => {
+      if (q && !chaveNome(l.nome).includes(q)) return false;
+      if (filtro === "espelho" && !l.prato_mesmo_nome) return false;
+      if (filtro === "soltos" && !(l.fichas === 0 && l.movimentos_estoque === 0 && l.compoe_outro === 0)) return false;
+      if (filtro === "semcusto" && Number(l.custo_medio_atual)) return false;
+      return true;
+    });
+  }, [linhas, busca, filtro]);
+
+  const alternar = (id) => {
+    setMarcados((prev) => {
+      const novo = new Set(prev);
+      if (novo.has(id)) novo.delete(id); else novo.add(id);
+      return novo;
+    });
+  };
+  const marcarTodosVisiveis = () => {
+    const todos = visiveis.every((l) => marcados.has(l.id));
+    setMarcados(todos ? new Set() : new Set(visiveis.map((l) => l.id)));
+  };
+
+  const juntar = async (linha) => {
+    const alvo = destino[linha.id];
+    if (!alvo) { setErro(`Escolha com qual insumo juntar "${linha.nome}".`); return; }
+    setOcupado(linha.id); setErro(""); setMsg(""); setResultado(null);
+    const { data, error } = await supabase.rpc("juntar_insumos", { p_origem: linha.id, p_destino: alvo });
+    setOcupado(null);
+    if (error) { setErro(error.message); return; }
+    setMsg(data || "Insumos juntados.");
+    setDestino((d) => ({ ...d, [linha.id]: "" }));
+    await carregar();
+    aoMudar?.();
+  };
+
+  const excluirMarcados = async () => {
+    if (marcados.size === 0) return;
+    setOcupado("lote"); setErro(""); setMsg(""); setResultado(null);
+    const { data, error } = await supabase.rpc("excluir_insumos", { p_ids: [...marcados] });
+    setOcupado(null);
+    if (error) { setErro(error.message); return; }
+    setResultado(data || []);
+    await carregar();
+    aoMudar?.();
+  };
+
+  if (carregando) return <div style={vazio}><Loader2 size={16} /> Carregando…</div>;
+
+  const apagados = (resultado || []).filter((r) => r.excluido);
+  const recusados = (resultado || []).filter((r) => !r.excluido);
+
+  return (
+    <div>
+      <div style={{ ...avisoStyle, marginBottom: 12 }}>
+        <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+        <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>
+          <b>{espelhos} insumo(s) têm um prato com o mesmo nome.</b> Isso é
+          sinal de espelho: o item de venda virou insumo por engano, e a
+          ficha dele aponta pra si mesma. O certo é <b>juntar</b> com o
+          insumo de verdade — "Adicional de granola" com "Granola" — e não
+          simplesmente excluir, senão a ficha do prato fica vazia.
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ position: "relative", flex: 1, minWidth: 170 }}>
+          <Search size={14} style={{ position: "absolute", left: 10, top: 11, color: "#8A8778" }} />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Procurar…"
+            style={{ ...inputStyle, width: "100%", paddingLeft: 30, boxSizing: "border-box" }} />
+        </div>
+        {[
+          { chave: "espelho", label: `Espelho de prato (${espelhos})` },
+          { chave: "soltos", label: `Sem nada preso (${soltos})` },
+          { chave: "semcusto", label: "Sem custo" },
+          { chave: "todos", label: `Todos (${linhas.length})` },
+        ].map((f) => (
+          <button key={f.chave} onClick={() => setFiltro(f.chave)}
+            style={{ ...chip, ...(filtro === f.chave ? chipAtivo : {}) }}>{f.label}</button>
+        ))}
+      </div>
+
+      {erro && <div style={{ ...avisoStyle, marginBottom: 10 }}><AlertTriangle size={15} /><div style={{ fontSize: 12.5 }}>{erro}</div></div>}
+      {msg && (
+        <div style={{ ...avisoStyle, marginBottom: 10, background: "#EAF3DE", borderColor: "#C4DBA6", color: "#27500A" }}>
+          <Check size={15} /><div style={{ fontSize: 12.5 }}>{msg}</div>
+        </div>
+      )}
+
+      {resultado && (
+        <div style={{ ...avisoStyle, marginBottom: 10, background: apagados.length ? "#EAF3DE" : "#FBF3D9", borderColor: apagados.length ? "#C4DBA6" : "#E8D48A", color: apagados.length ? "#27500A" : "#7A6A1E", flexDirection: "column", gap: 4 }}>
+          {apagados.length > 0 && <div style={{ fontSize: 12.5 }}><b>{apagados.length} excluído(s):</b> {apagados.map((r) => r.nome).join(", ")}</div>}
+          {recusados.map((r) => (
+            <div key={r.id} style={{ fontSize: 12 }}><b>{r.nome}</b> — {r.motivo}</div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+        <button onClick={marcarTodosVisiveis} style={{ ...btnSecondary, padding: "7px 12px", fontSize: 12 }}>
+          {visiveis.length > 0 && visiveis.every((l) => marcados.has(l.id)) ? "Desmarcar todos" : "Marcar todos da lista"}
+        </button>
+        <div style={{ flex: 1 }} />
+        <button onClick={excluirMarcados} disabled={marcados.size === 0 || ocupado === "lote"}
+          style={{
+            ...btnPrimary, padding: "8px 14px", fontSize: 12.5,
+            background: marcados.size ? "#A32D2D" : "#C9C4B4", borderColor: marcados.size ? "#A32D2D" : "#C9C4B4",
+          }}>
+          {ocupado === "lote" ? "Excluindo…" : `Excluir ${marcados.size} marcado(s)`}
+        </button>
+      </div>
+
+      {visiveis.length === 0 ? (
+        <div style={vazio}>Nada nesse filtro.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {visiveis.map((l) => {
+            const preso = l.fichas > 0 || l.movimentos_estoque > 0 || l.compoe_outro > 0;
+            return (
+              <div key={l.id} style={{
+                ...itemRow, flexWrap: "wrap", alignItems: "flex-start",
+                borderColor: marcados.has(l.id) ? "#A32D2D" : "#E8E2D2",
+                background: marcados.has(l.id) ? "#FFF8F8" : "#FFFFFF",
+              }}>
+                <input type="checkbox" checked={marcados.has(l.id)} onChange={() => alternar(l.id)}
+                  style={{ marginTop: 3 }} />
+                <div style={{ flex: 1, minWidth: 150 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F" }}>
+                    {l.nome} <span style={{ fontWeight: 400, color: "#8A8778" }}>· {l.unidade}</span>
+                  </div>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 4 }}>
+                    {l.prato_mesmo_nome && <span style={{ ...selo, background: "#FBF3D9", color: "#854F0B" }}>espelho de prato</span>}
+                    {l.fichas > 0 && <span style={{ ...selo, background: "#37A0E522", color: "#185FA5" }}>{l.fichas} ficha(s)</span>}
+                    {l.movimentos_estoque > 0 && <span style={{ ...selo, background: "#F6F1E7", color: "#8A8778" }}>{l.movimentos_estoque} mov. estoque</span>}
+                    {l.itens_de_nota > 0 && <span style={{ ...selo, background: "#F6F1E7", color: "#8A8778" }}>{l.itens_de_nota} item(ns) de nota</span>}
+                    {l.compoe_outro > 0 && <span style={{ ...selo, background: "#F6F1E7", color: "#8A8778" }}>compõe outro</span>}
+                    {!Number(l.custo_medio_atual) && <span style={{ ...selo, background: "#F0999522", color: "#A32D2D" }}>sem custo</span>}
+                    {!preso && <span style={{ ...selo, background: "#EAF3DE", color: "#27500A" }}>pode excluir</span>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <select value={destino[l.id] || ""} onChange={(e) => setDestino((d) => ({ ...d, [l.id]: e.target.value }))}
+                    style={{ ...inputStyle, minWidth: 150, padding: "7px 8px", fontSize: 12 }}>
+                    <option value="">Juntar com…</option>
+                    {linhas.filter((o) => o.id !== l.id).map((o) => (
+                      <option key={o.id} value={o.id}>{o.nome} ({o.unidade})</option>
+                    ))}
+                  </select>
+                  <button onClick={() => juntar(l)} disabled={!destino[l.id] || ocupado === l.id}
+                    style={{ ...btnPrimary, padding: "7px 12px", fontSize: 12, borderRadius: 8 }}>
+                    {ocupado === l.id ? "..." : "Juntar"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, color: "#8A8778", marginTop: 12, lineHeight: 1.6 }}>
+        <b>Juntar</b> leva ficha, estoque e histórico de notas do insumo errado
+        para o certo, apaga o errado, e ainda guarda o nome antigo como
+        sinônimo — a próxima nota que chegar com aquele nome já cai no lugar
+        certo. <b>Excluir</b> só passa em quem não tem nada preso.
       </div>
     </div>
   );
@@ -574,6 +811,10 @@ const chipAtivo = { background: "#22231F", color: "#F3EFE3", borderColor: "#2223
 const pill = {
   fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999,
   textTransform: "uppercase", letterSpacing: 0.3,
+};
+const selo = {
+  fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999,
+  textTransform: "uppercase", letterSpacing: 0.3, whiteSpace: "nowrap",
 };
 const vazio = {
   display: "flex", alignItems: "center", gap: 8,
