@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload, Lock, Receipt, X } from "lucide-react";
+import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload, Lock, Receipt, X, Download } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import {
   buscarFiadoNoPeriodo, agruparPorPessoa, carregarBaixas, darBaixa,
@@ -1047,49 +1047,132 @@ function PagamentoDasDiarias({ dia, linhasSalvas, fiado, pagamento, aoMudar, set
   );
 }
 
-// Tirar alguem de um dia ja fechado, sem reabrir a escala inteira.
+// ---------------------------------------------------------------------------
+// Folha para impressao / PDF
 //
-// Antes o unico jeito era Editar -> desmarcar -> Calcular e salvar, o que
-// recalcula o rateio de todo mundo. E o caso do registrado que entrou na
-// escala por engano: precisa sair, e os outros precisam receber a fatia
-// dele de volta. Por isso o aviso e explicito.
-function BotaoTirarDoDia({ pessoa, dia, aoTirar, setErro }) {
-  const [confirmando, setConfirmando] = useState(false);
-  const [tirando, setTirando] = useState(false);
-
-  const tirar = async () => {
-    setTirando(true);
-    setErro("");
-    const [{ error: e1 }, { error: e2 }] = await Promise.all([
-      supabase.from("premiacoes_diarias").delete().eq("dia", dia).eq("pessoa_id", pessoa.id),
-      supabase.from("presencas_diarias").delete().eq("dia", dia).eq("pessoa_id", pessoa.id),
-    ]);
-    setTirando(false);
-    if (e1 || e2) { setErro((e1 || e2).message); return; }
-    setConfirmando(false);
-    aoTirar();
-  };
-
-  if (!confirmando) {
-    return (
-      <button onClick={() => setConfirmando(true)} style={{ ...linkBtn, fontSize: 10.5, padding: "2px 0", marginTop: 3 }}>
-        tirar deste dia
-      </button>
-    );
-  }
+// Fica escondida na tela (.folha-pdf tem display:none no index.css) e so
+// aparece na hora de imprimir. O navegador cuida do resto: no Mac, "Salvar
+// como PDF"; no iPhone, Compartilhar > Imprimir. Sem biblioteca nova no
+// build — cada dependencia a mais e mais uma chance do deploy quebrar.
+// ---------------------------------------------------------------------------
+function CabecalhoFolha({ titulo, subtitulo, emitidoPor }) {
+  const agora = new Date();
   return (
-    <div style={{ ...avisoStyle, marginTop: 6, padding: "9px 11px", alignItems: "center", flexWrap: "wrap" }}>
-      <div style={{ flex: 1, minWidth: 170, fontSize: 12 }}>
-        Tirar <b>{pessoa.nome}</b> deste dia? O valor dela some, mas a comissão
-        dos outros <b>não</b> é recalculada sozinha — para redistribuir, use
-        Editar e depois Calcular e salvar.
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 14, borderBottom: "3px solid #C72B2E", paddingBottom: 12 }}>
+      <img src="/icons/logo-full.png" alt="Mr Kong" style={{ width: 96, height: "auto", flexShrink: 0 }} />
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 17, fontWeight: 800, color: "#231A18" }}>{titulo}</div>
+        <div style={{ fontSize: 11.5, color: "#8B8071", marginTop: 2 }}>
+          Mr Kong Fast Food · Rio Verde/GO{subtitulo ? ` · ${subtitulo}` : ""}
+        </div>
       </div>
-      <button onClick={tirar} disabled={tirando}
-        style={{ ...btnMiniEscuro, background: "#A32D2D", borderColor: "#A32D2D" }}>
-        {tirando ? "..." : "Tirar"}
-      </button>
-      <button onClick={() => setConfirmando(false)} style={{ ...linkBtn, fontSize: 11 }}>cancelar</button>
+      <div style={{ fontSize: 10.5, color: "#8B8071", textAlign: "right", lineHeight: 1.5 }}>
+        emitido em<br />
+        {agora.toLocaleDateString("pt-BR")} {agora.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+        {emitidoPor ? <><br />por {emitidoPor}</> : null}
+      </div>
     </div>
+  );
+}
+
+function FolhaEscala({ dia, linhas, participacao, taxa, emitidoPor }) {
+  const tdCab = {
+    borderBottom: "1.5px solid #231A18", padding: "6px 4px", fontSize: 9.5, fontWeight: 800,
+    textTransform: "uppercase", letterSpacing: 0.5, color: "#8B8071", textAlign: "left",
+  };
+  const td = { padding: "7px 4px", borderBottom: "1px solid #F3EBDD", fontSize: 11.5 };
+  const n = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
+  const totalHoras = linhas.reduce((s2, l) => s2 + (participacao[l.pessoa_id]?.horas || 0), 0);
+  const totalDia = linhas.reduce((s2, l) => s2 + (Number(l.total_dia) || 0), 0);
+
+  return (
+    <div className="folha-pdf">
+      <CabecalhoFolha
+        titulo="Escala do dia"
+        subtitulo={dia.split("-").reverse().join("/")}
+        emitidoPor={emitidoPor}
+      />
+
+      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 14 }}>
+        <thead>
+          <tr>
+            <td style={tdCab}>Pessoa</td>
+            <td style={tdCab}>Cargo</td>
+            <td style={tdCab}>Horário</td>
+            <td style={{ ...tdCab, textAlign: "right" }}>Horas</td>
+            <td style={{ ...tdCab, textAlign: "right" }}>Método</td>
+            <td style={{ ...tdCab, textAlign: "right" }}>A pagar</td>
+          </tr>
+        </thead>
+        <tbody>
+          {linhas.map((l) => {
+            const part = participacao[l.pessoa_id] || {};
+            return (
+              <tr key={l.pessoa_id}>
+                <td style={td}>{l.pessoa?.nome}</td>
+                <td style={td}>{PAPEL_LABEL[l.pessoa?.papel]}{l.pessoa?.tipo_contrato === "diarista" ? " · diarista" : ""}</td>
+                <td style={td}>{part.entrada && part.saida ? `${part.entrada}–${part.saida}` : "—"}</td>
+                <td style={n}>{(part.horas || 0).toLocaleString("pt-BR")}</td>
+                <td style={n}>
+                  {l.metodo_usado === "gerente_previa" ? "2% do mês"
+                    : l.metodo_usado === "hora" ? "por hora"
+                    : l.metodo_usado === "comissao" ? "taxa + diária"
+                    : "comissão"}
+                </td>
+                <td style={{ ...n, fontWeight: 700 }}>{brl(l.total_dia)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 11.5 }} colSpan={3}>
+              {linhas.length} pessoa(s) · taxa de serviço do dia {brl(taxa)}
+            </td>
+            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 11.5, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+              {totalHoras.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}
+            </td>
+            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18" }} />
+            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 12.5, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+              {brl(totalDia)}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+
+      <div className="nao-quebrar" style={{ marginTop: 14, fontSize: 10.5, color: "#8B8071", lineHeight: 1.7 }}>
+        A comissão do dia é metade da taxa de serviço para os garçons e metade
+        para a equipe interna, dividida por cabeça dentro de cada grupo, só entre
+        quem trabalhou. Diarista recebe o maior entre <b>diária base + comissão</b> e
+        <b> horas × valor da hora</b>. Gerente não entra na divisão: recebe 2% do
+        faturamento bruto, fechado no mês.
+      </div>
+
+      <div className="nao-quebrar" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 26, marginTop: 40 }}>
+        <div style={{ borderTop: "1px solid #231A18", paddingTop: 5, fontSize: 10.5, color: "#8B8071", textAlign: "center" }}>
+          Responsável pelo fechamento
+        </div>
+        <div style={{ borderTop: "1px solid #231A18", paddingTop: 5, fontSize: 10.5, color: "#8B8071", textAlign: "center" }}>
+          Conferido por
+        </div>
+      </div>
+
+      <div style={{ marginTop: 20, paddingTop: 8, borderTop: "1px solid #E9DFCE", fontSize: 9.5, color: "#8B8071", display: "flex", justifyContent: "space-between" }}>
+        <span>Painel Mr. Kong</span>
+        <span>Escala de {dia.split("-").reverse().join("/")}</span>
+      </div>
+    </div>
+  );
+}
+
+// Botao que dispara a impressao. O `setTimeout` existe porque o Safari
+// precisa de um respiro entre o React montar a folha e o print abrir.
+function BotaoPdf({ children = "Baixar PDF" }) {
+  const imprimir = () => { setTimeout(() => window.print(), 60); };
+  return (
+    <button onClick={imprimir} style={btnPdf}>
+      <Download size={15} /> {children}
+    </button>
   );
 }
 
@@ -1395,6 +1478,7 @@ function PremiacaoDoDia({ isAdmin }) {
   const [jaTemPresenca, setJaTemPresenca] = useState(false);
   const fiado = useFiadoEquipe(pessoas, isAdmin);
   const [pagamentoDoDia, setPagamentoDoDia] = useState(null);
+  const [nomeDeQuemImprime, setNomeDeQuemImprime] = useState("");
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
@@ -1410,6 +1494,12 @@ function PremiacaoDoDia({ isAdmin }) {
       const { data: pagDia } = await supabase
         .from("pagamentos_diaria").select("*").eq("dia", dia).maybeSingle();
       setPagamentoDoDia(pagDia || null);
+      const { data: usuario } = await supabase.auth.getUser();
+      if (usuario?.user?.id) {
+        const { data: meuPerfil } = await supabase
+          .from("perfis").select("nome").eq("id", usuario.user.id).maybeSingle();
+        setNomeDeQuemImprime(meuPerfil?.nome || "");
+      }
       setPessoas([...(pessoasData || [])].sort(porNome));
       setPremiacoesSalvas(premiacoesData || []);
       // Trava só quando a premiação já foi calculada — aí sim o dia está
@@ -1648,21 +1738,6 @@ function PremiacaoDoDia({ isAdmin }) {
     if (isAdmin && taxaNum <= 0) { setErro("Informe a taxa de serviço do dia."); return; }
     setSalvando(true);
     setErro("");
-    // Quem foi DESMARCADO some do dia. Sem isto, marcar alguém, salvar, e
-    // depois desmarcar e salvar de novo deixava a presença e a premiação
-    // antigas para trás — a pessoa continuava recebendo comissão de um dia
-    // que não trabalhou. Vale inclusive para registrado.
-    const idsDoDia = selecionados.map((p) => p.id);
-    if (idsDoDia.length > 0) {
-      await supabase.from("presencas_diarias").delete()
-        .eq("dia", dia).not("pessoa_id", "in", `(${idsDoDia.join(",")})`);
-      await supabase.from("premiacoes_diarias").delete()
-        .eq("dia", dia).not("pessoa_id", "in", `(${idsDoDia.join(",")})`);
-    } else {
-      await supabase.from("presencas_diarias").delete().eq("dia", dia);
-      await supabase.from("premiacoes_diarias").delete().eq("dia", dia);
-    }
-
     // A presença (quem trabalhou + horário + horas) sempre salva, mesmo
     // sem admin — é isso que qualquer pessoa aprovada pode registrar. Os
     // valores calculados (comissão etc.) só entram quando tem taxa de
@@ -1748,21 +1823,10 @@ function PremiacaoDoDia({ isAdmin }) {
                 </div>
                 {isAdmin && <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{brl(l.total_dia)}</div>}
               </div>
-              {isAdmin && (
+              {isAdmin && l.metodo_usado && (
                 <div style={{ fontSize: 10, color: "#0F6E56", marginTop: 4 }}>
-                  {l.metodo_usado === "gerente_previa" ? (
-                    // Gerente não entra na divisão da taxa. O texto genérico
-                    // fazia parecer que ela dividia o bolo com a equipe.
-                    <>Prévia de 2% do faturamento bruto do dia — o oficial fecha no mês</>
-                  ) : l.metodo_usado ? (
-                    <>✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}</>
-                  ) : (
-                    <>✓ Fatia da comissão do dia: {brl(l.total_dia)} — salário fecha no mês</>
-                  )}
+                  ✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}
                 </div>
-              )}
-              {isAdmin && (
-                <BotaoTirarDoDia pessoa={l.pessoa} dia={dia} aoTirar={carregar} setErro={setErro} />
               )}
               {isAdmin && (
                 <FiadoNoAcerto fiado={fiado} pessoaId={l.pessoa_id} dia={dia} valorDoDia={l.total_dia} />
@@ -1817,11 +1881,22 @@ function PremiacaoDoDia({ isAdmin }) {
             setErro={setErro}
           />
         )}
-        {isAdmin && (
-          <button onClick={() => setModoLeitura(false)} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
-            <Pencil size={15} /> Editar
-          </button>
-        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <BotaoPdf>Baixar escala em PDF</BotaoPdf>
+          {isAdmin && (
+            <button onClick={() => setModoLeitura(false)} style={{ ...btnSecondary, flex: 1, minWidth: 140, display: "flex", justifyContent: "center", gap: 6 }}>
+              <Pencil size={15} /> Editar
+            </button>
+          )}
+        </div>
+
+        <FolhaEscala
+          dia={dia}
+          linhas={linhasSalvas}
+          participacao={participacao}
+          taxa={taxaNumSalva}
+          emitidoPor={nomeDeQuemImprime}
+        />
       </div>
     );
   }
@@ -1990,11 +2065,6 @@ function PremiacaoDoDia({ isAdmin }) {
                         </span>
                       </div>
                     )}
-                    {l.metodoUsado === null && (
-                      <div style={{ fontSize: 10, color: "#8A8778", marginTop: 4 }}>
-                        Registrado: leva só a fatia da comissão do dia — o salário fecha no Fechamento mensal
-                      </div>
-                    )}
                     {l.metodoUsado === "gerente_previa" && (
                       <div style={{ fontSize: 10, color: "#8A8778", marginTop: 4 }}>
                         2% de {brl(faturamentoBrutoDia)} (faturamento bruto do dia) — prévia informativa, o valor oficial fecha por mês
@@ -2039,6 +2109,108 @@ function PremiacaoDoDia({ isAdmin }) {
     </div>
   );
 }
+// ---------------------------------------------------------------------------
+// Folha do fechamento mensal
+// ---------------------------------------------------------------------------
+function FolhaFechamento({ mesRef, linhas, gerentes, vales, fiado, emitidoPor }) {
+  const tdCab = {
+    borderBottom: "1.5px solid #231A18", padding: "6px 4px", fontSize: 9.5, fontWeight: 800,
+    textTransform: "uppercase", letterSpacing: 0.5, color: "#8B8071", textAlign: "left",
+  };
+  const td = { padding: "7px 4px", borderBottom: "1px solid #F3EBDD", fontSize: 11.5 };
+  const n = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
+
+  const liquidoDe = (l) => {
+    const vale = Number(vales[l.pessoaId]?.valor || 0);
+    const desc = fiado.buscou ? fiado.descontoDe(l.pessoaId) : 0;
+    return { vale, desc, liquido: l.total - vale - desc };
+  };
+  const totalLiquido =
+    linhas.reduce((s2, l) => s2 + liquidoDe(l).liquido, 0) +
+    gerentes.reduce((s2, g) => s2 + g.total, 0);
+
+  return (
+    <div className="folha-pdf">
+      <CabecalhoFolha titulo="Fechamento mensal" subtitulo={mesRef} emitidoPor={emitidoPor} />
+
+      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 14 }}>
+        <thead>
+          <tr>
+            <td style={tdCab}>Pessoa</td>
+            <td style={tdCab}>Cargo</td>
+            <td style={{ ...tdCab, textAlign: "right" }}>Dias</td>
+            <td style={{ ...tdCab, textAlign: "right" }}>Salário</td>
+            <td style={{ ...tdCab, textAlign: "right" }}>Comissão</td>
+            <td style={{ ...tdCab, textAlign: "right" }}>Vale</td>
+            <td style={{ ...tdCab, textAlign: "right" }}>Fiado</td>
+            <td style={{ ...tdCab, textAlign: "right" }}>Líquido</td>
+          </tr>
+        </thead>
+        <tbody>
+          {linhas.map((l) => {
+            const { vale, desc, liquido } = liquidoDe(l);
+            return (
+              <tr key={l.pessoaId || l.nome}>
+                <td style={td}>{l.nome}</td>
+                <td style={td}>{PAPEL_LABEL[l.papel]}</td>
+                <td style={n}>{l.dias}</td>
+                <td style={n}>{brl(l.salarioBase)}</td>
+                <td style={n}>{brl(l.comissao)}</td>
+                <td style={n}>{vale ? `− ${brl(vale)}` : "—"}</td>
+                <td style={n}>{desc ? `− ${brl(desc)}` : "—"}</td>
+                <td style={{ ...n, fontWeight: 700 }}>{brl(liquido)}</td>
+              </tr>
+            );
+          })}
+          {gerentes.map((g) => (
+            <tr key={g.nome}>
+              <td style={td}>{g.nome}</td>
+              <td style={td}>Gerente</td>
+              <td style={n}>—</td>
+              <td style={n}>{brl(g.salarioBase)}</td>
+              <td style={n}>{brl(g.doisPorcento)}</td>
+              <td style={n}>—</td>
+              <td style={n}>—</td>
+              <td style={{ ...n, fontWeight: 700 }}>{brl(g.total)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 11.5 }} colSpan={7}>
+              Total a pagar em {mesRef}
+            </td>
+            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 12.5, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+              {brl(totalLiquido)}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+
+      <div className="nao-quebrar" style={{ marginTop: 14, fontSize: 10.5, color: "#8B8071", lineHeight: 1.7 }}>
+        Comissão é a soma das fatias diárias da taxa de serviço nos dias em que a
+        pessoa trabalhou. <b>Vale</b> é o adiantamento pago no dia 20 — ele já saiu
+        do caixa e por isso desce do líquido. <b>Fiado</b> é o consumo da própria
+        pessoa, descontado no acerto. Gerente recebe salário mais 2% do
+        faturamento bruto do mês.
+      </div>
+
+      <div className="nao-quebrar" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 26, marginTop: 40 }}>
+        <div style={{ borderTop: "1px solid #231A18", paddingTop: 5, fontSize: 10.5, color: "#8B8071", textAlign: "center" }}>
+          Responsável pelo fechamento
+        </div>
+        <div style={{ borderTop: "1px solid #231A18", paddingTop: 5, fontSize: 10.5, color: "#8B8071", textAlign: "center" }}>
+          Conferido por
+        </div>
+      </div>
+
+      <div style={{ marginTop: 20, paddingTop: 8, borderTop: "1px solid #E9DFCE", fontSize: 9.5, color: "#8B8071", display: "flex", justifyContent: "space-between" }}>
+        <span>Painel Mr. Kong</span><span>Fechamento {mesRef}</span>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Vales do mes — o adiantamento do dia 20
 //
@@ -2246,6 +2418,7 @@ function FechamentoMensal() {
   const [extrato, setExtrato] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [pessoas, setPessoas] = useState([]);
+  const [nomeDeQuemImprime, setNomeDeQuemImprime] = useState("");
   // A aba Fechamento mensal so aparece pra administrador (SUBABAS.soAdmin),
   // entao quem chega aqui ja passou pelo gate.
   const [vales, setVales] = useState({}); // pessoa_id -> { valor, data_pagamento }
@@ -2289,6 +2462,12 @@ function FechamentoMensal() {
       return { pessoaId: p.id, nome: p.nome, salarioBase, faturamentoBruto, doisPorcento, total: salarioBase + doisPorcento };
     });
     setGerentes(listaGerentes);
+    const { data: usuarioAtual } = await supabase.auth.getUser();
+    if (usuarioAtual?.user?.id) {
+      const { data: meuPerfil } = await supabase
+        .from("perfis").select("nome").eq("id", usuarioAtual.user.id).maybeSingle();
+      setNomeDeQuemImprime(meuPerfil?.nome || "");
+    }
     const { data: valesData } = await supabase
       .from("vales_mensais").select("pessoa_id, valor, data_pagamento").eq("mes", mesRef);
     setVales(Object.fromEntries((valesData || []).map((v) => [v.pessoa_id, v])));
@@ -2384,9 +2563,7 @@ function FechamentoMensal() {
                 <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(e.total_dia)}</span>
               </div>
               <div style={{ fontSize: 10, color: "#8A8778", marginTop: 3 }}>
-                {e.metodo_usado === "gerente_previa" ? (
-                  <span>Prévia de 2% do faturamento bruto do dia</span>
-                ) : e.metodo_usado ? (
+                {e.metodo_usado ? (
                   <>
                     <span style={{ fontWeight: e.metodo_usado === "comissao" ? 700 : 400, color: e.metodo_usado === "comissao" ? "#0F6E56" : "#8A8778" }}>
                       Taxa de serviço + diária base: {brl(e.valor_metodo_comissao)}
@@ -2544,6 +2721,20 @@ function FechamentoMensal() {
               <span>Total geral do mês</span><span style={{ fontWeight: 700, color: "#22231F" }}>{brl(total)}</span>
             </div>
           )}
+
+          {(linhas.length > 0 || gerentes.length > 0) && (
+            <>
+              <BotaoPdf>Baixar fechamento em PDF</BotaoPdf>
+              <FolhaFechamento
+                mesRef={mesRef}
+                linhas={linhas}
+                gerentes={gerentes}
+                vales={vales}
+                fiado={fiado}
+                emitidoPor={nomeDeQuemImprime}
+              />
+            </>
+          )}
         </>
       )}
     </div>
@@ -2565,6 +2756,11 @@ const itemRowVale = {
   display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
   background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10,
   padding: "8px 11px", flexWrap: "wrap",
+};
+const btnPdf = {
+  display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+  background: "#F2D742", border: "1px solid #D9BE2C", color: "#4A3B06",
+  borderRadius: 10, padding: "11px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer",
 };
 const btnMiniEscuro = {
   background: "#22231F", color: "#F3EFE3", border: "1px solid #22231F", borderRadius: 8,
