@@ -258,10 +258,12 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
     const dept = aparenciaDe(setorEstoque);
     return (
       <ContagemEstoque
+        key={setorEstoque}
         setor={setorEstoque}
         label={dept.label}
         dia={opDate}
         isAdmin={isAdmin}
+        aoTrocarSetor={(k) => setSetorEstoque(k)}
         onVoltar={() => { setTela("home"); carregarEstoque(); }}
       />
     );
@@ -535,7 +537,7 @@ function brl(v) {
   return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-function ContagemEstoque({ setor, label, dia, isAdmin, onVoltar }) {
+function ContagemEstoque({ setor, label, dia, isAdmin, aoTrocarSetor, onVoltar }) {
   const [contagemId, setContagemId] = useState(null);
   const [status, setStatus] = useState("aberta");
   const [linhas, setLinhas] = useState([]);
@@ -545,6 +547,12 @@ function ContagemEstoque({ setor, label, dia, isAdmin, onVoltar }) {
   const [msg, setMsg] = useState("");
   const [filtro, setFiltro] = useState("todos");
   const [ocupado, setOcupado] = useState(false);
+  const [setoresLista, setSetoresLista] = useState([]);
+  const [todosInsumos, setTodosInsumos] = useState([]);
+  const [adicionando, setAdicionando] = useState(false);
+  const [buscaAdd, setBuscaAdd] = useState("");
+  const [movendo, setMovendo] = useState(null);        // insumo_id
+  const [setoresDoItem, setSetoresDoItem] = useState([]);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -567,6 +575,21 @@ function ContagemEstoque({ setor, label, dia, isAdmin, onVoltar }) {
   }, [dia, setor]);
 
   useEffect(() => { carregar(); }, [carregar]);
+
+  // Lista de setores (pro trocador do topo) e catálogo de insumos (pro +).
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const [{ data: se }, { data: ins }] = await Promise.all([
+        supabase.from("setores_estoque").select("chave, label, ordem").eq("ativo", true).order("ordem"),
+        supabase.from("insumos").select("id, nome, unidade").order("nome"),
+      ]);
+      if (!vivo) return;
+      setSetoresLista(se || []);
+      setTodosInsumos(ins || []);
+    })();
+    return () => { vivo = false; };
+  }, []);
 
   const gravar = async (linha, texto) => {
     if (status === "fechada") return;
@@ -602,6 +625,62 @@ function ContagemEstoque({ setor, label, dia, isAdmin, onVoltar }) {
       : "Contagem fechada e guardada. O estoque não foi alterado.");
   };
 
+  // Tirar do setor NÃO apaga o insumo — ele continua no cadastro, no
+  // custo e nas fichas. Só deixa de ser contado aqui. Apagar insumo de
+  // verdade é na tela de Insumos, que sabe checar ficha e histórico.
+  const tirarDoSetor = async (linha) => {
+    setErro("");
+    const { error } = await supabase.rpc("marcar_setor_insumos", {
+      p_ids: [linha.insumo_id], p_setor: setor, p_ligar: false,
+    });
+    if (error) { setErro(error.message); return; }
+    setLinhas((atual) => atual.filter((r) => r.insumo_id !== linha.insumo_id));
+    setMsg(`"${linha.nome}" saiu da contagem do ${label}.`);
+  };
+
+  const adicionarAoSetor = async (insumo) => {
+    setErro("");
+    const { error } = await supabase.rpc("marcar_setor_insumos", {
+      p_ids: [insumo.id], p_setor: setor, p_ligar: true,
+    });
+    if (error) { setErro(error.message); return; }
+    setBuscaAdd("");
+    setAdicionando(false);
+    carregar();
+  };
+
+  const criarEAdicionar = async (nome) => {
+    setErro("");
+    const { data, error } = await supabase.from("insumos")
+      .insert({ nome: nome.trim(), unidade: "un", custo_medio_atual: 0 })
+      .select("id, nome, unidade").single();
+    if (error) { setErro(error.message); return; }
+    setTodosInsumos((a) => [...a, data]);
+    await adicionarAoSetor(data);
+  };
+
+  const abrirMover = async (linha) => {
+    if (movendo === linha.insumo_id) { setMovendo(null); return; }
+    setErro("");
+    setMovendo(linha.insumo_id);
+    const { data } = await supabase.from("insumo_setores")
+      .select("setor").eq("insumo_id", linha.insumo_id);
+    setSetoresDoItem((data || []).map((r) => r.setor));
+  };
+
+  const salvarSetoresDoItem = async (linha, lista) => {
+    setErro("");
+    const { error } = await supabase.rpc("definir_setores_insumo", {
+      p_insumo: linha.insumo_id, p_setores: lista,
+    });
+    if (error) { setErro(error.message); return; }
+    setMovendo(null);
+    if (!lista.includes(setor)) {
+      setLinhas((atual) => atual.filter((r) => r.insumo_id !== linha.insumo_id));
+      setMsg(`"${linha.nome}" saiu da contagem do ${label}.`);
+    }
+  };
+
   const reabrir = async () => {
     setOcupado(true);
     setErro("");
@@ -628,13 +707,15 @@ function ContagemEstoque({ setor, label, dia, isAdmin, onVoltar }) {
         <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A8778", fontSize: 13 }}>
           <Loader2 size={16} /> Carregando…
         </div>
-      ) : linhas.length === 0 ? (
-        <div style={avisoBloqueio}>
-          <AlertTriangle size={16} />
-          Nenhum insumo marcado para o setor {label}. Marque no lápis da tela de Insumos.
-        </div>
       ) : (
         <>
+          {linhas.length === 0 && (
+            <div style={{ ...avisoBloqueio, marginBottom: 12 }}>
+              <AlertTriangle size={16} />
+              Nenhum insumo na contagem do {label} ainda. Use o + para trazer.
+            </div>
+          )}
+
           {status === "fechada" && (
             <div style={{ ...avisoBloqueio, background: "#EAF6EF", borderColor: "#BFE0CE", color: "#2F8F5B", marginBottom: 12 }}>
               <CheckCircle2 size={16} />
@@ -645,6 +726,12 @@ function ContagemEstoque({ setor, label, dia, isAdmin, onVoltar }) {
           {erro && (
             <div style={{ ...avisoBloqueio, background: "#FDECEA", borderColor: "#F0C0B8", color: "#A32D2D", marginBottom: 12 }}>
               <AlertTriangle size={16} /> {erro}
+            </div>
+          )}
+
+          {msg && status !== "fechada" && (
+            <div style={{ ...avisoBloqueio, background: "#EAF6EF", borderColor: "#BFE0CE", color: "#2F8F5B", marginBottom: 12 }}>
+              <CheckCircle2 size={16} /> {msg}
             </div>
           )}
 
@@ -663,7 +750,21 @@ function ContagemEstoque({ setor, label, dia, isAdmin, onVoltar }) {
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+          {/* Trocar de setor sem voltar: contar o bar e a chapa é a mesma volta. */}
+          {setoresLista.length > 1 && (
+            <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "#8A8778" }}>Setor:</span>
+              {setoresLista.map((se) => (
+                <button key={se.chave}
+                  onClick={() => se.chave !== setor && aoTrocarSetor && aoTrocarSetor(se.chave)}
+                  style={{ ...pillBtn, ...(se.chave === setor ? { background: "#22231F", borderColor: "#22231F", color: "#F3EFE3" } : {}) }}>
+                  {se.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
             {[
               { chave: "todos", label: `Todos (${linhas.length})` },
               { chave: "faltam", label: `Faltam contar (${linhas.length - contados})` },
@@ -674,7 +775,65 @@ function ContagemEstoque({ setor, label, dia, isAdmin, onVoltar }) {
                 {f.label}
               </button>
             ))}
+            <div style={{ flex: 1 }} />
+            {isAdmin && status !== "fechada" && (
+              <button onClick={() => setAdicionando((a) => !a)}
+                style={{ ...pillBtn, ...(adicionando ? { background: "#22231F", borderColor: "#22231F", color: "#F3EFE3" } : {}) }}>
+                <Plus size={13} /> Adicionar item
+              </button>
+            )}
           </div>
+
+          {isAdmin && adicionando && status !== "fechada" && (
+            <div style={{ ...cardStyle, marginBottom: 12 }}>
+              <input
+                autoFocus
+                value={buscaAdd}
+                onChange={(e) => setBuscaAdd(e.target.value)}
+                placeholder="Procurar insumo pelo nome…"
+                style={{ ...inputStyle, marginBottom: 8 }} />
+              {(() => {
+                const jaTem = new Set(linhas.map((r) => r.insumo_id));
+                const q = chaveDoNome(buscaAdd);
+                const achados = todosInsumos
+                  .filter((i) => !jaTem.has(i.id))
+                  .filter((i) => !q || chaveDoNome(i.nome).includes(q))
+                  .slice(0, 12);
+                const nomeExato = todosInsumos.some(
+                  (i) => chaveDoNome(i.nome) === q,
+                );
+                return (
+                  <>
+                    {achados.map((i) => (
+                      <button key={i.id} onClick={() => adicionarAoSetor(i)}
+                        style={{
+                          ...itemRow, width: "100%", marginBottom: 6, cursor: "pointer",
+                          textAlign: "left", fontSize: 14,
+                        }}>
+                        <span style={{ fontWeight: 600, color: "#22231F" }}>{i.nome}</span>
+                        <span style={{ fontSize: 11, color: "#8A8778" }}>{i.unidade}</span>
+                      </button>
+                    ))}
+                    {buscaAdd.trim() && !nomeExato && (
+                      <button onClick={() => criarEAdicionar(buscaAdd)}
+                        style={{ ...btnSecondary, width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        <Plus size={14} /> Criar "{buscaAdd.trim()}" como insumo novo
+                      </button>
+                    )}
+                    {!buscaAdd.trim() && achados.length === 0 && (
+                      <div style={{ fontSize: 12, color: "#8A8778" }}>
+                        Todos os insumos do cadastro já estão neste setor.
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+              <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8, lineHeight: 1.6 }}>
+                Insumo criado aqui nasce em <b>un</b> e com custo R$ 0,00 — acerte
+                a unidade e o custo na tela de Insumos, senão ele sai de graça no CMV.
+              </div>
+            </div>
+          )}
 
           <div style={{ display: "grid", gap: 8 }}>
             {lista.map((r) => {
@@ -682,6 +841,7 @@ function ContagemEstoque({ setor, label, dia, isAdmin, onVoltar }) {
               return (
                 <div key={r.insumo_id} style={{
                   ...itemRow,
+                  flexWrap: "wrap",
                   borderColor: dif === null ? "#E8E2D2" : dif === 0 ? "#BFE0CE" : "#E8C489",
                   background: dif === null ? "#FFFFFF" : dif === 0 ? "#F7FBF8" : "#FFFBF2",
                 }}>
@@ -709,6 +869,48 @@ function ContagemEstoque({ setor, label, dia, isAdmin, onVoltar }) {
                       fontSize: 15, fontWeight: 700, background: "#FFFFFF", color: "#22231F",
                       fontVariantNumeric: "tabular-nums",
                     }} />
+
+                  {isAdmin && status !== "fechada" && (
+                    <>
+                      <button onClick={() => abrirMover(r)} style={ghostIconBtn}
+                        title="Em que setores este item é contado">
+                        <Pencil size={15} color={movendo === r.insumo_id ? "#22231F" : "#8A8778"} />
+                      </button>
+                      <button onClick={() => tirarDoSetor(r)} style={ghostIconBtn}
+                        title={`Tirar da contagem do ${label}`}>
+                        <Trash2 size={15} color="#A32D2D" />
+                      </button>
+                    </>
+                  )}
+
+                  {movendo === r.insumo_id && (
+                    <div style={{
+                      flexBasis: "100%", marginTop: 10, paddingTop: 10,
+                      borderTop: "1px dashed #E8E2D2",
+                      display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center",
+                    }}>
+                      <span style={{ fontSize: 11, color: "#8A8778" }}>Contar em:</span>
+                      {setoresLista.map((se) => {
+                        const on = setoresDoItem.includes(se.chave);
+                        return (
+                          <button key={se.chave}
+                            onClick={() => setSetoresDoItem((atual) =>
+                              atual.includes(se.chave)
+                                ? atual.filter((x) => x !== se.chave)
+                                : [...atual, se.chave])}
+                            style={{ ...pillBtn, ...(on ? { background: "#22231F", borderColor: "#22231F", color: "#F3EFE3" } : {}) }}>
+                            {on && <Check size={12} />} {se.label}
+                          </button>
+                        );
+                      })}
+                      <div style={{ flex: 1 }} />
+                      <button onClick={() => salvarSetoresDoItem(r, setoresDoItem)}
+                        style={{ ...pillBtn, background: "#22231F", borderColor: "#22231F", color: "#F3EFE3" }}>
+                        <Check size={12} /> Salvar
+                      </button>
+                      <button onClick={() => setMovendo(null)} style={pillBtn}>Cancelar</button>
+                    </div>
+                  )}
                 </div>
               );
             })}
