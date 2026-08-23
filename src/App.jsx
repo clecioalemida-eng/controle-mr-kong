@@ -176,7 +176,7 @@ function TelaSemPermissao({ onVoltar }) {
     <div style={{ ...pageStyle, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
       <div style={{ maxWidth: 320, width: "100%", textAlign: "center" }}>
         <ShieldCheck size={30} color="#8A8778" style={{ marginBottom: 12 }} />
-        <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F", marginBottom: 6 }}>Sem acesso a essa tela</div>
+        <div style={{ fontWeight: 800, fontSize: 17, color: "#231A18", marginBottom: 6 }}>Sem acesso a essa tela</div>
         <div style={{ fontSize: 13, color: "#8A8778", marginBottom: 20 }}>
           Seu cargo não libera essa parte do painel. Se você precisa dela, fale com um administrador.
         </div>
@@ -283,7 +283,7 @@ function TelaAguardando({ perfil, onSair }) {
     <div style={{ ...pageStyle, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
       <div style={{ maxWidth: 320, width: "100%", textAlign: "center" }}>
         <Clock size={32} color="#C9A227" style={{ marginBottom: 12 }} />
-        <div style={{ fontWeight: 800, fontSize: 18, color: "#22231F", marginBottom: 6 }}>
+        <div style={{ fontWeight: 800, fontSize: 18, color: "#231A18", marginBottom: 6 }}>
           {rejeitado ? "Acesso não liberado" : "Cadastro enviado"}
         </div>
         <div style={{ fontSize: 13, color: "#8A8778", marginBottom: 20, lineHeight: 1.55 }}>
@@ -308,10 +308,18 @@ function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, o
       <div className="app-shell">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img src="/icons/mascot.svg" alt="" style={{ width: 34, height: 34 }} />
+            <span style={{
+              width: 40, height: 40, borderRadius: 11, background: KONG.vermelho,
+              display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+              boxShadow: "0 2px 6px rgba(199,43,46,.30)",
+            }}>
+              <img src="/icons/mascot.svg" alt="" style={{ width: 26, height: 26 }} />
+            </span>
             <div>
-              <div style={{ fontWeight: 800, fontSize: 18, color: "#22231F" }}>Olá, {perfil?.nome}</div>
-              <div style={{ fontSize: 12, color: "#8A8778" }}>{perfil?.is_admin ? "Administrador" : "Equipe"}</div>
+              <div style={{ fontWeight: 800, fontSize: 18, color: "#231A18" }}>Olá, {perfil?.nome}</div>
+              <div style={{ fontSize: 12, color: KONG.vermelho, fontWeight: 700 }}>
+                Mr Kong · {perfil?.is_admin ? "Administrador" : "Equipe"}
+              </div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -339,15 +347,19 @@ function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, o
           <div className="cards-grid">
             {modulos.map((m) => (
               <button key={m.id} onClick={() => onAbrirModulo(m.chave)}
-                style={{ ...cardStyle, textAlign: "left", cursor: "pointer", border: m.chave === "dashboard" ? "2px solid #185FA5" : "1px solid #E8E2D2" }}>
-                <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F", marginBottom: 4 }}>{m.nome}</div>
-                {m.descricao && <div style={{ fontSize: 13, color: "#8A8778" }}>{m.descricao}</div>}
+                style={{
+                  ...cardStyle, textAlign: "left", cursor: "pointer", position: "relative", overflow: "hidden",
+                  border: m.chave === "dashboard" ? "2px solid #185FA5" : "1px solid #E9DFCE",
+                }}>
+                <span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: KONG.vermelho }} />
+                <div style={{ fontWeight: 700, fontSize: 16, color: "#231A18", marginBottom: 4, paddingLeft: 8 }}>{m.nome}</div>
+                {m.descricao && <div style={{ fontSize: 13, color: "#8A8778", paddingLeft: 8 }}>{m.descricao}</div>}
               </button>
             ))}
             {perfil?.is_admin && (
               <button onClick={() => onAbrirPermissoes("cargos")}
                 style={{ ...cardStyle, textAlign: "left", cursor: "pointer", border: "1px solid #C9BE9A", background: "#FAF6EA" }}>
-                <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ fontWeight: 700, fontSize: 16, color: "#231A18", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
                   <ShieldCheck size={16} color="#8A6A0F" /> Permissões
                 </div>
                 <div style={{ fontSize: 13, color: "#8A8778" }}>
@@ -366,42 +378,59 @@ function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, o
 }
 // ---------------------------------------------------------------------------
 // Estilos
+//
+// As cores vêm do logo (public/icons/logo-full.png): vermelho #C72B2E e
+// amarelo #F2D742. O vermelho fica em SUPERFÍCIE — faixa do topo, aba ativa,
+// cabeçalho de relatório. Ele não vira cor de botão de ação porque no painel
+// vermelho já quer dizer perigo (excluir, prejuízo, fiado em aberto), e as
+// duas coisas na mesma cor fazem alguém apagar o que queria salvar.
 // ---------------------------------------------------------------------------
+export const KONG = {
+  vermelho: "#C72B2E",
+  vermelhoEscuro: "#A32224",
+  amarelo: "#F2D742",
+  bege: "#F3C770",
+  tinta: "#231A18",
+  creme: "#FBF6EC",
+  linha: "#E9DFCE",
+  perigo: "#8E2420",
+};
+
 const pageStyle = {
   fontFamily: "'Inter', system-ui, sans-serif",
-  background: "#F6F1E7",
+  background: "#FBF6EC",
   padding: 20,
   minHeight: "100vh",
   boxSizing: "border-box",
 };
 const cardStyle = {
   background: "#FFFFFF",
-  border: "1px solid #E8E2D2",
+  border: "1px solid #E9DFCE",
   borderRadius: 12,
   padding: 14,
 };
 const btnPrimary = {
   display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-  background: "#22231F", color: "#F3EFE3", border: "none",
+  background: "#231A18", color: "#F3EFE3", border: "none",
   borderRadius: 10, padding: "12px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer",
 };
 const btnSecondary = {
-  background: "#F6F1E7", border: "1px solid #E8E2D2", color: "#22231F",
+  background: "#FBF6EC", border: "1px solid #E9DFCE", color: "#231A18",
   borderRadius: 8, padding: "10px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer",
 };
 const iconBtn = {
-  width: 34, height: 34, borderRadius: 8, border: "1px solid #E8E2D2", background: "#FFFFFF",
-  display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#22231F",
+  width: 34, height: 34, borderRadius: 8, border: "1px solid #E9DFCE", background: "#FFFFFF",
+  display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#231A18",
 };
 const inputStyle = {
   width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 10,
-  border: "1px solid #E8E2D2", fontSize: 14, background: "#FFFFFF", color: "#22231F",
+  border: "1px solid #E9DFCE", fontSize: 14, background: "#FFFFFF", color: "#231A18",
 };
 const tabBtn = {
-  flex: 1, padding: "9px 10px", borderRadius: 8, border: "1px solid #E8E2D2",
+  flex: 1, padding: "9px 10px", borderRadius: 8, border: "1px solid #E9DFCE",
   background: "#FFFFFF", color: "#8A8778", fontSize: 13, fontWeight: 600, cursor: "pointer",
 };
-const tabBtnAtivo = { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" };
+const tabBtnAtivo = { background: KONG.vermelho, color: "#FFFFFF", borderColor: KONG.vermelho };
 const badgeSino = {
   position: "absolute", top: -4, right: -4, background: "#C4432B", color: "#fff",
   fontSize: 10, fontWeight: 700, borderRadius: 999, minWidth: 16, height: 16,
