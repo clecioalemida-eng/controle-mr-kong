@@ -25,16 +25,19 @@ import { podeEditar } from "../lib/permissoes";
 
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
 
-// Setor é onde o insumo aparece na contagem de estoque do checklist.
-// Um insumo pode estar em mais de um: açúcar é cozinha E bar.
-const SETORES = [
-  { chave: "chapa", label: "Chapa" },
+// Setor é onde o insumo aparece na contagem de estoque. A lista NÃO é
+// fixa aqui de propósito: ela vem de `setores_estoque`, que é alimentada
+// pelos departamentos do próprio checklist. Setor novo criado em "Editar
+// checklist" aparece aqui sozinho, sem mexer neste arquivo.
+// Esta lista abaixo é só o que a tela mostra enquanto o banco não
+// responde (ou se a migração 065 ainda não rodou).
+const SETORES_PADRAO = [
   { chave: "caixa", label: "Caixa" },
-  { chave: "barman", label: "Barman" },
-  { chave: "cozinha", label: "Cozinha" },
+  { chave: "bar", label: "Bar" },
+  { chave: "chapa", label: "Chapa" },
+  { chave: "gerencia", label: "Gerência" },
   { chave: "garcom", label: "Garçom" },
 ];
-const LABEL_SETOR = Object.fromEntries(SETORES.map((s) => [s.chave, s.label]));
 
 // Aceita o que a pessoa escreve na planilha e devolve a unidade que o
 // banco aceita. O check constraint da tabela só admite as cinco de cima.
@@ -87,17 +90,19 @@ export default function Insumos({ permissoes }) {
   const [filtro, setFiltro] = useState("todos");
   const [importando, setImportando] = useState(false);
   const [modo, setModo] = useState("cadastro"); // cadastro | limpeza
-  const [setores, setSetores] = useState({});   // insumo_id -> ["barman", ...]
+  const [setores, setSetores] = useState({});   // insumo_id -> ["bar", ...]
+  const [listaSetores, setListaSetores] = useState(SETORES_PADRAO);
   const [editandoSetor, setEditandoSetor] = useState(null);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
-    const [{ data: ins, error: e1 }, { data: pi }, { data: st }] = await Promise.all([
+    const [{ data: ins, error: e1 }, { data: pi }, { data: st }, { data: se }] = await Promise.all([
       supabase.from("insumos")
         .select("id, nome, unidade, custo_medio_atual, estoque_atual, estoque_minimo, composto")
         .order("nome"),
       supabase.from("prato_insumos").select("insumo_id"),
       supabase.from("insumo_setores").select("insumo_id, setor"),
+      supabase.from("setores_estoque").select("chave, label, ordem").eq("ativo", true).order("ordem"),
     ]);
     if (e1) setErro(e1.message);
     setInsumos([...(ins || [])].sort(porNome));
@@ -112,10 +117,16 @@ export default function Insumos({ permissoes }) {
     });
     Object.values(porInsumo).forEach((v) => v.sort());
     setSetores(porInsumo);
+    if (se && se.length) setListaSetores(se.map((r) => ({ chave: r.chave, label: r.label })));
     setCarregando(false);
   }, []);
 
   useEffect(() => { carregar(); }, [carregar]);
+
+  const rotuloSetor = useMemo(
+    () => Object.fromEntries(listaSetores.map((s) => [s.chave, s.label])),
+    [listaSetores],
+  );
 
   const semCusto = insumos.filter((i) => !Number(i.custo_medio_atual)).length;
   const semFicha = insumos.filter((i) => !usos[i.id]).length;
@@ -258,7 +269,7 @@ export default function Insumos({ permissoes }) {
       {/* Filtrar por setor é o mesmo recorte que o checklist usa pra contar. */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <span style={{ fontSize: 11, color: "#8A8778", marginRight: 2 }}>Setor:</span>
-        {SETORES.map((s) => {
+        {listaSetores.map((s) => {
           const chave = `setor:${s.chave}`;
           const quantos = insumos.filter((i) => (setores[i.id] || []).includes(s.chave)).length;
           return (
@@ -318,7 +329,7 @@ export default function Insumos({ permissoes }) {
                     <span style={tagSetorVazio}>sem setor</span>
                   ) : (
                     (setores[i.id] || []).map((s) => (
-                      <span key={s} style={tagSetor}>{LABEL_SETOR[s] || s}</span>
+                      <span key={s} style={tagSetor}>{rotuloSetor[s] || s}</span>
                     ))
                   )}
                   {editar && (
@@ -339,6 +350,7 @@ export default function Insumos({ permissoes }) {
 
                 {editandoSetor === i.id && (
                   <EditorSetores
+                    opcoes={listaSetores}
                     atual={setores[i.id] || []}
                     aoSalvar={(lista) => salvarSetores(i, lista)}
                     aoCancelar={() => setEditandoSetor(null)}
@@ -375,7 +387,7 @@ export default function Insumos({ permissoes }) {
 // Salva com a lista inteira: o banco apaga o que saiu e grava o que
 // entrou numa tacada só, então não existe estado meio salvo.
 // =====================================================================
-function EditorSetores({ atual, aoSalvar, aoCancelar }) {
+function EditorSetores({ opcoes, atual, aoSalvar, aoCancelar }) {
   const [sel, setSel] = useState(() => new Set(atual));
   const [salvando, setSalvando] = useState(false);
 
@@ -398,7 +410,7 @@ function EditorSetores({ atual, aoSalvar, aoCancelar }) {
       <span style={{ fontSize: 11, color: "#8A8778", marginRight: 2 }}>
         Contar em:
       </span>
-      {SETORES.map((s) => {
+      {opcoes.map((s) => {
         const on = sel.has(s.chave);
         return (
           <button key={s.chave} onClick={() => alterna(s.chave)}
