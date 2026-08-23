@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Loader2, AlertTriangle, Search, Plus, Trash2, Check,
-  Upload, X,
+  Upload, X, Pencil,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { podeEditar } from "../lib/permissoes";
@@ -24,6 +24,17 @@ import { podeEditar } from "../lib/permissoes";
 // ---------------------------------------------------------------------
 
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
+
+// Setor é onde o insumo aparece na contagem de estoque do checklist.
+// Um insumo pode estar em mais de um: açúcar é cozinha E bar.
+const SETORES = [
+  { chave: "chapa", label: "Chapa" },
+  { chave: "caixa", label: "Caixa" },
+  { chave: "barman", label: "Barman" },
+  { chave: "cozinha", label: "Cozinha" },
+  { chave: "garcom", label: "Garçom" },
+];
+const LABEL_SETOR = Object.fromEntries(SETORES.map((s) => [s.chave, s.label]));
 
 // Aceita o que a pessoa escreve na planilha e devolve a unidade que o
 // banco aceita. O check constraint da tabela só admite as cinco de cima.
@@ -76,20 +87,31 @@ export default function Insumos({ permissoes }) {
   const [filtro, setFiltro] = useState("todos");
   const [importando, setImportando] = useState(false);
   const [modo, setModo] = useState("cadastro"); // cadastro | limpeza
+  const [setores, setSetores] = useState({});   // insumo_id -> ["barman", ...]
+  const [editandoSetor, setEditandoSetor] = useState(null);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
-    const [{ data: ins, error: e1 }, { data: pi }] = await Promise.all([
+    const [{ data: ins, error: e1 }, { data: pi }, { data: st }] = await Promise.all([
       supabase.from("insumos")
         .select("id, nome, unidade, custo_medio_atual, estoque_atual, estoque_minimo, composto")
         .order("nome"),
       supabase.from("prato_insumos").select("insumo_id"),
+      supabase.from("insumo_setores").select("insumo_id, setor"),
     ]);
     if (e1) setErro(e1.message);
     setInsumos([...(ins || [])].sort(porNome));
     const contagem = {};
     (pi || []).forEach((r) => { contagem[r.insumo_id] = (contagem[r.insumo_id] || 0) + 1; });
     setUsos(contagem);
+    // Se a migração 064 ainda não rodou, `st` volta nulo e a tela segue
+    // funcionando sem a coluna de setor — não trava o cadastro.
+    const porInsumo = {};
+    (st || []).forEach((r) => {
+      (porInsumo[r.insumo_id] = porInsumo[r.insumo_id] || []).push(r.setor);
+    });
+    Object.values(porInsumo).forEach((v) => v.sort());
+    setSetores(porInsumo);
     setCarregando(false);
   }, []);
 
@@ -104,9 +126,11 @@ export default function Insumos({ permissoes }) {
       if (q && !chaveNome(i.nome).includes(q)) return false;
       if (filtro === "semcusto" && Number(i.custo_medio_atual)) return false;
       if (filtro === "semficha" && usos[i.id]) return false;
+      if (filtro === "semsetor" && (setores[i.id] || []).length) return false;
+      if (filtro.startsWith("setor:") && !(setores[i.id] || []).includes(filtro.slice(6))) return false;
       return true;
     }).sort(porNome);
-  }, [insumos, busca, filtro, usos]);
+  }, [insumos, busca, filtro, usos, setores]);
 
   const salvarCampo = async (insumo, campo, valorBruto) => {
     setErro("");
@@ -125,6 +149,19 @@ export default function Insumos({ permissoes }) {
     const { error } = await supabase.from("insumos").update(patch).eq("id", insumo.id);
     if (error) { setErro(error.message); return; }
     setInsumos((atual) => atual.map((i) => (i.id === insumo.id ? { ...i, [campo]: valor } : i)));
+  };
+
+  // Manda a lista inteira e o banco deixa exatamente ela. Lista vazia
+  // tira o insumo de todas as contagens.
+  const salvarSetores = async (insumo, lista) => {
+    setErro("");
+    const { error } = await supabase.rpc("definir_setores_insumo", {
+      p_insumo: insumo.id,
+      p_setores: lista,
+    });
+    if (error) { setErro(error.message); return; }
+    setSetores((atual) => ({ ...atual, [insumo.id]: [...lista].sort() }));
+    setEditandoSetor(null);
   };
 
   const remover = async (insumo) => {
@@ -209,12 +246,29 @@ export default function Insumos({ permissoes }) {
           { chave: "todos", label: "Todos" },
           { chave: "semcusto", label: "Sem custo" },
           { chave: "semficha", label: "Fora de ficha" },
+          { chave: "semsetor", label: "Sem setor" },
         ].map((f) => (
           <button key={f.chave} onClick={() => setFiltro(f.chave)}
             style={{ ...chip, ...(filtro === f.chave ? chipAtivo : {}) }}>
             {f.label}
           </button>
         ))}
+      </div>
+
+      {/* Filtrar por setor é o mesmo recorte que o checklist usa pra contar. */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <span style={{ fontSize: 11, color: "#8A8778", marginRight: 2 }}>Setor:</span>
+        {SETORES.map((s) => {
+          const chave = `setor:${s.chave}`;
+          const quantos = insumos.filter((i) => (setores[i.id] || []).includes(s.chave)).length;
+          return (
+            <button key={s.chave}
+              onClick={() => setFiltro(filtro === chave ? "todos" : chave)}
+              style={{ ...chip, ...(filtro === chave ? chipAtivo : {}) }}>
+              {s.label} <span style={{ opacity: 0.6, fontSize: 10 }}>{quantos}</span>
+            </button>
+          );
+        })}
       </div>
 
       {carregando ? (
@@ -259,10 +313,36 @@ export default function Insumos({ permissoes }) {
                   {usos[i.id] ? `${usos[i.id]} ficha${usos[i.id] > 1 ? "s" : ""}` : "sem ficha"}
                 </div>
 
+                <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                  {(setores[i.id] || []).length === 0 ? (
+                    <span style={tagSetorVazio}>sem setor</span>
+                  ) : (
+                    (setores[i.id] || []).map((s) => (
+                      <span key={s} style={tagSetor}>{LABEL_SETOR[s] || s}</span>
+                    ))
+                  )}
+                  {editar && (
+                    <button
+                      onClick={() => setEditandoSetor(editandoSetor === i.id ? null : i.id)}
+                      style={{ ...iconBtnPeq, color: editandoSetor === i.id ? "#C72B2E" : undefined }}
+                      title="Em que setor este insumo é contado">
+                      <Pencil size={13} />
+                    </button>
+                  )}
+                </div>
+
                 {editar && (
                   <button onClick={() => remover(i)} style={iconBtnPeq} title="Excluir insumo">
                     <Trash2 size={13} />
                   </button>
+                )}
+
+                {editandoSetor === i.id && (
+                  <EditorSetores
+                    atual={setores[i.id] || []}
+                    aoSalvar={(lista) => salvarSetores(i, lista)}
+                    aoCancelar={() => setEditandoSetor(null)}
+                  />
                 )}
               </div>
             );
@@ -281,6 +361,62 @@ export default function Insumos({ permissoes }) {
         nota fiscal, esse número é atualizado sozinho pelo preço da compra.
       </div>
       )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Editor de setor — o lápis da linha
+//
+// O setor não é categoria de compra: é ONDE o item é contado no
+// checklist de estoque. Por isso é lista, não escolha única — açúcar é
+// contado na cozinha e no bar, e tem que aparecer nas duas contagens.
+//
+// Salva com a lista inteira: o banco apaga o que saiu e grava o que
+// entrou numa tacada só, então não existe estado meio salvo.
+// =====================================================================
+function EditorSetores({ atual, aoSalvar, aoCancelar }) {
+  const [sel, setSel] = useState(() => new Set(atual));
+  const [salvando, setSalvando] = useState(false);
+
+  const alterna = (chave) => {
+    setSel((s) => {
+      const novo = new Set(s);
+      if (novo.has(chave)) novo.delete(chave); else novo.add(chave);
+      return novo;
+    });
+  };
+
+  const salvar = async () => {
+    setSalvando(true);
+    await aoSalvar([...sel]);
+    setSalvando(false);
+  };
+
+  return (
+    <div style={caixaSetor}>
+      <span style={{ fontSize: 11, color: "#8A8778", marginRight: 2 }}>
+        Contar em:
+      </span>
+      {SETORES.map((s) => {
+        const on = sel.has(s.chave);
+        return (
+          <button key={s.chave} onClick={() => alterna(s.chave)}
+            style={{ ...btnSetor, ...(on ? btnSetorOn : {}) }}>
+            {on && <Check size={12} />}
+            {s.label}
+          </button>
+        );
+      })}
+      <div style={{ flex: 1 }} />
+      <button onClick={salvar} disabled={salvando}
+        style={{ ...btnSetor, background: "#22231F", borderColor: "#22231F", color: "#F3EFE3" }}>
+        {salvando ? <Loader2 size={12} /> : <Check size={12} />}
+        Salvar
+      </button>
+      <button onClick={aoCancelar} style={btnSetor}>
+        <X size={12} /> Cancelar
+      </button>
     </div>
   );
 }
@@ -848,6 +984,24 @@ const chip = {
   background: "#FFFFFF", color: "#8A8778", fontSize: 12, fontWeight: 600, cursor: "pointer",
 };
 const chipAtivo = { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" };
+const tagSetor = {
+  fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 6,
+  background: "#F1EEE2", color: "#6B6558", whiteSpace: "nowrap",
+};
+const tagSetorVazio = {
+  fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 6,
+  background: "#FFFFFF", color: "#B9B2A4", border: "1px dashed #DDD6C6", whiteSpace: "nowrap",
+};
+const caixaSetor = {
+  flexBasis: "100%", marginTop: 8, paddingTop: 10, borderTop: "1px dashed #E8E2D2",
+  display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center",
+};
+const btnSetor = {
+  padding: "6px 11px", borderRadius: 8, border: "1px solid #E8E2D2",
+  background: "#FFFFFF", color: "#6B6558", fontSize: 12, fontWeight: 600, cursor: "pointer",
+  display: "flex", alignItems: "center", gap: 5,
+};
+const btnSetorOn = { background: "#C72B2E", borderColor: "#C72B2E", color: "#FFFFFF" };
 const pill = {
   fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999,
   textTransform: "uppercase", letterSpacing: 0.3,
