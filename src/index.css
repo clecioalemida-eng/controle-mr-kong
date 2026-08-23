@@ -51,3 +51,49 @@ body {
 @media (min-width: 720px) {
   .list-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ---------------------------------------------------------------------------
+   Cores da marca, tiradas do logo (public/icons/logo-full.png)
+   --------------------------------------------------------------------------- */
+:root {
+  --kong-vermelho: #C72B2E;
+  --kong-vermelho-escuro: #A32224;
+  --kong-amarelo: #F2D742;
+  --kong-bege: #F3C770;
+  --kong-tinta: #231A18;
+  --kong-creme: #FBF6EC;
+  --kong-linha: #E9DFCE;
+}
+
+html, body, #root { background: var(--kong-creme); }
+
+/* ---------------------------------------------------------------------------
+   Impressão em PDF
+   Só a folha marcada com .folha-pdf aparece no papel. Ela fica escondida na
+   tela e o navegador cuida do resto — "Salvar como PDF" no Mac, Compartilhar
+   > Imprimir no iPhone. Sem biblioteca nova no build.
+
+   Uso `visibility` em vez de `display` de propósito: a folha vive dentro da
+   árvore do React, então esconder os pais por display apagaria ela junto.
+   --------------------------------------------------------------------------- */
+.folha-pdf { display: none; }
+
+@media print {
+  @page { size: A4 portrait; margin: 12mm; }
+
+  html, body, #root { background: #FFFFFF !important; }
+  body * { visibility: hidden !important; }
+
+  .folha-pdf, .folha-pdf * { visibility: visible !important; }
+  .folha-pdf {
+    display: block !important;
+    position: absolute !important;
+    left: 0; top: 0; width: 100%;
+    font-family: Inter, system-ui, -apple-system, sans-serif;
+    color: #231A18;
+  }
+
+  /* Evita cortar uma linha da tabela no meio da quebra de página. */
+  .folha-pdf tr, .folha-pdf .nao-quebrar { break-inside: avoid; page-break-inside: avoid; }
+  .folha-pdf thead { display: table-header-group; }
+}
