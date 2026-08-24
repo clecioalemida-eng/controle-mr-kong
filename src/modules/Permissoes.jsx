@@ -28,6 +28,9 @@ function porNome(a, b) {
 }
 
 export default function Permissoes({ abaInicial = "cargos", onVoltar, onMudou }) {
+  // Pessoa cujos acessos estão abertos. Fica aqui em cima, no mesmo
+  // nível de cargoAberto, porque as duas são "sub-telas" da mesma tela.
+  const [pessoaAberta, setPessoaAberta] = useState(null);
   const [aba, setAba] = useState(abaInicial);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
@@ -213,6 +216,19 @@ export default function Permissoes({ abaInicial = "cargos", onVoltar, onMudou })
     );
   }
 
+  if (pessoaAberta) {
+    const pessoa = perfis.find((x) => x.id === pessoaAberta);
+    if (!pessoa) { setPessoaAberta(null); return null; }
+    const cargo = cargos.find((c) => c.id === pessoa.cargo_id);
+    return (
+      <AcessosDaPessoa
+        pessoa={pessoa}
+        cargoNome={cargo?.nome}
+        onVoltar={() => { setPessoaAberta(null); carregar(); }}
+      />
+    );
+  }
+
   // ---- tela principal -----------------------------------------------------
   return (
     <div style={pageStyle}>
@@ -345,6 +361,12 @@ export default function Permissoes({ abaInicial = "cargos", onVoltar, onMudou })
                         <span style={{ ...pill, ...(p.status === "aprovado" ? pillOk : pillNok) }}>
                           {p.status === "aprovado" ? "Ativo" : "Bloqueado"}
                         </span>
+                        {!p.is_admin && (
+                          <button onClick={() => setPessoaAberta(p.id)}
+                            style={{ ...linkBtn, color: "#22231F", display: "flex", alignItems: "center", gap: 3 }}>
+                            Acessos <ChevronRight size={13} />
+                          </button>
+                        )}
                         {p.id !== meuId && (
                           <>
                             <button onClick={() => alternarAdmin(p)} style={linkBtn}>
@@ -364,6 +386,142 @@ export default function Permissoes({ abaInicial = "cargos", onVoltar, onMudou })
             </div>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Acessos de UMA pessoa
+//
+// Tudo nasce herdado do cargo. O que você mexer aqui vira uma EXCEÇÃO só
+// dela — e a linha fica marcada, com um jeito de voltar atrás. Isso é de
+// propósito: exceção esquecida é a pior parte de qualquer sistema de
+// permissão, e daqui a seis meses ninguém lembra por que a Lidiane vê uma
+// coisa que os outros caixas não veem.
+//
+// Existem DOIS jeitos de "tirar", e eles são diferentes:
+//   Nenhum          → decisão: esta pessoa não vê, mesmo que o cargo veja
+//   Voltar pro cargo → desfazer: ela passa a seguir o cargo de novo
+// ---------------------------------------------------------------------------
+function AcessosDaPessoa({ pessoa, cargoNome, onVoltar }) {
+  const [mapa, setMapa] = useState({});      // chave -> { cargo, excecao }
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [salvando, setSalvando] = useState(null);
+
+  const carregar = useCallback(async () => {
+    const { data, error } = await supabase.rpc("permissoes_da_pessoa", { p_perfil: pessoa.id });
+    if (error) setErro(error.message);
+    const m = {};
+    (data || []).forEach((r) => {
+      m[r.chave] = { cargo: r.nivel_cargo || "nenhum", excecao: r.nivel_excecao };
+    });
+    setMapa(m);
+    setCarregando(false);
+  }, [pessoa.id]);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const definir = async (chave, nivel) => {
+    setSalvando(chave);
+    setErro("");
+    const { error } = await supabase.rpc("definir_excecao_permissao", {
+      p_perfil: pessoa.id, p_chave: chave, p_nivel: nivel, p_motivo: null,
+    });
+    setSalvando(null);
+    if (error) { setErro(error.message); return; }
+    setMapa((atual) => ({
+      ...atual,
+      [chave]: { cargo: atual[chave]?.cargo || "nenhum", excecao: nivel },
+    }));
+  };
+
+  const efetivo = (chave) => {
+    const r = mapa[chave];
+    if (!r) return "nenhum";
+    return r.excecao != null ? r.excecao : r.cargo;
+  };
+  const ehExcecao = (chave) => mapa[chave]?.excecao != null;
+
+  const quantasExcecoes = Object.values(mapa).filter((r) => r.excecao != null).length;
+
+  const Linha = ({ chave, nome, recuo, sensivel, rotulos }) => (
+    <div style={{
+      ...linhaMatriz,
+      paddingLeft: recuo ? 30 : 13,
+      borderTop: "1px solid #F0EBDD",
+      background: ehExcecao(chave) ? "#FFF7F6" : "#FFFFFF",
+    }}>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: recuo ? 12.5 : 13, fontWeight: recuo ? 500 : 600, color: "#22231F" }}>
+          {nome}
+          {sensivel && <span style={{ color: "#A32D2D", fontSize: 10.5 }}> · contém valores</span>}
+        </div>
+        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          {ehExcecao(chave) ? (
+            <>
+              <span style={{ ...pill, background: "#C72B2E", color: "#fff" }}>EXCEÇÃO</span>
+              <button onClick={() => definir(chave, null)}
+                style={{ ...linkBtn, color: "#C72B2E", textDecoration: "underline" }}>
+                voltar pro cargo ({mapa[chave]?.cargo || "nenhum"})
+              </button>
+            </>
+          ) : (
+            <span>do cargo <b style={{ color: "#22231F" }}>{cargoNome || "sem cargo"}</b></span>
+          )}
+          {salvando === chave && <Loader2 size={11} />}
+        </div>
+      </div>
+      <Segmento valor={efetivo(chave)} rotulos={rotulos} onEscolher={(n) => definir(chave, n)} />
+    </div>
+  );
+
+  return (
+    <div style={pageStyle}>
+      <div className="app-shell">
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <button onClick={onVoltar} style={iconBtn}><ChevronLeft size={18} /></button>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 800, fontSize: 17 }}>{pessoa.nome}</div>
+            <div style={{ fontSize: 11.5, color: "#8A8778" }}>
+              {cargoNome ? `Cargo: ${cargoNome}` : "Sem cargo"}
+              {quantasExcecoes > 0 ? ` · ${quantasExcecoes} exceção(ões)` : ""}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14, lineHeight: 1.55 }}>
+          Tudo começa herdado do cargo. O que você mudar aqui vale <b>só para esta pessoa</b> e
+          fica marcado como exceção — inclusive para <b>tirar</b> algo que o cargo dá.
+        </div>
+
+        {erro && (
+          <div style={avisoStyle}>
+            <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+            <div style={{ fontSize: 13 }}>{erro}</div>
+          </div>
+        )}
+
+        {carregando ? (
+          <div style={{ fontSize: 13, color: "#8A8778" }}><Loader2 size={16} /> Carregando…</div>
+        ) : (
+          <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
+            {CATALOGO.map((m) => (
+              <React.Fragment key={m.chave}>
+                <Linha chave={m.chave} nome={m.nome} rotulos={m.filhos ? ["—", "Ver", "Editar"] : null} />
+                {(m.filhos || []).map((f) => (
+                  <Linha key={f.chave} chave={f.chave} nome={f.nome} recuo sensivel={f.sensivel} />
+                ))}
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+
+        <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 12, lineHeight: 1.6 }}>
+          Vale na hora — a pessoa vê a mudança no próximo carregamento da tela dela.
+          Não existe botão de salvar aqui de propósito: cada toque já é a decisão.
+        </div>
       </div>
     </div>
   );
