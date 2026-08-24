@@ -68,8 +68,11 @@ export default function Desempenho({ perfil, permissoes, onVoltar }) {
     let vivo = true;
     (async () => {
       const { data, error } = await supabase
+        // `estacao` separa quem PRODUZ de quem so faz checklist e conta
+        // estoque. A Gerencia continua existindo nos dois outros lugares,
+        // mas nao aparece no KDS — senao ficaria ali zerada, fazendo volume.
         .from("setores_estoque").select("chave, label, ordem")
-        .eq("ativo", true).order("ordem");
+        .eq("ativo", true).eq("estacao", true).order("ordem");
       if (!vivo) return;
       if (error) setErro(error.message);
       setSetores(data || []);
