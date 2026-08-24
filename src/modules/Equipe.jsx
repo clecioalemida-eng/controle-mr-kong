@@ -40,10 +40,17 @@ function categoriaComissao(papel) {
 // pra mesma coisa.
 const HORAS_PADRAO_TURNO = 8;
 const SO_ADMIN = "Só administradores dão baixa em fiado ou lançam pagamento.";
-// Turno da casa. Registrado tem horário fixo, então já abre preenchido —
-// só mexe quem fugiu do padrão. Diarista varia, então só o intervalo vem
-// pronto (é sempre 1 hora) e entrada/saída ficam em branco de propósito.
-const TURNO_REGISTRADO = { entrada: "17:00", saida: "02:00" };
+// Turno da casa: 17h às 02h, com 1 hora de intervalo. Abre preenchido
+// para TODO MUNDO — registrado e diarista — porque esse é o turno da
+// esmagadora maioria das noites. Quem fugiu do padrão, a pessoa corrige
+// na linha dela.
+//
+// Antes só o registrado vinha preenchido e o diarista abria em branco.
+// Na prática isso obrigava a digitar 17:00 e 02:00 dezenas de vezes por
+// noite — e campo que se digita repetido é campo que um dia fica errado
+// ou em branco.
+const TURNO_PADRAO = { entrada: "17:00", saida: "02:00" };
+const TURNO_REGISTRADO = TURNO_PADRAO;
 const INTERVALO_PADRAO_MIN = 60;
 // ---------------------------------------------------------------------------
 // Ponto: entrada, saída e intervalo -> horas trabalhadas
@@ -956,7 +963,7 @@ function PagamentoDasDiarias({ dia, linhasSalvas, fiado, pagamento, aoMudar, set
             <div style={{ fontSize: 11, color: "#8A8778" }}>
               {pagamento.qtd_pessoas} diarista(s) · bruto {brl(pagamento.valor_bruto)}
               {Number(pagamento.valor_fiado) > 0 ? ` · fiado ${brl(pagamento.valor_fiado)} descontado` : ""}
-              {" · lançado no Plano de Contas em 4.2 Diárias"}
+              {" · em Contas a pagar (paga) e no DRE, conta 4.2 Diárias"}
             </div>
           </div>
           <button onClick={desfazer} disabled={desfazendo} style={{ ...linkBtn, fontSize: 11 }}>
@@ -1035,13 +1042,14 @@ function PagamentoDasDiarias({ dia, linhasSalvas, fiado, pagamento, aoMudar, set
       )}
       <button onClick={pagar} disabled={gravando || liquido <= 0}
         style={{ ...btnPrimary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
-        {gravando ? <Loader2 size={15} /> : <Check size={15} />}
-        {gravando ? "Lançando…" : "Registrar pagamento e lançar no Plano de Contas"}
+        {gravando ? <Loader2 size={15} /> : <Receipt size={15} />}
+        {gravando ? "Enviando…" : "Enviar para Contas a pagar e DRE"}
       </button>
       <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 6, lineHeight: 1.6 }}>
-        Entra como despesa já quitada na conta <b>4.2 Diárias</b>, com a data
-        de hoje. É isso que faz o custo aparecer no DRE. Registrado e gerente
-        não entram aqui — recebem no Fechamento mensal.
+        Custo de pessoal <b>não passa por nota fiscal</b> — entra direto como
+        despesa já quitada na conta <b>4.2 Diárias</b>, com a data de hoje.
+        Aparece na hora em Contas a pagar (como paga) e no DRE. Registrado e
+        gerente não entram aqui — recebem no Fechamento mensal.
       </div>
     </div>
   );
@@ -1514,9 +1522,8 @@ function PremiacaoDoDia({ isAdmin }) {
       const mapaPart = {};
       const idsPrevistos = new Set((previsoesData || []).map((p) => p.pessoa_id));
       (pessoasData || []).forEach((p) => {
-        const registrado = p.tipo_contrato === "registrado";
-        const entrada = registrado ? TURNO_REGISTRADO.entrada : "";
-        const saida = registrado ? TURNO_REGISTRADO.saida : "";
+        const entrada = TURNO_PADRAO.entrada;
+        const saida = TURNO_PADRAO.saida;
         const horas = horasDoPonto(entrada, saida, INTERVALO_PADRAO_MIN);
         mapaPart[p.id] = {
           incluido: idsPrevistos.has(p.id),
