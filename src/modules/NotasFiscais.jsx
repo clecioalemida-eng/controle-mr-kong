@@ -1,2875 +1,1231 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload, Lock, Receipt, X, Download } from "lucide-react";
-import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import {
-  buscarFiadoNoPeriodo, agruparPorPessoa, carregarBaixas, darBaixa,
-  estornarBaixa, somar, diasAtrasISO, normalizaNome,
-  carregarApelidos, vincularApelido, desvincularApelido,
-  ignorarNome, carregarIgnorados, sugerirPessoa,
-} from "../lib/fiado";
-// Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
-// collation do banco e às vezes joga nome acentuado ou em maiúscula pro
-// fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
-// "Água" junto de "Agua" e "ALFACE" junto de "Alface".
-function porNome(a, b) {
-  return String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR", { sensitivity: "base" });
-}
+  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, EyeOff, Search, X, ExternalLink, RotateCcw,
+} from "lucide-react";
+import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+const UNIDADES = ["un", "g", "kg", "ml", "l"];
+const FORMAS_PAGAMENTO_COMPRA = [
+  { valor: "pix", rotulo: "Pix" },
+  { valor: "debito", rotulo: "Débito" },
+  { valor: "credito", rotulo: "Cartão de crédito" },
+  { valor: "boleto", rotulo: "Boleto" },
+];
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
-function hoje() { return new Date().toISOString().slice(0, 10); }
-async function abrirDocumento(path) {
-  if (!path) return;
-  const { data, error } = await supabase.storage.from("documentos-pessoas").createSignedUrl(path, 300);
-  if (error || !data?.signedUrl) { alert("Não consegui abrir o documento: " + (error?.message || "")); return; }
+function round2(n) { return Math.round((n || 0) * 100) / 100; }
+function fmtData(d) { if (!d) return ""; return new Date(d).toLocaleDateString("pt-BR"); }
+function round4(n) { return Math.round((n || 0) * 10000) / 10000; }
+function norm(s) { return String(s || "").trim().toLowerCase().replace(/\s+/g, " "); }
+// Lê o padrão de embalagem que quase toda nota de descartável traz no
+// próprio nome do produto: "20X50U", "(20X100U)", "700U GALVANOTEK".
+// Serve só pra SUGERIR — quem decide é quem está conferindo.
+function detectarEmbalagem(nome) {
+  const s = String(nome || "").toUpperCase();
+  let m = s.match(/(\d{1,4})\s*[X\u00D7]\s*(\d{1,5})\s*(UN|U|PC|P)?\b/);
+  if (m) return { pacotes: Number(m[1]), porPacote: Number(m[2]) };
+  m = s.match(/\b(\d{2,5})\s*(UN|U)\b/);
+  if (m) return { pacotes: 1, porPacote: Number(m[1]) };
+  return null;
+}
+async function abrirPreview(caminho) {
+  const { data, error } = await supabase.storage.from("notas-fiscais").createSignedUrl(caminho, 300);
+  if (error || !data?.signedUrl) { alert("Não consegui abrir o arquivo: " + (error?.message || "")); return; }
   window.open(data.signedUrl, "_blank");
 }
-const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", cozinha: "Cozinha", limpeza: "Limpeza", gerente: "Gerente" };
-const PAPEIS = ["garcom", "caixa", "bar", "chapa", "cozinha", "limpeza"];
-const PAPEIS_COM_GERENTE = [...PAPEIS, "gerente"];
-// Regra de divisão da premiação diária: só garçom fica no bolo dos
-// garçons — todo o resto (caixa, bar, chapa, cozinha, limpeza, e o
-// "interno" genérico antigo) cai junto no bolo da equipe interna.
-// Gerente não entra em nenhum bolo — o cargo dela não participa da
-// divisão diária de comissão de jeito nenhum (retorna null).
-function categoriaComissao(papel) {
-  if (papel === "gerente") return null;
-  return papel === "garcom" ? "garcom" : "interno";
-}
-// Peso não é mais digitado à parte — é calculado a partir das horas
-// trabalhadas, considerando um turno padrão de 8h (6h trabalhadas =
-// peso 0,75, por exemplo). Simplifica pra só uma pergunta em vez de duas
-// pra mesma coisa.
-const HORAS_PADRAO_TURNO = 8;
-const SO_ADMIN = "Só administradores dão baixa em fiado ou lançam pagamento.";
-// Turno da casa: 17h às 02h, com 1 hora de intervalo. Abre preenchido
-// para TODO MUNDO — registrado e diarista — porque esse é o turno da
-// esmagadora maioria das noites. Quem fugiu do padrão, a pessoa corrige
-// na linha dela.
-//
-// Antes só o registrado vinha preenchido e o diarista abria em branco.
-// Na prática isso obrigava a digitar 17:00 e 02:00 dezenas de vezes por
-// noite — e campo que se digita repetido é campo que um dia fica errado
-// ou em branco.
-const TURNO_PADRAO = { entrada: "17:00", saida: "02:00" };
-const TURNO_REGISTRADO = TURNO_PADRAO;
-const INTERVALO_PADRAO_MIN = 60;
-// ---------------------------------------------------------------------------
-// Ponto: entrada, saída e intervalo -> horas trabalhadas
-//
-// A saída pode ser MENOR que a entrada, e isso não é erro: a casa
-// trabalha das 17h às 03h, então virar o dia é o caso comum. Sem tratar
-// isso, um turno de 17:30 às 01:30 daria dezesseis horas negativas e o
-// peso do rateio ficaria negativo pra todo mundo naquele dia.
-// ---------------------------------------------------------------------------
-function minutosDoHorario(hhmm) {
-  if (!hhmm) return null;
-  const partes = String(hhmm).slice(0, 5).split(":");
-  const h = Number(partes[0]), m = Number(partes[1]);
-  if (isNaN(h) || isNaN(m)) return null;
-  return h * 60 + m;
-}
-function horasDoPonto(entrada, saida, intervaloMinutos) {
-  const ini = minutosDoHorario(entrada);
-  const fim = minutosDoHorario(saida);
-  if (ini === null || fim === null) return null;
-  let total = fim - ini;
-  if (total <= 0) total += 24 * 60; // virou o dia
-  total -= parseInt(intervaloMinutos) || 0;
-  if (total < 0) total = 0;
-  return Math.round((total / 60) * 100) / 100;
-}
-// Texto do horário pra telas de leitura. Dia antigo (sem horário
-// registrado) mostra só as horas, como sempre mostrou.
-function textoPonto(part) {
-  const h = part?.horas || 0;
-  if (part?.entrada && part?.saida) {
-    const intervalo = parseInt(part.intervalo) || 0;
-    return `${part.entrada}–${part.saida}${intervalo > 0 ? ` · ${intervalo} min intervalo` : ""} · ${h}h`;
-  }
-  return `${h}h`;
-}
-const SUBABAS = [
-  { chave: "pessoas", label: "Pessoas" },
-  { chave: "matriz", label: "Matriz de cargos", soAdmin: true },
-  { chave: "previsao", label: "Previsão de escala" },
-  { chave: "premiacao", label: "Escala do dia" },
-  { chave: "mensal", label: "Fechamento mensal", soAdmin: true },
-];
-// Só admin vê valores (salário, matriz de cargos, comissão calculada,
-// fechamento mensal) — outras pessoas aprovadas só marcam quem trabalhou
-// e quantas horas (isso é registrado no banco de qualquer forma, mas as
-// telas de configuração de dinheiro ficam reforçadas no banco também —
-// ver 022_acesso_a_valores.sql).
+const STATUS_LABEL = {
+  processando: "Lendo com IA",
+  aguardando_confirmacao: "Aguardando conferência",
+  confirmado: "Confirmada",
+  erro: "Erro na leitura",
+};
+const STATUS_ESTILO = {
+  processando: { background: "#FAC77555", color: "#854F0B" },
+  aguardando_confirmacao: { background: "#F0999522", color: "#A32D2D" },
+  confirmado: { background: "#2F8F5B22", color: "#0F6E56" },
+  erro: { background: "#F0999522", color: "#A32D2D" },
+};
+// Quem é administrador. A tela usa isso só pra decidir o que mostrar —
+// quem barra de verdade é a função reverter_conferencia_nota() no banco,
+// que recusa qualquer chamada de não-admin. Esconder botão não é controle
+// de acesso.
 function useIsAdmin() {
-  const [isAdmin, setIsAdmin] = useState(null); // null = carregando
+  const [isAdmin, setIsAdmin] = useState(false);
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
-      if (!data?.user) { setIsAdmin(false); return; }
+      if (!data?.user) return;
       const { data: perfil } = await supabase.from("perfis").select("is_admin").eq("id", data.user.id).maybeSingle();
       setIsAdmin(perfil?.is_admin || false);
     });
   }, []);
   return isAdmin;
 }
-export default function Equipe() {
-  const [subaba, setSubaba] = useState("pessoas");
+export default function NotasFiscais() {
+  const [tela, setTela] = useState("lista"); // lista | conferencia
+  const [documentos, setDocumentos] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+  const [documentoAtual, setDocumentoAtual] = useState(null);
+  const [busca, setBusca] = useState("");
+  // Documento aberto na miniatura sobre a página (null = fechada)
+  const [preview, setPreview] = useState(null);
+  const [revertendo, setRevertendo] = useState(null); // id da nota sendo revertida
   const isAdmin = useIsAdmin();
-  const subabasVisiveis = SUBABAS.filter((a) => !a.soAdmin || isAdmin);
-  return (
-    <div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-        {subabasVisiveis.map((a) => (
-          <button key={a.chave} onClick={() => setSubaba(a.chave)}
-            style={{ ...tabBtn, ...(subaba === a.chave ? tabBtnAtivo : {}) }}>
-            {a.label}
-          </button>
-        ))}
-      </div>
-      {subaba === "pessoas" && <Pessoas isAdmin={isAdmin} />}
-      {subaba === "matriz" && isAdmin && <MatrizCargos />}
-      {subaba === "previsao" && <PrevisaoDeEscala />}
-      {subaba === "premiacao" && <PremiacaoDoDia isAdmin={isAdmin} />}
-      {subaba === "mensal" && isAdmin && <FechamentoMensal />}
-    </div>
-  );
-}
-// ---------------------------------------------------------------------------
-// Previsão de Escala — planejamento de dias futuros, sem nenhum cálculo
-// de valor (isso só acontece na Escala do dia, quando o dia chegar).
-// Serve pra organizar quem está previsto pra trabalhar em cada dia.
-// ---------------------------------------------------------------------------
-function PrevisaoDeEscala() {
-  const [dia, setDia] = useState(() => {
-    const amanha = new Date();
-    amanha.setDate(amanha.getDate() + 1);
-    return amanha.toISOString().slice(0, 10);
-  });
-  const [pessoas, setPessoas] = useState([]);
-  const [previstos, setPrevistos] = useState(new Set());
-  const [fechada, setFechada] = useState(false);
-  const [carregando, setCarregando] = useState(true);
-  const [erro, setErro] = useState("");
-  const [mensagem, setMensagem] = useState("");
-  const carregar = useCallback(async () => {
-    setCarregando(true);
-    setMensagem("");
-    const [{ data: pessoasData, error }, { data: previsoesData }, { data: statusData }] = await Promise.all([
-      supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
-      supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
-      supabase.from("previsoes_escala_dias").select("fechada").eq("dia", dia).maybeSingle(),
-    ]);
-    if (error) setErro(error.message);
-    setPessoas([...(pessoasData || [])].sort(porNome));
-    setPrevistos(new Set((previsoesData || []).map((p) => p.pessoa_id)));
-    setFechada(statusData?.fechada || false);
-    setCarregando(false);
-  }, [dia]);
-  useEffect(() => { carregar(); }, [carregar]);
-  const alternar = async (pessoaId) => {
-    const jaPrevisto = previstos.has(pessoaId);
-    if (jaPrevisto) {
-      await supabase.from("previsoes_escala").delete().eq("pessoa_id", pessoaId).eq("dia", dia);
-    } else {
-      await supabase.from("previsoes_escala").insert({ pessoa_id: pessoaId, dia });
-    }
-    setPrevistos((prev) => {
-      const novo = new Set(prev);
-      jaPrevisto ? novo.delete(pessoaId) : novo.add(pessoaId);
-      return novo;
+  const inputRef = useRef(null);
+
+  // Abre a miniatura dentro da própria página. Usa a mesma URL assinada
+  // de 5 minutos que o "abrir em outra aba" — o bucket é privado, então
+  // não dá pra apontar direto pro arquivo.
+  const abrirMiniatura = async (d) => {
+    const { data, error } = await supabase.storage.from("notas-fiscais").createSignedUrl(d.arquivo_path, 300);
+    if (error || !data?.signedUrl) { setErro("Não consegui abrir o arquivo: " + (error?.message || "")); return; }
+    setPreview({
+      url: data.signedUrl,
+      nome: d.fornecedor || "Fornecedor não identificado",
+      ehPdf: /\.pdf(\?|$)/i.test(d.arquivo_path),
     });
-    setMensagem("Previsão salva.");
   };
-  const fecharPrevisao = async () => {
-    await supabase.from("previsoes_escala_dias").upsert({ dia, fechada: true, atualizado_em: new Date().toISOString() }, { onConflict: "dia" });
-    setFechada(true);
-    setMensagem("");
-  };
-  const reabrirPrevisao = async () => {
-    await supabase.from("previsoes_escala_dias").upsert({ dia, fechada: false, atualizado_em: new Date().toISOString() }, { onConflict: "dia" });
-    setFechada(false);
-  };
-  const selecionados = pessoas.filter((p) => previstos.has(p.id));
-  return (
-    <div>
-      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
-        Só planejamento — sem taxa de serviço, sem cálculo de valor. Quando o dia chegar, marque de novo (ou confirme) na Escala do dia pra calcular os valores de verdade.
-      </div>
-      <input type="date" value={dia} onChange={(e) => setDia(e.target.value)} style={{ ...inputStyle, marginBottom: 14 }} />
-      {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
-      {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-      {carregando ? (
-        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
-      ) : fechada ? (
-        <div>
-          <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>{selecionados.length} marcado{selecionados.length !== 1 ? "s" : ""} — previsão fechada</div>
-          <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 12 }}>
-            {selecionados.map((p, idx) => (
-              <div key={p.id} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
-                <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
-                <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}</div>
-              </div>
-            ))}
-            {selecionados.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Ninguém marcado nesse dia.</div>}
-          </div>
-          <button onClick={reabrirPrevisao} style={linkBtn}>✎ Editar de novo</button>
-        </div>
-      ) : (
-        <>
-          <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
-            {pessoas.map((p) => (
-              <div key={p.id} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-                <input type="checkbox" checked={previstos.has(p.id)} onChange={() => alternar(p.id)} />
-                <div>
-                  <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
-                  <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}</div>
-                </div>
-              </div>
-            ))}
-            {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Cadastre pessoas na aba "Pessoas" primeiro.</div>}
-          </div>
-          {pessoas.length > 0 && (
-            <button onClick={fecharPrevisao} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
-              <Check size={14} /> Fechar previsão desse dia
-            </button>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-// ---------------------------------------------------------------------------
-// Matriz de cargos — diária base e valor hora, aplicados automaticamente
-// a todo diarista daquele cargo (não se digita mais por pessoa).
-// ---------------------------------------------------------------------------
-function MatrizCargos() {
-  const [linhas, setLinhas] = useState([]);
-  const [carregando, setCarregando] = useState(true);
-  const [salvando, setSalvando] = useState(false);
-  const [erro, setErro] = useState("");
-  const [mensagem, setMensagem] = useState("");
+
+  // Esc fecha a miniatura
+  useEffect(() => {
+    if (!preview) return;
+    const aoTeclar = (e) => { if (e.key === "Escape") setPreview(null); };
+    window.addEventListener("keydown", aoTeclar);
+    return () => window.removeEventListener("keydown", aoTeclar);
+  }, [preview]);
   const carregar = useCallback(async () => {
     setCarregando(true);
-    const { data, error } = await supabase.from("matriz_cargos").select("*");
+    const { data, error } = await supabase.from("documentos_compra").select("*").order("criado_em", { ascending: false }).limit(30);
     if (error) setErro(error.message);
-    const mapa = Object.fromEntries((data || []).map((d) => [d.papel, d]));
-    setLinhas(PAPEIS.map((p) => ({
-      papel: p,
-      diaria_base: String(mapa[p]?.diaria_base ?? 0),
-      valor_hora: String(mapa[p]?.valor_hora ?? 0),
-    })));
+    setDocumentos(data || []);
     setCarregando(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
-  const alterar = (papel, campo, valor) => {
-    setLinhas((prev) => prev.map((l) => l.papel === papel ? { ...l, [campo]: valor } : l));
-  };
-  const salvar = async () => {
-    setSalvando(true);
+  // Reverte uma nota já confirmada. Tudo acontece dentro de uma função do
+  // banco, numa transação só — ou desfaz estoque, conta a pagar e status
+  // juntos, ou não desfaz nada. Desfazer pela metade seria pior que não
+  // desfazer.
+  const reverterConferencia = async (d) => {
+    const nome = d.fornecedor || "fornecedor não identificado";
+    if (!window.confirm(
+      `Reverter a conferência da nota de "${nome}"?\n\n` +
+      "Isso apaga a entrada no estoque e a conta gerada no Plano de Contas, " +
+      "e devolve a nota para conferência com os itens preservados.\n\n" +
+      "O custo médio dos insumos NÃO volta ao valor anterior."
+    )) return;
+    setRevertendo(d.id);
     setErro("");
-    for (const l of linhas) {
-      const { error } = await supabase.from("matriz_cargos").upsert({
-        papel: l.papel,
-        diaria_base: parseFloat(l.diaria_base) || 0,
-        valor_hora: parseFloat(l.valor_hora) || 0,
-      }, { onConflict: "papel" });
-      if (error) { setErro(error.message); setSalvando(false); return; }
-    }
-    setSalvando(false);
-    setMensagem("Matriz salva.");
-  };
-  return (
-    <div>
-      <ComoDivideComissao />
-      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
-        Único lugar de editar esses dois valores por cargo. Diária base é somada à taxa de serviço rateada (método "por taxa de serviço" do diarista); valor da hora é usado no método "por hora". A Escala do dia só mostra esses valores, não edita mais aqui.
-      </div>
-      {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
-      {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-      {carregando ? (
-        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
-      ) : (
-        <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr 0.9fr 0.9fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
-            <span>Cargo</span><span>Bolo da comissão</span><span style={{ textAlign: "right" }}>Diária base</span><span style={{ textAlign: "right" }}>Valor hora</span>
-          </div>
-          {linhas.map((l, idx) => (
-            <div key={l.papel} style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr 0.9fr 0.9fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center" }}>
-              <span style={{ fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[l.papel]}</span>
-              <span style={l.papel === "gerente" ? seloFora : categoriaComissao(l.papel) === "garcom" ? seloGarcom : seloInterna}>
-                {l.papel === "gerente" ? "não entra" : categoriaComissao(l.papel) === "garcom" ? "garçons · 50%" : "equipe interna · 50%"}
-              </span>
-              <input type="number" step="0.01" value={l.diaria_base} onChange={(e) => alterar(l.papel, "diaria_base", e.target.value)}
-                style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
-              <input type="number" step="0.01" value={l.valor_hora} onChange={(e) => alterar(l.papel, "valor_hora", e.target.value)}
-                style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
-            </div>
-          ))}
-        </div>
-      )}
-      <button onClick={salvar} disabled={salvando} style={{ ...btnPrimary, width: "100%" }}>
-        {salvando ? <Loader2 size={16} /> : <Check size={16} />} Salvar matriz
-      </button>
-    </div>
-  );
-}
-// ---------------------------------------------------------------------------
-// Pessoas
-// ---------------------------------------------------------------------------
-function Pessoas({ isAdmin }) {
-  const [pessoas, setPessoas] = useState([]);
-  const [carregando, setCarregando] = useState(true);
-  const [erro, setErro] = useState("");
-  const [editandoId, setEditandoId] = useState(null);
-  const [novoAberto, setNovoAberto] = useState(false);
-  const [expandidoId, setExpandidoId] = useState(null);
-  const [fiadoId, setFiadoId] = useState(null);
-  // Nomes que realmente aparecem nos pedidos fiado. Viram sugestão no
-  // campo "Nome no fiado", pra ninguém precisar adivinhar como o caixa
-  // escreveu. Sai do cache — não custa consulta ao CardápioWeb.
-  const [nomesFiado, setNomesFiado] = useState([]);
-  const [busca, setBusca] = useState("");
-  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", pix: "", nome_fiado: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null });
-  const carregar = useCallback(async () => {
-    setCarregando(true);
-    const { data, error } = await supabase.from("pessoas").select("*").order("nome");
-    if (error) setErro(error.message);
-    setPessoas([...(data || [])].sort(porNome));
-    if (isAdmin) {
-      const { data: nomes } = await supabase.rpc("nomes_fiado_conhecidos", {
-        p_inicio: diasAtrasISO(90),
-        p_fim: hoje(),
-      });
-      setNomesFiado(nomes || []);
-    }
-    setCarregando(false);
-    // `isAdmin` na dependência de propósito: ele começa null (carregando)
-    // e só depois vira true. Sem isso o callback congelaria no null e as
-    // sugestões de nome nunca chegariam a carregar.
-  }, [isAdmin]);
-  useEffect(() => { carregar(); }, [carregar]);
-  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", pix: "", nome_fiado: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null }); setNovoAberto(true); setEditandoId(null); };
-  const abrirEdicao = (p) => {
-    setForm({
-      nome: p.nome, papel: p.papel, tipo_contrato: p.tipo_contrato, salario_base: p.salario_base ?? "",
-      pix: p.pix ?? "", nome_fiado: p.nome_fiado ?? "",
-      cpf: p.cpf ?? "", telefone: p.telefone ?? "", email: p.email ?? "", data_nascimento: p.data_nascimento ?? "",
-      documento_path: p.documento_path ?? null, arquivoDocumento: null,
-    });
-    setEditandoId(p.id); setNovoAberto(false);
-  };
-  const salvar = async () => {
-    if (!form.nome.trim()) return;
-    setErro("");
-    let documentoPath = form.documento_path;
-    if (form.arquivoDocumento) {
-      const caminho = `${form.nome.trim().replace(/[^a-zA-Z0-9]/g, "_")}-${Date.now()}-${form.arquivoDocumento.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
-      const { error: erroUpload } = await supabase.storage.from("documentos-pessoas").upload(caminho, form.arquivoDocumento);
-      if (erroUpload) { setErro(erroUpload.message); return; }
-      documentoPath = caminho;
-    }
-    // Cargo e tipo de contrato são coisas distintas — inclusive gerente
-    // pode ser registrado ou diarista, não força mais um valor.
-    // Diarista: base e valor/hora vêm da Matriz de cargos, não se digita
-    // aqui. Registrado e Gerente: salário individual, cada um o seu.
-    const payload = {
-      nome: form.nome.trim(),
-      papel: form.papel,
-      tipo_contrato: form.tipo_contrato,
-      pix: form.pix?.trim() || null,
-      nome_fiado: form.nome_fiado?.trim() || null,
-      salario_base: form.tipo_contrato === "diarista" ? null : (parseFloat(form.salario_base) || 0),
-      cpf: form.cpf.trim() || null,
-      telefone: form.telefone.trim() || null,
-      email: form.email.trim() || null,
-      data_nascimento: form.data_nascimento || null,
-      documento_path: documentoPath,
-    };
-    const { data: salvo, error } = editandoId
-      ? await supabase.from("pessoas").update(payload).eq("id", editandoId).select("id").single()
-      : await supabase.from("pessoas").insert(payload).select("id").single();
+    const { data, error } = await supabase.rpc("reverter_conferencia_nota", { p_documento: d.id });
+    setRevertendo(null);
     if (error) { setErro(error.message); return; }
-
-    // O campo "Nome no fiado" do formulário é atalho pra tabela de
-    // apelidos, que é onde o vínculo mora de verdade — uma pessoa pode ter
-    // vários nomes de caixa, e o formulário só edita um.
-    const apelido = form.nome_fiado?.trim();
-    if (apelido && salvo?.id) {
-      const { error: errApelido } = await vincularApelido(apelido, salvo.id);
-      if (errApelido) {
-        setErro(
-          errApelido.code === "23505"
-            ? `O nome "${apelido}" já está vinculado a outra pessoa. Desvincule lá antes de usar aqui.`
-            : errApelido.message
-        );
-        return;
-      }
+    if (data) window.alert(data);
+    carregar();
+  };
+  const excluirDocumento = async (d) => {
+    if (!window.confirm(`Excluir a nota de "${d.fornecedor || "fornecedor não identificado"}"? Isso apaga o documento e os itens lidos — não dá pra desfazer.`)) return;
+    const { error } = await supabase.from("documentos_compra").delete().eq("id", d.id);
+    if (error) { setErro(error.message); return; }
+    await supabase.storage.from("notas-fiscais").remove([d.arquivo_path]);
+    carregar();
+  };
+  const enviarArquivo = async (file) => {
+    if (!file) return;
+    setEnviando(true);
+    setErro("");
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const caminho = `${userData?.user?.id || "anon"}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
+      const { error: erroUpload } = await supabase.storage.from("notas-fiscais").upload(caminho, file);
+      if (erroUpload) throw erroUpload;
+      const { data: doc, error: erroInsert } = await supabase.from("documentos_compra")
+        .insert({ arquivo_path: caminho, status: "processando", criado_por: userData?.user?.id })
+        .select().single();
+      if (erroInsert) throw erroInsert;
+      carregar(); // já mostra "Lendo com IA" na lista
+      const { data: resultado, error: erroFuncao } = await supabase.functions.invoke("processar-documento-compra", {
+        body: { documento_id: doc.id },
+      });
+      if (erroFuncao) throw new Error(await extrairErroFuncao(erroFuncao));
+      if (resultado?.error) throw new Error(resultado.error);
+      carregar();
+    } catch (e) {
+      setErro(e.message || String(e));
+    } finally {
+      setEnviando(false);
+      if (inputRef.current) inputRef.current.value = "";
     }
-    setNovoAberto(false); setEditandoId(null);
-    carregar();
   };
-  const alternarAtivo = async (p) => {
-    await supabase.from("pessoas").update({ ativo: !p.ativo }).eq("id", p.id);
-    carregar();
-  };
-  const CAMPO_FALTANDO = { color: "#C4432B", fontStyle: "italic" };
-  const pessoasFiltradas = pessoas.filter((p) => p.nome.toLowerCase().includes(busca.toLowerCase()));
+  if (tela === "regras") {
+    return <RegrasProduto onVoltar={() => setTela("lista")} />;
+  }
+  if (tela === "conferencia" && documentoAtual) {
+    return (
+      <Conferencia
+        documento={documentoAtual}
+        onVoltar={() => { setTela("lista"); setDocumentoAtual(null); carregar(); }}
+      />
+    );
+  }
   return (
     <div>
+      {/*
+        SEM `capture` de propósito. O atributo capture="environment" mandava
+        o celular abrir a câmera traseira direto, sem perguntar nada — no
+        iPhone e no iPad isso tornava impossível escolher um arquivo já
+        salvo. Sem ele, o iOS abre o menu nativo com "Biblioteca de Fotos",
+        "Tirar Foto" e "Escolher Arquivo", e o Android faz o equivalente.
+        Ou seja: dá pra fotografar a nota na hora OU subir um PDF/imagem
+        que já está no aparelho ou no iCloud/Drive.
+      */}
+      <input ref={inputRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }}
+        onChange={(e) => enviarArquivo(e.target.files?.[0])} />
+      <button onClick={() => inputRef.current?.click()} disabled={enviando}
+        style={{ ...btnPrimary, width: "100%", marginBottom: 16 }}>
+        {enviando ? <Loader2 size={16} /> : <Upload size={17} />}
+        {enviando ? "Enviando…" : "Enviar nota fiscal ou recibo"}
+      </button>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-      {pessoas.length > 0 && (
+      {documentos.length > 0 && (
         <div style={{ position: "relative", marginBottom: 14 }}>
           <Search size={15} color="#8A8778" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
-          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar pessoa…"
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar por fornecedor…"
             style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
         </div>
       )}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ ...sectionLabel, marginBottom: 0 }}>Documentos recebidos</div>
+        <button onClick={() => setTela("regras")} style={{ ...linkBtn, fontSize: 12 }}>Regras de produto</button>
+      </div>
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
-        <div style={{ display: "grid", gap: 8, marginBottom: 14 }}>
-          {pessoasFiltradas.map((p) => (
-            <div key={p.id} style={{ ...cardStyle, opacity: p.ativo ? 1 : 0.5 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F", display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{p.nome}</span>
-                    {p.documento_path && (
-                      <button onClick={() => abrirDocumento(p.documento_path)} style={{ ...ghostIconBtn, flexShrink: 0 }} aria-label="Baixar documento anexado">
-                        <Paperclip size={14} />
-                      </button>
-                    )}
+        <div className="list-grid">
+          {documentos.filter((d) => (d.fornecedor || "Fornecedor não identificado").toLowerCase().includes(busca.toLowerCase())).map((d) => (
+            <div key={d.id} style={itemRow}>
+              <button onClick={() => abrirPreview(d.arquivo_path)} style={iconBtnWrap}
+                aria-label="Abrir documento em outra aba" title="Abrir em outra aba">
+                <div style={iconBox}><FileText size={16} color="#8A8778" /></div>
+              </button>
+              <button
+                onClick={() => { if (d.status === "aguardando_confirmacao") { setDocumentoAtual(d); setTela("conferencia"); } }}
+                style={{ display: "flex", alignItems: "center", minWidth: 0, flex: 1, background: "none", border: "none", padding: 0, cursor: d.status === "aguardando_confirmacao" ? "pointer" : "default", textAlign: "left" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {d.fornecedor || "Fornecedor não identificado"}
                   </div>
-                  <div style={{ fontSize: 12, color: "#8A8778" }}>
-                    {PAPEL_LABEL[p.papel]}
-                    {p.tipo_contrato === "diarista" && " · base/hora pela Matriz de cargos"}
-                    {isAdmin && (p.tipo_contrato === "registrado" || p.papel === "gerente") && p.salario_base ? ` · salário ${brl(p.salario_base)}` : ""}
+                  <div style={{ fontSize: 11, color: "#8A8778" }}>
+                    {fmtData(d.data_documento || d.criado_em)}{d.valor_total ? ` · ${brl(d.valor_total)}` : ""}
                   </div>
                 </div>
-                <span style={{ ...pill, background: p.tipo_contrato === "registrado" ? "#37A0E522" : "#FAC77555", color: p.tipo_contrato === "registrado" ? "#185FA5" : "#854F0B" }}>
-                  {p.papel === "gerente" ? "Gerente" : p.tipo_contrato === "registrado" ? "Registrado" : "Diarista"}
-                </span>
-                <button onClick={() => setExpandidoId(expandidoId === p.id ? null : p.id)} style={ghostIconBtn} aria-label="Ver todos os dados">
-                  {expandidoId === p.id ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+              <button onClick={() => abrirMiniatura(d)} style={ghostIconBtn}
+                aria-label="Ver documento aqui na página" title="Ver aqui na página">
+                <Eye size={16} />
+              </button>
+              {d.status !== "confirmado" && (
+                <button onClick={() => excluirDocumento(d)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Excluir documento">
+                  <Trash2 size={16} />
                 </button>
-                {isAdmin && (
-                  <button onClick={() => setFiadoId(fiadoId === p.id ? null : p.id)} style={ghostIconBtn} aria-label="Ver fiado desta pessoa" title="Fiado">
-                    <Receipt size={15} />
-                  </button>
-                )}
-                <button onClick={() => abrirEdicao(p)} style={ghostIconBtn} aria-label="Editar pessoa"><Pencil size={15} /></button>
-                <button onClick={() => alternarAtivo(p)} style={{ ...linkBtn, fontSize: 11 }}>{p.ativo ? "Desativar" : "Ativar"}</button>
-              </div>
-              {expandidoId === p.id && (
-                <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2", display: "grid", gap: 5, fontSize: 12 }}>
-                  <div><span style={{ color: "#8A8778" }}>CPF: </span><span style={p.cpf ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.cpf || "não preenchido"}</span></div>
-                  <div><span style={{ color: "#8A8778" }}>Telefone: </span><span style={p.telefone ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.telefone || "não preenchido"}</span></div>
-                  <div><span style={{ color: "#8A8778" }}>E-mail: </span><span style={p.email ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.email || "não preenchido"}</span></div>
-                  <div><span style={{ color: "#8A8778" }}>PIX: </span><span style={p.pix ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.pix || "não preenchido"}</span></div>
-                  <div><span style={{ color: "#8A8778" }}>Nome no fiado: </span><span style={p.nome_fiado ? { color: "#22231F" } : { color: "#8A8778" }}>{p.nome_fiado || "mesmo do cadastro"}</span></div>
-                  <div><span style={{ color: "#8A8778" }}>Aniversário: </span><span style={p.data_nascimento ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.data_nascimento ? new Date(p.data_nascimento + "T12:00:00").toLocaleDateString("pt-BR") : "não preenchido"}</span></div>
-                  <div><span style={{ color: "#8A8778" }}>Documento anexado: </span><span style={p.documento_path ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.documento_path ? "sim" : "nenhum"}</span></div>
-                </div>
               )}
-              {isAdmin && fiadoId === p.id && <FiadoDaPessoa pessoa={p} pessoas={pessoas} isAdmin={isAdmin} />}
-              {editandoId === p.id && (
-                <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} isAdmin={isAdmin} nomesFiado={nomesFiado} pessoas={pessoas} />
+              {d.status === "confirmado" && isAdmin && (
+                <button onClick={() => reverterConferencia(d)} disabled={revertendo === d.id}
+                  style={{ ...ghostIconBtn, color: "#8A6A0F" }}
+                  aria-label="Reverter conferência" title="Reverter conferência (só administrador)">
+                  {revertendo === d.id ? <Loader2 size={16} /> : <RotateCcw size={16} />}
+                </button>
               )}
+              <span style={{ ...pill, ...STATUS_ESTILO[d.status], whiteSpace: "nowrap", flexShrink: 0 }}>{STATUS_LABEL[d.status]}</span>
             </div>
           ))}
-          {pessoasFiltradas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>{busca ? "Nenhuma pessoa encontrada." : "Nenhuma pessoa cadastrada ainda."}</div>}
-        </div>
-      )}
-      {!novoAberto ? (
-        <button onClick={abrirNovo} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
-          <Plus size={15} /> Nova pessoa
-        </button>
-      ) : (
-        <div style={cardStyle}>
-          <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setNovoAberto(false)} isAdmin={isAdmin} nomesFiado={nomesFiado} pessoas={pessoas} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Fiado da equipe
-//
-// O consumo vem do CardapioWeb: pedido fechado pago como "fiado". O que
-// liga o pedido a pessoa e o nome do cliente digitado no caixa — por isso
-// existe o campo "Nome no fiado" no cadastro, pra quando o caixa escreve
-// apelido.
-//
-// Um pedido so pode ser descontado UMA vez: quem garante e a tabela
-// fiado_baixas, com o id do pedido como chave. E o que permite varrer 60
-// dias todo dia sem medo de abater o mesmo consumo de novo.
-// ---------------------------------------------------------------------------
-// A chave PIX aparece onde o acerto acontece — é ali que ela é usada.
-// O botão copia pro clipboard pra não ter erro de digitação numa chave
-// aleatória de 32 caracteres.
-function LinhaPix({ pessoa }) {
-  const [copiado, setCopiado] = useState(false);
-  if (!pessoa?.pix) {
-    return (
-      <div style={{ fontSize: 11, color: "#B4AF9E", marginTop: 2 }}>
-        PIX não cadastrado
-      </div>
-    );
-  }
-  const copiar = async () => {
-    try {
-      await navigator.clipboard.writeText(pessoa.pix);
-      setCopiado(true);
-      setTimeout(() => setCopiado(false), 1800);
-    } catch {
-      // Safari em contexto não seguro bloqueia o clipboard — nesse caso a
-      // chave continua visível na tela pra copiar na mão.
-      setCopiado(false);
-    }
-  };
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, flexWrap: "wrap" }}>
-      <span style={{ fontSize: 11, color: "#8A8778" }}>PIX</span>
-      <span style={{ fontSize: 11, color: "#22231F", fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
-        {pessoa.pix}
-      </span>
-      <button onClick={copiar} style={{ ...linkBtn, fontSize: 10.5, padding: "2px 4px", color: copiado ? "#0F6E56" : "#8A8778" }}>
-        {copiado ? "copiado" : "copiar"}
-      </button>
-    </div>
-  );
-}
-
-// `souAdmin` entra aqui como segunda tranca. A tela ja esconde tudo de
-// quem nao e administrador, e o banco recusa por RLS de qualquer jeito —
-// mas se um dia um botao escapar do gate da tela, o erro que aparece e
-// uma mensagem clara em vez de um erro cru de permissao do Postgres.
-function useFiadoEquipe(pessoas, souAdmin = false) {
-  const [inicio, setInicio] = useState(() => diasAtrasISO(60));
-  const [fim, setFim] = useState(() => hoje());
-  const [buscando, setBuscando] = useState(false);
-  const [erro, setErro] = useState("");
-  const [porPessoa, setPorPessoa] = useState(null); // null = ainda nao buscou
-  const [semDono, setSemDono] = useState([]);
-  const [baixados, setBaixados] = useState(() => new Map());
-  const [naoAbater, setNaoAbater] = useState(() => new Set());
-  const [fonte, setFonte] = useState(null); // { doCache, completados, diasFaltando }
-  const [semDonoAgrupado, setSemDonoAgrupado] = useState([]);
-  const [apelidos, setApelidos] = useState([]);
-  // Os lançamentos crus ficam guardados. Vincular um nome não muda o que
-  // foi consumido — muda só de quem é. Reagrupar em memória é instantâneo;
-  // refazer a busca chamaria o CardápioWeb a cada clique e travaria no
-  // limite de 5 consultas por minuto logo no terceiro nome.
-  const [lancamentos, setLancamentos] = useState([]);
-  const [ignorados, setIgnorados] = useState(() => new Set());
-
-  const reagrupar = (lista, listaApelidos, listaIgnorados) => {
-    const { porPessoa: mapa, semDono: sobra, semDonoAgrupado: fila } =
-      agruparPorPessoa(lista, pessoas, listaApelidos);
-    setPorPessoa(mapa);
-    setSemDono(sobra);
-    // Nome marcado como cliente de verdade sai da fila, mas o consumo
-    // continua na lista geral — nada some do total.
-    setSemDonoAgrupado(fila.filter((g) => !listaIgnorados.has(normalizaNome(g.nome))));
-  };
-
-  const buscar = async () => {
-    setBuscando(true);
-    setErro("");
-    const { lancamentos: lista, erro: e, doCache, completados, diasFaltando } =
-      await buscarFiadoNoPeriodo(inicio, fim);
-    if (e) { setErro(e); setBuscando(false); return; }
-    setFonte({ doCache, completados: completados || [], diasFaltando: diasFaltando || [] });
-    const [listaApelidos, listaIgnorados] = await Promise.all([
-      carregarApelidos(),
-      carregarIgnorados(),
-    ]);
-    const baixas = await carregarBaixas(lista.map((l) => l.pedidoId));
-    setLancamentos(lista);
-    setApelidos(listaApelidos);
-    setIgnorados(listaIgnorados);
-    setBaixados(baixas);
-    reagrupar(lista, listaApelidos, listaIgnorados);
-    setBuscando(false);
-  };
-
-  const vincular = async (nome, pessoaId) => {
-    if (!souAdmin) { setErro(SO_ADMIN); return; }
-    setErro("");
-    const { error } = await vincularApelido(nome, pessoaId);
-    if (error) {
-      setErro(
-        error.code === "23505"
-          ? `"${nome}" já está vinculado a outra pessoa.`
-          : error.message
-      );
-      return;
-    }
-    const novos = [...apelidos.filter((a) => normalizaNome(a.apelido) !== normalizaNome(nome)),
-                   { apelido: nome, pessoa_id: pessoaId }];
-    setApelidos(novos);
-    reagrupar(lancamentos, novos, ignorados);
-  };
-
-  const ignorar = async (nome) => {
-    if (!souAdmin) { setErro(SO_ADMIN); return; }
-    setErro("");
-    const { error } = await ignorarNome(nome, "cliente");
-    if (error) { setErro(error.message); return; }
-    const novos = new Set(ignorados);
-    novos.add(normalizaNome(nome));
-    setIgnorados(novos);
-    reagrupar(lancamentos, apelidos, novos);
-  };
-
-  const emAbertoDe = (pessoaId) =>
-    (porPessoa?.[pessoaId] || []).filter((l) => !baixados.has(l.pedidoId));
-  const saldoDe = (pessoaId) => somar(emAbertoDe(pessoaId));
-  const vaiAbater = (pessoaId) => !naoAbater.has(pessoaId);
-  const alternarAbater = (pessoaId) => {
-    setNaoAbater((prev) => {
-      const novo = new Set(prev);
-      if (novo.has(pessoaId)) novo.delete(pessoaId); else novo.add(pessoaId);
-      return novo;
-    });
-  };
-  const descontoDe = (pessoaId) => (vaiAbater(pessoaId) ? saldoDe(pessoaId) : 0);
-
-  // Baixa de UMA pessoa. E o que a tela do dia fechado usa: ali nao existe
-  // "Calcular e salvar", o acerto e pessoa por pessoa, na hora de pagar.
-  const baixarUm = async (pessoaId, origem, referencia) => {
-    if (!souAdmin) { setErro(SO_ADMIN); return { error: { message: SO_ADMIN } }; }
-    const abertos = emAbertoDe(pessoaId);
-    if (abertos.length === 0) return { error: null };
-    const { error } = await darBaixa(pessoaId, abertos, origem, referencia);
-    if (error) { setErro(error.message); return { error }; }
-    setBaixados((prev) => {
-      const novo = new Map(prev);
-      abertos.forEach((l) => novo.set(l.pedidoId, { pedido_id: l.pedidoId, pessoa_id: pessoaId, valor: l.valor }));
-      return novo;
-    });
-    return { error: null };
-  };
-
-  // Desfaz a baixa dessa pessoa no periodo — o consumo volta pra "em aberto".
-  const estornarDe = async (pessoaId) => {
-    if (!souAdmin) { setErro(SO_ADMIN); return; }
-    const jaBaixados = (porPessoa?.[pessoaId] || []).filter((l) => baixados.has(l.pedidoId));
-    if (jaBaixados.length === 0) return;
-    const { error } = await estornarBaixa(jaBaixados.map((l) => l.pedidoId));
-    if (error) { setErro(error.message); return; }
-    setBaixados((prev) => {
-      const novo = new Map(prev);
-      jaBaixados.forEach((l) => novo.delete(l.pedidoId));
-      return novo;
-    });
-  };
-
-  const baixadoDe = (pessoaId) =>
-    (porPessoa?.[pessoaId] || []).filter((l) => baixados.has(l.pedidoId));
-
-  // Grava as baixas de todo mundo que esta marcado pra abater.
-  const baixarTodos = async (origem, referencia) => {
-    if (!souAdmin) return { error: null };
-    if (!porPessoa) return { error: null };
-    for (const pessoaId of Object.keys(porPessoa)) {
-      if (!vaiAbater(pessoaId)) continue;
-      const abertos = emAbertoDe(pessoaId);
-      if (abertos.length === 0) continue;
-      const { error } = await darBaixa(pessoaId, abertos, origem, referencia);
-      if (error) return { error };
-      setBaixados((prev) => {
-        const novo = new Map(prev);
-        abertos.forEach((l) => novo.set(l.pedidoId, { pedido_id: l.pedidoId, pessoa_id: pessoaId, valor: l.valor }));
-        return novo;
-      });
-    }
-    return { error: null };
-  };
-
-  return {
-    inicio, setInicio, fim, setFim, buscando, erro, buscar,
-    buscou: porPessoa !== null, porPessoa, semDono, baixados, fonte,
-    semDonoAgrupado, apelidos, vincular, ignorar,
-    emAbertoDe, saldoDe, vaiAbater, alternarAbater, descontoDe, baixarTodos,
-    baixarUm, estornarDe, baixadoDe,
-  };
-}
-
-// Barra de busca do fiado, usada na Escala do dia e no Fechamento mensal.
-function BarraFiado({ fiado, aviso }) {
-  return (
-    <div style={{ ...cardStyle, padding: "10px 12px", marginBottom: 12 }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <Receipt size={15} color="#8A8778" />
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F", flex: 1, minWidth: 90 }}>Fiado da equipe</span>
-        <input type="date" value={fiado.inicio} onChange={(e) => fiado.setInicio(e.target.value)} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }} />
-        <input type="date" value={fiado.fim} onChange={(e) => fiado.setFim(e.target.value)} style={{ ...inputStyle, padding: "6px 8px", fontSize: 12 }} />
-        <button onClick={fiado.buscar} disabled={fiado.buscando} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", fontSize: 12 }}>
-          {fiado.buscando ? <Loader2 size={13} /> : <RefreshCw size={13} />} Buscar
-        </button>
-      </div>
-      {fiado.erro && <div style={{ fontSize: 12, color: "#A32D2D", marginTop: 8 }}>{fiado.erro}</div>}
-      {!fiado.buscou && !fiado.erro && (
-        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8, lineHeight: 1.6 }}>
-          {aviso} Sai do cache do painel, entao e instantanea. So o dia de
-          hoje, que o cron ainda nao sincronizou, e completado no
-          CardapioWeb na hora.
-        </div>
-      )}
-      {fiado.buscou && fiado.fonte && (
-        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8 }}>
-          {fiado.fonte.doCache} lancamento(s) vieram do cache do painel
-          {fiado.fonte.completados.length > 0
-            ? ` e ${fiado.fonte.completados.length} dia(s) ainda nao sincronizado(s) foram buscados no CardapioWeb agora.`
-            : "."}
-          {fiado.fonte.diasFaltando.length > 0 && fiado.fonte.completados.length === 0 && (
-            <span style={{ color: "#854F0B" }}>
-              {" "}Nao consegui completar os {fiado.fonte.diasFaltando.length} dia(s) mais
-              recentes no CardapioWeb — o consumo de hoje pode estar de fora.
-            </span>
-          )}
+          {documentos.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum documento enviado ainda.</div>}
         </div>
       )}
 
-    </div>
-  );
-}
-
-// A fila de "falta vincular": todo nome que aparece no fiado e ainda nao
-// pertence a ninguem da equipe. Enquanto nada estiver vinculado, e aqui
-// que voce enxerga o fiado inteiro — nada fica escondido.
-//
-// O palpite de dono e so palpite: quem confirma e voce. Casar "Ana"
-// sozinho poderia cobrar da Ana Paula o que era da Janayna, e o erro so
-// apareceria no dia em que alguem reclamasse do acerto.
-function PainelSemDono({ fiado, pessoas }) {
-  const [aberto, setAberto] = useState({});
-  const [escolha, setEscolha] = useState({});
-  const [salvando, setSalvando] = useState(null);
-  const [feitos, setFeitos] = useState([]);
-  const [aviso, setAviso] = useState("");
-  const fila = fiado.semDonoAgrupado || [];
-
-  // Some quando a fila zera E não há nada recém-feito pra mostrar —
-  // senão o painel evaporava no último clique sem dizer o que aconteceu.
-  if (!fiado.buscou || (fila.length === 0 && feitos.length === 0)) return null;
-  const totalPendente = fila.reduce((s, g) => s + g.total, 0);
-
-  // Recebe o id efetivamente selecionado (o palpite conta como seleção),
-  // não o que estava guardado em `escolha`.
-  const confirmar = async (nome, pessoaId) => {
-    if (!pessoaId) { setAviso("Escolha a pessoa na lista antes de vincular."); return; }
-    setAviso("");
-    setSalvando(nome);
-    const pessoa = pessoas.find((p) => p.id === pessoaId);
-    const grupo = fila.find((g) => g.nome === nome);
-    await fiado.vincular(nome, pessoaId);
-    setSalvando(null);
-    // A linha some da fila na hora, então a confirmação precisa viver
-    // fora dela — senão o clique parece não ter feito nada.
-    setFeitos((f) => [
-      { nome, pessoa: pessoa?.nome || "", valor: grupo?.total || 0, tipo: "vinculado" },
-      ...f,
-    ].slice(0, 6));
-  };
-
-  const marcarCliente = async (nome) => {
-    setAviso("");
-    setSalvando(nome);
-    const grupo = fila.find((g) => g.nome === nome);
-    await fiado.ignorar(nome);
-    setSalvando(null);
-    setFeitos((f) => [
-      { nome, pessoa: "", valor: grupo?.total || 0, tipo: "cliente" },
-      ...f,
-    ].slice(0, 6));
-  };
-
-  return (
-    <div style={{ ...cardStyle, padding: 12, marginBottom: 12, borderColor: "#E8A33D" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F", flex: 1, minWidth: 150 }}>
-          {fila.length} nome(s) no fiado ainda sem dono
-        </span>
-        <span style={{ fontSize: 13, fontWeight: 800, color: "#A32D2D" }}>{brl(totalPendente)}</span>
-      </div>
-      {fila.length > 0 && (
-        <div style={{ fontSize: 11.5, color: "#8A8778", lineHeight: 1.6, marginBottom: 10 }}>
-          Esse consumo existe, mas o painel ainda não sabe de quem é — então
-          não entra em acerto nenhum. Vincule cada nome à pessoa certa, ou
-          marque como cliente. Depois de vinculado, o painel reconhece sozinho.
-        </div>
-      )}
-
-      {aviso && (
-        <div style={{ ...avisoStyle, marginBottom: 10 }}>
-          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-          <div style={{ fontSize: 12.5 }}>{aviso}</div>
-        </div>
-      )}
-
-      {feitos.length > 0 && (
-        <div style={{
-          background: "#EAF3DE", border: "1px solid #C4DBA6", borderRadius: 10,
-          padding: "9px 11px", marginBottom: 10,
-        }}>
-          <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.4, color: "#27500A", marginBottom: 5 }}>
-            {feitos.length} resolvido(s) agora
-          </div>
-          {feitos.map((f, k) => (
-            <div key={`${f.nome}-${k}`} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#27500A", padding: "2px 0", flexWrap: "wrap" }}>
-              <Check size={13} style={{ flexShrink: 0 }} />
-              <b>{f.nome}</b>
-              {f.tipo === "vinculado" ? (
+      {/* Miniatura do documento, sobre a página. Clicar fora ou Esc fecha. */}
+      {preview && (
+        <div onClick={() => setPreview(null)} style={overlayStyle}>
+          <div onClick={(e) => e.stopPropagation()} style={modalStyle}>
+            <div style={modalBarra}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {preview.nome}
+              </span>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <button onClick={() => window.open(preview.url, "_blank")} style={ghostIconBtn}
+                  aria-label="Abrir em outra aba" title="Abrir em outra aba">
+                  <ExternalLink size={16} />
+                </button>
+                <button onClick={() => setPreview(null)} style={ghostIconBtn} aria-label="Fechar" title="Fechar">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            <div style={modalCorpo}>
+              {preview.ehPdf ? (
                 <>
-                  <span style={{ color: "#8A8778" }}>→</span>
-                  <span>{f.pessoa}</span>
-                  <span style={{ color: "#8A8778" }}>· {brl(f.valor)} foram para o acerto</span>
+                  <iframe src={preview.url} title="Documento" style={{ width: "100%", height: "70vh", border: "none", background: "#FFFFFF" }} />
+                  {/* O Safari do iPhone costuma não renderizar PDF dentro de
+                      iframe. Se o quadro acima vier vazio, o botão abaixo
+                      resolve — por isso ele existe mesmo com o da barra. */}
+                  <button onClick={() => window.open(preview.url, "_blank")}
+                    style={{ ...btnSecondary, width: "100%", marginTop: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                    <ExternalLink size={14} /> Não apareceu? Abrir em outra aba
+                  </button>
                 </>
               ) : (
-                <span style={{ color: "#8A8778" }}>marcado como cliente · {brl(f.valor)} fora do acerto</span>
+                <img src={preview.url} alt="Documento" style={{ maxWidth: "100%", maxHeight: "70vh", display: "block", margin: "0 auto", objectFit: "contain" }} />
               )}
             </div>
-          ))}
-          {fila.length === 0 && (
-            <div style={{ fontSize: 11.5, color: "#27500A", marginTop: 6, paddingTop: 6, borderTop: "1px solid #C4DBA6" }}>
-              Fila zerada. Da próxima vez esses nomes já vão direto para a
-              pessoa certa, sem passar por aqui.
-            </div>
-          )}
-        </div>
-      )}
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {fila.map((g) => {
-          const { candidatos } = sugerirPessoa(g.nome, pessoas, fiado.apelidos);
-          const sugerido = candidatos[0];
-          const valorSelect = escolha[g.nome] ?? (sugerido ? sugerido.pessoa.id : "");
-          return (
-            <div key={g.nome} style={{ border: "1px solid #E8E2D2", borderRadius: 10, padding: "9px 11px", background: "#FFFFFF" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <div style={{ flex: 1, minWidth: 130 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{g.nome}</div>
-                  <button onClick={() => setAberto((a) => ({ ...a, [g.nome]: !a[g.nome] }))} style={{ ...linkBtn, fontSize: 10.5, padding: 0 }}>
-                    {g.lancamentos.length} pedido(s) · ver {aberto[g.nome] ? "menos" : "quais"}
-                  </button>
-                </div>
-                <span style={{ fontSize: 13, fontWeight: 700, color: "#A32D2D", fontVariantNumeric: "tabular-nums" }}>
-                  {brl(g.total)}
-                </span>
-              </div>
-
-              {aberto[g.nome] && (
-                <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed #E8E2D2" }}>
-                  {g.lancamentos.map((l) => (
-                    <div key={l.pedidoId} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#8A8778", padding: "2px 0" }}>
-                      <span>#{l.displayId} · {new Date(l.data).toLocaleDateString("pt-BR")}</span>
-                      <span>{brl(l.valor)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
-                <select
-                  value={valorSelect}
-                  onChange={(e) => setEscolha((x) => ({ ...x, [g.nome]: e.target.value }))}
-                  style={{ ...inputStyle, flex: 1, minWidth: 160, padding: "7px 8px", fontSize: 12 }}
-                >
-                  <option value="">Vincular a…</option>
-                  {pessoas.map((p) => (
-                    <option key={p.id} value={p.id}>{p.nome}</option>
-                  ))}
-                </select>
-                <button onClick={() => confirmar(g.nome, valorSelect)} disabled={!valorSelect || salvando === g.nome}
-                  style={{ ...btnPrimary, padding: "7px 12px", fontSize: 12, borderRadius: 8 }}>
-                  {salvando === g.nome ? "..." : "Vincular"}
-                </button>
-                <button onClick={() => marcarCliente(g.nome)} disabled={salvando === g.nome}
-                  style={{ ...linkBtn, fontSize: 11 }}>
-                  é cliente
-                </button>
-              </div>
-
-              {sugerido && escolha[g.nome] === undefined && (
-                <div style={{ fontSize: 10.5, color: "#0F6E56", marginTop: 5 }}>
-                  Palpite: <b>{sugerido.pessoa.nome}</b> — {sugerido.motivo}
-                  {candidatos.length > 1 ? ` (e mais ${candidatos.length - 1} possível(is), confira antes)` : ""}
-                </div>
-              )}
-              {!sugerido && !escolha[g.nome] && (
-                <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 5 }}>
-                  Nao achei ninguem parecido — escolha na lista ou marque como cliente.
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// Pagamento das diarias da noite.
-//
-// So diarista entra: registrado e gerente recebem no fechamento do mes,
-// mesmo tendo comissao calculada todo dia. Misturar os dois pagaria o
-// registrado duas vezes.
-//
-// Um lancamento por noite, na conta 4.2 (Diarias), ja quitado — porque o
-// diarista e pago na saida, nao vira conta a pagar. E dai que o DRE passa
-// a enxergar o custo de pessoal que faltava.
-function PagamentoDasDiarias({ dia, linhasSalvas, fiado, pagamento, aoMudar, setErro }) {
-  const [gravando, setGravando] = useState(false);
-  const [desfazendo, setDesfazendo] = useState(false);
-
-  const diaristas = linhasSalvas.filter(
-    (l) => l.pessoa?.tipo_contrato === "diarista" && l.pessoa?.papel !== "gerente"
-  );
-  const bruto = diaristas.reduce((s2, l) => s2 + (Number(l.total_dia) || 0), 0);
-  const fiadoAberto = fiado.buscou
-    ? diaristas.reduce((s2, l) => s2 + fiado.saldoDe(l.pessoa_id), 0)
-    : 0;
-  const liquido = Math.max(0, bruto - fiadoAberto);
-
-  if (pagamento) {
-    const desfazer = async () => {
-      setDesfazendo(true);
-      setErro("");
-      // Ordem importa: tira o registro do dia primeiro, pra nunca sobrar
-      // "pago" apontando pra uma conta que ja nao existe.
-      await supabase.from("pagamentos_diaria").delete().eq("dia", dia);
-      if (pagamento.conta_pagar_id) {
-        await supabase.from("contas_pagar").delete().eq("id", pagamento.conta_pagar_id);
-      }
-      // O fiado descontado nesse pagamento volta a ficar em aberto.
-      const { data: baixas } = await supabase
-        .from("fiado_baixas").select("pedido_id")
-        .eq("origem", "escala").eq("referencia", dia);
-      if (baixas?.length) {
-        await estornarBaixa(baixas.map((b) => b.pedido_id));
-      }
-      setDesfazendo(false);
-      aoMudar();
-    };
-    return (
-      <div style={{ ...cardStyle, marginBottom: 12, borderColor: "#C4DBA6", background: "#F7FBF2" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <Check size={16} color="#27500A" />
-          <div style={{ flex: 1, minWidth: 160 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#27500A" }}>
-              Diárias pagas — {brl(pagamento.valor_liquido)}
-            </div>
-            <div style={{ fontSize: 11, color: "#8A8778" }}>
-              {pagamento.qtd_pessoas} diarista(s) · bruto {brl(pagamento.valor_bruto)}
-              {Number(pagamento.valor_fiado) > 0 ? ` · fiado ${brl(pagamento.valor_fiado)} descontado` : ""}
-              {" · em Contas a pagar (paga) e no DRE, conta 4.2 Diárias"}
-            </div>
           </div>
-          <button onClick={desfazer} disabled={desfazendo} style={{ ...linkBtn, fontSize: 11 }}>
-            {desfazendo ? "desfazendo…" : "desfazer"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (diaristas.length === 0) return null;
-
-  const pagar = async () => {
-    setGravando(true);
-    setErro("");
-    const descricao = `Diárias ${dia.split("-").reverse().join("/")} — ${diaristas.length} pessoa(s)`;
-    const obs = fiadoAberto > 0 ? `Fiado de ${brl(fiadoAberto)} descontado.` : null;
-
-    const { data: contaId, error } = await supabase.rpc("lancar_despesa_paga", {
-      p_descricao: descricao,
-      p_valor: liquido,
-      p_plano_conta: "4.2",
-      p_data: dia,
-      p_observacao: obs,
-    });
-    if (error) { setErro(error.message); setGravando(false); return; }
-
-    // Baixa do fiado de quem foi descontado agora. Se falhar, a conta ja
-    // existe — por isso o aviso e explicito em vez de silencioso.
-    if (fiadoAberto > 0) {
-      for (const l of diaristas) {
-        if (fiado.saldoDe(l.pessoa_id) > 0) {
-          const r = await fiado.baixarUm(l.pessoa_id, "escala", dia);
-          if (r?.error) { setErro("Pagamento lançado, mas o fiado de " + l.pessoa.nome + " não baixou: " + r.error.message); }
-        }
-      }
-    }
-
-    const { data: userData } = await supabase.auth.getUser();
-    const { error: errReg } = await supabase.from("pagamentos_diaria").insert({
-      dia,
-      conta_pagar_id: contaId,
-      valor_bruto: bruto,
-      valor_fiado: fiadoAberto,
-      valor_liquido: liquido,
-      qtd_pessoas: diaristas.length,
-      pago_por: userData?.user?.id || null,
-    });
-    if (errReg) { setErro(errReg.message); setGravando(false); return; }
-
-    setGravando(false);
-    aoMudar();
-  };
-
-  return (
-    <div style={{ ...cardStyle, marginBottom: 12 }}>
-      <div style={sectionLabel}>Pagamento das diárias</div>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778", padding: "3px 0" }}>
-        <span>{diaristas.length} diarista(s) · bruto</span>
-        <span style={{ color: "#22231F" }}>{brl(bruto)}</span>
-      </div>
-      {fiado.buscou && fiadoAberto > 0 && (
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#A32D2D", padding: "3px 0" }}>
-          <span>(–) Fiado em aberto</span>
-          <span style={{ fontWeight: 700 }}>{brl(fiadoAberto)}</span>
         </div>
       )}
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 800, color: "#22231F", padding: "6px 0 10px", borderTop: "1px solid #F0EBDD", marginTop: 4 }}>
-        <span>A pagar hoje</span><span>{brl(liquido)}</span>
-      </div>
-      {!fiado.buscou && (
-        <div style={{ fontSize: 11, color: "#854F0B", marginBottom: 8 }}>
-          Você ainda não buscou o fiado. Se buscar antes, o desconto entra
-          neste pagamento — depois de lançado, só desfazendo.
-        </div>
-      )}
-      <button onClick={pagar} disabled={gravando || liquido <= 0}
-        style={{ ...btnPrimary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
-        {gravando ? <Loader2 size={15} /> : <Receipt size={15} />}
-        {gravando ? "Enviando…" : "Enviar para Contas a pagar e DRE"}
-      </button>
-      <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 6, lineHeight: 1.6 }}>
-        Custo de pessoal <b>não passa por nota fiscal</b> — entra direto como
-        despesa já quitada na conta <b>4.2 Diárias</b>, com a data de hoje.
-        Aparece na hora em Contas a pagar (como paga) e no DRE. Registrado e
-        gerente não entram aqui — recebem no Fechamento mensal.
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Folha para impressao / PDF
-//
-// Fica escondida na tela (.folha-pdf tem display:none no index.css) e so
-// aparece na hora de imprimir. O navegador cuida do resto: no Mac, "Salvar
-// como PDF"; no iPhone, Compartilhar > Imprimir. Sem biblioteca nova no
-// build — cada dependencia a mais e mais uma chance do deploy quebrar.
-// ---------------------------------------------------------------------------
-function CabecalhoFolha({ titulo, subtitulo, emitidoPor }) {
-  const agora = new Date();
-  return (
-    <div style={{ display: "flex", alignItems: "flex-start", gap: 14, borderBottom: "3px solid #C72B2E", paddingBottom: 12 }}>
-      <img src="/icons/logo-full.png" alt="Mr Kong" style={{ width: 96, height: "auto", flexShrink: 0 }} />
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: "#231A18" }}>{titulo}</div>
-        <div style={{ fontSize: 11.5, color: "#8B8071", marginTop: 2 }}>
-          Mr Kong Fast Food · Rio Verde/GO{subtitulo ? ` · ${subtitulo}` : ""}
-        </div>
-      </div>
-      <div style={{ fontSize: 10.5, color: "#8B8071", textAlign: "right", lineHeight: 1.5 }}>
-        emitido em<br />
-        {agora.toLocaleDateString("pt-BR")} {agora.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
-        {emitidoPor ? <><br />por {emitidoPor}</> : null}
-      </div>
-    </div>
-  );
-}
-
-function FolhaEscala({ dia, linhas, participacao, taxa, emitidoPor }) {
-  const tdCab = {
-    borderBottom: "1.5px solid #231A18", padding: "6px 4px", fontSize: 9.5, fontWeight: 800,
-    textTransform: "uppercase", letterSpacing: 0.5, color: "#8B8071", textAlign: "left",
-  };
-  const td = { padding: "7px 4px", borderBottom: "1px solid #F3EBDD", fontSize: 11.5 };
-  const n = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
-  const totalHoras = linhas.reduce((s2, l) => s2 + (participacao[l.pessoa_id]?.horas || 0), 0);
-  const totalDia = linhas.reduce((s2, l) => s2 + (Number(l.total_dia) || 0), 0);
-
-  return (
-    <div className="folha-pdf">
-      <CabecalhoFolha
-        titulo="Escala do dia"
-        subtitulo={dia.split("-").reverse().join("/")}
-        emitidoPor={emitidoPor}
-      />
-
-      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 14 }}>
-        <thead>
-          <tr>
-            <td style={tdCab}>Pessoa</td>
-            <td style={tdCab}>Cargo</td>
-            <td style={tdCab}>Horário</td>
-            <td style={{ ...tdCab, textAlign: "right" }}>Horas</td>
-            <td style={{ ...tdCab, textAlign: "right" }}>Método</td>
-            <td style={{ ...tdCab, textAlign: "right" }}>A pagar</td>
-          </tr>
-        </thead>
-        <tbody>
-          {linhas.map((l) => {
-            const part = participacao[l.pessoa_id] || {};
-            return (
-              <tr key={l.pessoa_id}>
-                <td style={td}>{l.pessoa?.nome}</td>
-                <td style={td}>{PAPEL_LABEL[l.pessoa?.papel]}{l.pessoa?.tipo_contrato === "diarista" ? " · diarista" : ""}</td>
-                <td style={td}>{part.entrada && part.saida ? `${part.entrada}–${part.saida}` : "—"}</td>
-                <td style={n}>{(part.horas || 0).toLocaleString("pt-BR")}</td>
-                <td style={n}>
-                  {l.metodo_usado === "gerente_previa" ? "2% do mês"
-                    : l.metodo_usado === "hora" ? "por hora"
-                    : l.metodo_usado === "comissao" ? "taxa + diária"
-                    : "comissão"}
-                </td>
-                <td style={{ ...n, fontWeight: 700 }}>{brl(l.total_dia)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-        <tfoot>
-          <tr>
-            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 11.5 }} colSpan={3}>
-              {linhas.length} pessoa(s) · taxa de serviço do dia {brl(taxa)}
-            </td>
-            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 11.5, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-              {totalHoras.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}
-            </td>
-            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18" }} />
-            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 12.5, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-              {brl(totalDia)}
-            </td>
-          </tr>
-        </tfoot>
-      </table>
-
-      <div className="nao-quebrar" style={{ marginTop: 14, fontSize: 10.5, color: "#8B8071", lineHeight: 1.7 }}>
-        A comissão do dia é metade da taxa de serviço para os garçons e metade
-        para a equipe interna, dividida por cabeça dentro de cada grupo, só entre
-        quem trabalhou. Diarista recebe o maior entre <b>diária base + comissão</b> e
-        <b> horas × valor da hora</b>. Gerente não entra na divisão: recebe 2% do
-        faturamento bruto, fechado no mês.
-      </div>
-
-      <div className="nao-quebrar" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 26, marginTop: 40 }}>
-        <div style={{ borderTop: "1px solid #231A18", paddingTop: 5, fontSize: 10.5, color: "#8B8071", textAlign: "center" }}>
-          Responsável pelo fechamento
-        </div>
-        <div style={{ borderTop: "1px solid #231A18", paddingTop: 5, fontSize: 10.5, color: "#8B8071", textAlign: "center" }}>
-          Conferido por
-        </div>
-      </div>
-
-      <div style={{ marginTop: 20, paddingTop: 8, borderTop: "1px solid #E9DFCE", fontSize: 9.5, color: "#8B8071", display: "flex", justifyContent: "space-between" }}>
-        <span>Painel Mr. Kong</span>
-        <span>Escala de {dia.split("-").reverse().join("/")}</span>
-      </div>
-    </div>
-  );
-}
-
-// Botao que dispara a impressao. O `setTimeout` existe porque o Safari
-// precisa de um respiro entre o React montar a folha e o print abrir.
-function BotaoPdf({ children = "Baixar PDF" }) {
-  const imprimir = () => { setTimeout(() => window.print(), 60); };
-  return (
-    <button onClick={imprimir} style={btnPdf}>
-      <Download size={15} /> {children}
-    </button>
-  );
-}
-
-// Linha de fiado no acerto de um dia ja fechado. Aqui nao existe
-// "Calcular e salvar" — o desconto e uma acao explicita, pessoa por
-// pessoa, no momento de pagar. Por isso o botao "Dar baixa" em vez do
-// chip que so marca intencao.
-function FiadoNoAcerto({ fiado, pessoaId, dia, valorDoDia }) {
-  const [gravando, setGravando] = useState(false);
-  if (!fiado.buscou) return null;
-
-  const saldo = fiado.saldoDe(pessoaId);
-  const jaBaixados = fiado.baixadoDe(pessoaId);
-  const totalBaixado = somar(jaBaixados);
-
-  if (saldo <= 0 && totalBaixado <= 0) return null;
-
-  const baixar = async () => {
-    setGravando(true);
-    await fiado.baixarUm(pessoaId, "escala", dia);
-    setGravando(false);
-  };
-  const estornar = async () => {
-    setGravando(true);
-    await fiado.estornarDe(pessoaId);
-    setGravando(false);
-  };
-
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-      {saldo > 0 ? (
-        <>
-          <span style={{ ...pillFiado, background: "#F0999522", border: "1px solid #F0999540", color: "#A32D2D" }}>
-            fiado em aberto {brl(saldo)}
-          </span>
-          {valorDoDia != null && (
-            <span style={{ fontSize: 11, color: "#8A8778" }}>
-              a pagar <strong style={{ color: "#22231F" }}>{brl(valorDoDia - saldo)}</strong>
-            </span>
-          )}
-          <button onClick={baixar} disabled={gravando}
-            style={{ ...btnMiniEscuro }}>
-            {gravando ? "..." : "Dar baixa"}
-          </button>
-        </>
-      ) : (
-        <>
-          <span style={{ ...pillFiado, background: "#EAF3DE", border: "1px solid #C4DBA6", color: "#27500A" }}>
-            fiado de {brl(totalBaixado)} descontado
-          </span>
-          <button onClick={estornar} disabled={gravando} style={{ ...linkBtn, fontSize: 11 }}>
-            {gravando ? "..." : "estornar"}
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-// O controle de abater / nao abater de uma pessoa.
-function ChipFiado({ fiado, pessoaId }) {
-  const saldo = fiado.saldoDe(pessoaId);
-  if (!fiado.buscou || saldo <= 0) return null;
-  const abate = fiado.vaiAbater(pessoaId);
-  return (
-    <button
-      onClick={() => fiado.alternarAbater(pessoaId)}
-      title={abate ? "Descontando do acerto — clique para nao descontar" : "Nao esta descontando — clique para descontar"}
-      style={{
-        display: "flex", alignItems: "center", gap: 5, cursor: "pointer",
-        border: `1px solid ${abate ? "#F0999540" : "#E8E2D2"}`,
-        background: abate ? "#F0999522" : "#FFFFFF",
-        color: abate ? "#A32D2D" : "#8A8778",
-        borderRadius: 999, padding: "4px 10px", fontSize: 11.5, fontWeight: 700,
-        textDecoration: abate ? "none" : "line-through",
-      }}
-    >
-      {abate ? <Check size={12} /> : <X size={12} />}
-      fiado {brl(saldo)}
-    </button>
-  );
-}
-
-// Extrato de uma pessoa so, aberto pelo icone no cartao dela.
-function FiadoDaPessoa({ pessoa, pessoas = [], isAdmin = false }) {
-  const fiado = useFiadoEquipe(pessoas.length ? pessoas : [pessoa], isAdmin);
-  const [estornando, setEstornando] = useState(null);
-  const abertos = fiado.emAbertoDe(pessoa.id);
-  const todos = fiado.porPessoa?.[pessoa.id] || [];
-
-  const estornar = async (l) => {
-    setEstornando(l.pedidoId);
-    await estornarBaixa([l.pedidoId]);
-    setEstornando(null);
-    fiado.buscar();
-  };
-
-  return (
-    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2" }}>
-      <BarraFiado fiado={fiado} aviso={`Procura o que ${pessoa.nome.split(" ")[0]} consumiu como fiado no periodo.`} />
-      <PainelSemDono fiado={fiado} pessoas={pessoas.length ? pessoas : [pessoa]} />
-      {fiado.buscou && (
-        todos.length === 0 ? (
-          <div style={{ fontSize: 12, color: "#8A8778" }}>
-            Nenhum fiado no periodo em nome de {pessoa.nome}
-            {pessoa.nome_fiado ? ` (nem de "${pessoa.nome_fiado}")` : ""}.
-          </div>
-        ) : (
-          <>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}>
-              <span style={{ color: "#8A8778" }}>Em aberto</span>
-              <strong style={{ color: abertos.length ? "#A32D2D" : "#0F6E56" }}>{brl(somar(abertos))}</strong>
-            </div>
-            <div style={{ border: "1px solid #E8E2D2", borderRadius: 10, overflow: "hidden", background: "#FFFFFF" }}>
-              {todos.map((l, idx) => {
-                const baixado = fiado.baixados.has(l.pedidoId);
-                return (
-                  <div key={l.pedidoId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 11px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ color: "#22231F" }}>Pedido #{l.displayId}</div>
-                      <div style={{ fontSize: 10.5, color: "#8A8778" }}>
-                        {new Date(l.data).toLocaleDateString("pt-BR")}
-                        {l.nomeCliente ? ` · ${l.nomeCliente}` : ""}
-                      </div>
-                    </div>
-                    <span style={{ fontWeight: 700, color: baixado ? "#8A8778" : "#22231F", textDecoration: baixado ? "line-through" : "none" }}>
-                      {brl(l.valor)}
-                    </span>
-                    {baixado ? (
-                      <button onClick={() => estornar(l)} disabled={estornando === l.pedidoId} style={{ ...linkBtn, fontSize: 10.5 }}>
-                        {estornando === l.pedidoId ? "..." : "estornar"}
-                      </button>
-                    ) : (
-                      <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>em aberto</span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        )
-      )}
-    </div>
-  );
-}
-
-function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin, nomesFiado = [], pessoas = [] }) {
-  const fileRef = useRef(null);
-  // Nome que já pertence a outra pessoa não deve ser oferecido de novo —
-  // dois cadastros apontando pro mesmo nome fariam o mesmo consumo ser
-  // cobrado duas vezes.
-  const jaUsados = new Set(
-    (pessoas || [])
-      .filter((p) => p.nome_fiado && p.nome_fiado !== form.nome_fiado)
-      .map((p) => normalizaNome(p.nome_fiado))
-  );
-  const sugestoes = (nomesFiado || []).filter((n) => !jaUsados.has(normalizaNome(n.nome_cliente)));
-  return (
-    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2", display: "grid", gap: 8 }}>
-      <input value={form.nome} onChange={(e) => setForm((f) => ({ ...f, nome: e.target.value }))}
-        placeholder="Nome" style={inputStyle} />
-      <div style={{ display: "flex", gap: 8 }}>
-        <select value={form.papel} onChange={(e) => setForm((f) => ({ ...f, papel: e.target.value }))} style={{ ...inputStyle, flex: 1 }}>
-          {PAPEIS_COM_GERENTE.map((p) => <option key={p} value={p}>{PAPEL_LABEL[p]}</option>)}
-        </select>
-        <select value={form.tipo_contrato} onChange={(e) => setForm((f) => ({ ...f, tipo_contrato: e.target.value }))} style={{ ...inputStyle, flex: 1 }}>
-          <option value="registrado">Registrado</option>
-          <option value="diarista">Diarista</option>
-        </select>
-      </div>
-      {isAdmin && form.papel === "gerente" && (
-        <>
-          <input type="number" step="0.01" value={form.salario_base} onChange={(e) => setForm((f) => ({ ...f, salario_base: e.target.value }))}
-            placeholder="Salário base (R$)" style={inputStyle} />
-          <div style={{ fontSize: 11, color: "#8A8778" }}>Gerente não entra na divisão diária de comissão — ganha esse salário + 2% do faturamento bruto do mês, calculado no Fechamento mensal (vale independente de ser registrada ou diarista).</div>
-        </>
-      )}
-      {form.papel !== "gerente" && form.tipo_contrato === "diarista" && (
-        <div style={{ fontSize: 11, color: "#8A8778" }}>Base diária e valor da hora vêm da Matriz de cargos — não se digita aqui.</div>
-      )}
-      {isAdmin && form.papel !== "gerente" && form.tipo_contrato === "registrado" && (
-        <input type="number" step="0.01" value={form.salario_base} onChange={(e) => setForm((f) => ({ ...f, salario_base: e.target.value }))}
-          placeholder="Salário base individual (R$)" style={inputStyle} />
-      )}
-      {!isAdmin && (form.papel === "gerente" || form.tipo_contrato === "registrado") && (
-        <div style={{ fontSize: 11, color: "#8A8778" }}>Só administradores veem e editam o salário.</div>
-      )}
-      <div style={{ display: "flex", gap: 8 }}>
-        <input value={form.cpf} onChange={(e) => setForm((f) => ({ ...f, cpf: e.target.value }))}
-          placeholder="CPF" style={{ ...inputStyle, flex: 1 }} />
-        <input value={form.telefone} onChange={(e) => setForm((f) => ({ ...f, telefone: e.target.value }))}
-          placeholder="Telefone" style={{ ...inputStyle, flex: 1 }} />
-      </div>
-      <input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-        placeholder="E-mail" style={inputStyle} />
-      <div>
-        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Chave PIX</label>
-        <input value={form.pix} onChange={(e) => setForm((f) => ({ ...f, pix: e.target.value }))}
-          placeholder="CPF, telefone, e-mail ou chave aleatória" style={inputStyle} autoComplete="off" name="chave-pix" />
-      </div>
-      <div>
-        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Nome no fiado do caixa</label>
-        <input
-          value={form.nome_fiado}
-          onChange={(e) => setForm((f) => ({ ...f, nome_fiado: e.target.value }))}
-          placeholder="Só se for diferente do nome acima"
-          style={inputStyle}
-          list="sugestoes-fiado"
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          name="nome-no-fiado"
-        />
-        <datalist id="sugestoes-fiado">
-          {sugestoes.map((n) => (
-            <option key={n.nome_cliente} value={n.nome_cliente}>
-              {n.pedidos} pedido(s) · {brl(n.total)}
-            </option>
-          ))}
-        </datalist>
-        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 4, lineHeight: 1.6 }}>
-          É por aqui que o painel liga o consumo fiado a esta pessoa. Preencha
-          quando o caixa digita apelido ou nome curto — "Zeca" no lugar de
-          "José Carlos", por exemplo.
-        </div>
-        {sugestoes.length > 0 ? (
-          <div style={{ marginTop: 6 }}>
-            <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 4 }}>
-              Nomes que aparecem no fiado dos últimos 90 dias — clique pra usar:
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-              {sugestoes.slice(0, 12).map((n) => (
-                <button
-                  key={n.nome_cliente}
-                  type="button"
-                  onClick={() => setForm((f) => ({ ...f, nome_fiado: n.nome_cliente }))}
-                  title={`${n.pedidos} pedido(s) · ${brl(n.total)}`}
-                  style={{
-                    border: "1px solid #E8E2D2", background: form.nome_fiado === n.nome_cliente ? "#22231F" : "#FFFFFF",
-                    color: form.nome_fiado === n.nome_cliente ? "#F3EFE3" : "#22231F",
-                    borderRadius: 999, padding: "4px 10px", fontSize: 11.5, cursor: "pointer",
-                  }}
-                >
-                  {n.nome_cliente} <span style={{ opacity: 0.6 }}>{brl(n.total)}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div style={{ fontSize: 11, color: "#8A8778", marginTop: 6 }}>
-            Nenhum nome no fiado dos últimos 90 dias ainda — ou o cache do
-            painel não tem pedidos nesse período.
-          </div>
-        )}
-      </div>
-      <div>
-        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Data de aniversário</label>
-        <input type="date" value={form.data_nascimento} onChange={(e) => setForm((f) => ({ ...f, data_nascimento: e.target.value }))}
-          style={inputStyle} />
-      </div>
-      <div>
-        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Documento (RG, contrato…)</label>
-        <input ref={fileRef} type="file" style={{ display: "none" }}
-          onChange={(e) => setForm((f) => ({ ...f, arquivoDocumento: e.target.files?.[0] || null }))} />
-        <button onClick={() => fileRef.current?.click()} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6, width: "100%", justifyContent: "center" }}>
-          <Upload size={14} />
-          {form.arquivoDocumento ? form.arquivoDocumento.name : form.documento_path ? "Trocar documento anexado" : "Anexar documento"}
-        </button>
-      </div>
-      <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={onSalvar} style={{ ...btnSecondary, flex: 1 }}>Salvar</button>
-        <button onClick={onCancelar} style={linkBtn}>Cancelar</button>
-      </div>
     </div>
   );
 }
 // ---------------------------------------------------------------------------
-// Premiação do dia (Escala do dia)
+// Tela de conferência: revisar/editar os itens lidos antes de confirmar
 // ---------------------------------------------------------------------------
-function PremiacaoDoDia({ isAdmin }) {
-  const [dia, setDia] = useState(hoje());
-  const [pessoas, setPessoas] = useState([]);
-  const [participacao, setParticipacao] = useState({}); // pessoa_id -> { incluido, horas, entrada, saida, intervalo }
-  const [baseCategoria, setBaseCategoria] = useState({}); // papel -> valor (vem da Matriz de cargos, só leitura aqui)
-  const [valorHora, setValorHora] = useState({}); // papel -> valor (vem da Matriz de cargos, só leitura aqui)
-  const [taxaServico, setTaxaServico] = useState("");
-  const [buscandoTaxa, setBuscandoTaxa] = useState(false);
-  const [taxaAutomatica, setTaxaAutomatica] = useState(null); // null | true | false
-  const [faturamentoBrutoDia, setFaturamentoBrutoDia] = useState(0); // pra prévia do 2% da gerente
-  const [matriz, setMatriz] = useState({}); // papel -> { valor_hora }
-  const [carregando, setCarregando] = useState(true);
-  const [salvando, setSalvando] = useState(false);
-  const [erro, setErro] = useState("");
-  const [mensagem, setMensagem] = useState("");
-  const [modoLeitura, setModoLeitura] = useState(false);
-  const [premiacoesSalvas, setPremiacoesSalvas] = useState([]);
-  // Quem tem alteração ainda não gravada. Sem isso a pessoa digita o
-  // horário, rola a tela, e não tem como saber se aquilo foi salvo — a
-  // queixa que originou o ícone por linha e a barra do rodapé.
-  const [sujos, setSujos] = useState(() => new Set());
-  const [salvandoPessoa, setSalvandoPessoa] = useState(null);
-  const [jaTemPresenca, setJaTemPresenca] = useState(false);
-  const fiado = useFiadoEquipe(pessoas, isAdmin);
-  const [pagamentoDoDia, setPagamentoDoDia] = useState(null);
-  const [nomeDeQuemImprime, setNomeDeQuemImprime] = useState("");
-  const carregar = useCallback(async () => {
-    setCarregando(true);
-    setMensagem("");
-    try {
-      const [{ data: pessoasData }, { data: presencasData }, { data: premiacoesData }, { data: matrizData }, { data: cacheTaxa }, { data: previsoesData }] = await Promise.all([
-        supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
-        supabase.from("presencas_diarias").select("*").eq("dia", dia),
-        supabase.from("premiacoes_diarias").select("*").eq("dia", dia),
-        supabase.from("matriz_cargos").select("*"),
-        supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle(),
-        supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
-      ]);
-      const { data: pagDia } = await supabase
-        .from("pagamentos_diaria").select("*").eq("dia", dia).maybeSingle();
-      setPagamentoDoDia(pagDia || null);
-      const { data: usuario } = await supabase.auth.getUser();
-      if (usuario?.user?.id) {
-        const { data: meuPerfil } = await supabase
-          .from("perfis").select("nome").eq("id", usuario.user.id).maybeSingle();
-        setNomeDeQuemImprime(meuPerfil?.nome || "");
-      }
-      setPessoas([...(pessoasData || [])].sort(porNome));
-      setPremiacoesSalvas(premiacoesData || []);
-      // Trava só quando a premiação já foi calculada — aí sim o dia está
-      // fechado e mexer sem querer estraga valor pago. Antes isso travava
-      // com qualquer presença gravada, o que passou a atrapalhar depois
-      // que dá pra salvar o ponto de uma pessoa por vez: salvava um e o
-      // dia inteiro fechava, obrigando um administrador a reabrir pra
-      // continuar preenchendo os outros.
-      setModoLeitura((premiacoesData || []).length > 0);
-      setJaTemPresenca((presencasData || []).length > 0);
-      setMatriz(Object.fromEntries((matrizData || []).map((m) => [m.papel, m])));
-      const mapaPart = {};
-      const idsPrevistos = new Set((previsoesData || []).map((p) => p.pessoa_id));
-      (pessoasData || []).forEach((p) => {
-        const entrada = TURNO_PADRAO.entrada;
-        const saida = TURNO_PADRAO.saida;
-        const horas = horasDoPonto(entrada, saida, INTERVALO_PADRAO_MIN);
-        mapaPart[p.id] = {
-          incluido: idsPrevistos.has(p.id),
-          horas: horas === null ? 0 : horas,
-          entrada,
-          saida,
-          intervalo: INTERVALO_PADRAO_MIN,
-          papel: null,
-        };
-      });
-      (presencasData || []).forEach((pr) => {
-        mapaPart[pr.pessoa_id] = {
-          incluido: true,
-          horas: pr.horas_trabalhadas || 0,
-          // O banco devolve "HH:MM:SS"; o input type=time quer "HH:MM".
-          entrada: pr.hora_entrada ? String(pr.hora_entrada).slice(0, 5) : "",
-          saida: pr.hora_saida ? String(pr.hora_saida).slice(0, 5) : "",
-          // Aqui o `?? ` importa: intervalo 0 gravado de propósito não
-          // pode virar 60 por causa do padrão.
-          intervalo: pr.intervalo_minutos ?? INTERVALO_PADRAO_MIN,
-          papel: pr.papel_no_dia || null,
-        };
-      });
-      setParticipacao(mapaPart);
-      setSujos(new Set());
-      // A diária base por cargo é persistente (vem da Matriz, coluna
-      // diaria_base) — não se retype todo dia, só edita via lápis quando
-      // precisar mudar (e aí passa a valer pros próximos dias também).
-      const mapaBase = {};
-      (matrizData || []).forEach((m) => { mapaBase[m.papel] = String(m.diaria_base ?? 0); });
-      setBaseCategoria(mapaBase);
-      const mapaHora = {};
-      (matrizData || []).forEach((m) => { mapaHora[m.papel] = String(m.valor_hora ?? 0); });
-      setValorHora(mapaHora);
-      setFaturamentoBrutoDia(cacheTaxa?.faturamento_bruto || 0);
-      if (premiacoesData && premiacoesData.length > 0) {
-        setTaxaServico(String(premiacoesData[0].taxa_servico_dia));
-        setMensagem("Esse dia já tem premiação calculada e salva — recalcular vai substituir os valores.");
-      } else if (cacheTaxa) {
-        // Já foi buscada antes (por essa tela ou pela Conferência de Caixa)
-        // — reaproveita em vez de consultar o CardápioWeb de novo.
-        setTaxaServico(String(cacheTaxa.taxa_servico));
-        setTaxaAutomatica(true);
-        setMensagem("Taxa de serviço reaproveitada da última busca (Escala do dia ou Conferência de Caixa) — clique em Buscar se quiser atualizar.");
-      } else {
-        setTaxaServico("");
-      }
-    } catch (e) {
-      // Nunca deixa a tela travada em "Carregando…" silenciosamente —
-      // mostra o erro de verdade, mesmo que seja algo inesperado.
-      setErro(`Erro ao carregar a Escala do dia: ${e.message || e}`);
-    }
-    setCarregando(false);
-  }, [dia]);
-  useEffect(() => { carregar(); }, [carregar]);
-  const buscarTaxaAutomatica = async () => {
-    setBuscandoTaxa(true);
-    setErro("");
-    const temGerente = pessoas.some((p) => p.papel === "gerente" && participacao[p.id]?.incluido);
-    const { data: cacheTaxa } = await supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle();
-    if (cacheTaxa && (!temGerente || cacheTaxa.faturamento_bruto > 0)) {
-      setBuscandoTaxa(false);
-      setTaxaServico(String(cacheTaxa.taxa_servico));
-      setFaturamentoBrutoDia(cacheTaxa.faturamento_bruto || 0);
-      setTaxaAutomatica(true);
-      setMensagem("Taxa de serviço reaproveitada do cache — não precisou consultar o CardápioWeb de novo.");
+function Conferencia({ documento, onVoltar }) {
+  // Nota original aberta ao lado dos itens. Conferir item a item com a
+  // nota noutra aba obriga a ficar trocando de janela e perdendo a linha
+  // — por isso ela abre aqui, fixa, e a lista continua rolando ao lado.
+  const [original, setOriginal] = useState(null);
+  const [abrindoOriginal, setAbrindoOriginal] = useState(false);
+
+  const abrirOriginal = async () => {
+    if (original) { setOriginal(null); return; }
+    setAbrindoOriginal(true);
+    const { data, error } = await supabase.storage
+      .from("notas-fiscais")
+      .createSignedUrl(documento.arquivo_path, 3600);
+    setAbrindoOriginal(false);
+    if (error || !data?.signedUrl) {
+      alert("Não consegui abrir o arquivo: " + (error?.message || ""));
       return;
     }
-    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", { body: { acao: "taxa_servico_dia", dia } });
-    if (error) { setBuscandoTaxa(false); setErro(await extrairErroFuncao(error)); return; }
-    if (data?.error) { setBuscandoTaxa(false); setErro(data.error); return; }
-    setTaxaServico(String(data.taxa_servico));
-    setTaxaAutomatica(data.encontrado_automaticamente);
-    // Só busca o faturamento bruto (pra prévia da gerente) se ela estiver
-    // marcada como presente hoje — evita gastar consulta à toa.
-    let faturamentoBruto = cacheTaxa?.faturamento_bruto || 0;
-    if (temGerente) {
-      const diaSeguinte = new Date(`${dia}T12:00:00-03:00`);
-      diaSeguinte.setDate(diaSeguinte.getDate() + 1);
-      const { data: fatData, error: fatErr } = await supabase.functions.invoke("cardapioweb-proxy", {
-        body: {
-          acao: "faturamento_periodo",
-          data_inicio: `${dia}T17:00:00-03:00`,
-          data_fim: `${diaSeguinte.toISOString().slice(0, 10)}T03:00:00-03:00`,
-        },
-      });
-      if (!fatErr && !fatData?.error) faturamentoBruto = fatData.faturamento_bruto;
-    }
-    setFaturamentoBrutoDia(faturamentoBruto);
-    setBuscandoTaxa(false);
-    if (data.encontrado_automaticamente) {
-      await supabase.from("taxas_do_dia").upsert({
-        dia, taxa_servico: data.taxa_servico, faturamento_bruto: faturamentoBruto, atualizado_em: new Date().toISOString(),
-      }, { onConflict: "dia" });
-    } else {
-      setErro("Não tem pedido fechado nesse dia (17h–03h) — confira a data ou digite o valor manualmente.");
-    }
-  };
-  const marcarSujo = (pessoaId) => {
-    setSujos((prev) => {
-      const novo = new Set(prev);
-      novo.add(pessoaId);
-      return novo;
-    });
-    setMensagem("");
-  };
-  const alternarIncluido = (pessoaId) => {
-    marcarSujo(pessoaId);
-    setParticipacao((prev) => {
-      const atual = prev[pessoaId] || {};
-      const incluidoNovo = !atual.incluido;
-      // Ao marcar como trabalhou, já sugere um turno padrão de horas —
-      // evita começar em 0 e a pessoa esquecer de preencher. Se depois
-      // ela informar entrada e saída, esse número é substituído pelo
-      // cálculo.
-      // Se já tem entrada e saída (caso do registrado, que abre
-      // preenchido), a hora vem do cálculo — não do chute de 8h.
-      const calculado = horasDoPonto(atual.entrada, atual.saida, atual.intervalo);
-      const horas = calculado !== null
-        ? calculado
-        : (incluidoNovo && !atual.horas ? HORAS_PADRAO_TURNO : (atual.horas || 0));
-      return { ...prev, [pessoaId]: { ...atual, incluido: incluidoNovo, horas } };
+    setOriginal({
+      url: data.signedUrl,
+      ehPdf: /\.pdf(\?|$)/i.test(documento.arquivo_path),
     });
   };
-  // Entrada, saída ou intervalo mudou: recalcula as horas na hora. Só
-  // sobrescreve o campo de horas quando entrada E saída existem — sem os
-  // dois não dá pra calcular nada, e o valor digitado à mão continua
-  // valendo.
-  const alterarPonto = (pessoaId, campo, valor) => {
-    marcarSujo(pessoaId);
-    setParticipacao((prev) => {
-      const atual = prev[pessoaId] || {};
-      const novo = { ...atual, [campo]: valor };
-      const calculado = horasDoPonto(novo.entrada, novo.saida, novo.intervalo);
-      if (calculado !== null) novo.horas = calculado;
-      return { ...prev, [pessoaId]: novo };
+
+  const [itens, setItens] = useState([]);
+  const [insumos, setInsumos] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [salvando, setSalvando] = useState(false);
+  const [formaPagamento, setFormaPagamento] = useState("pix");
+  const [prazoBoleto, setPrazoBoleto] = useState("28");
+  const [erro, setErro] = useState("");
+  const [editandoId, setEditandoId] = useState(null);
+  const [formEdicao, setFormEdicao] = useState({ nome_lido: "", quantidade: 0, unidade: "un", preco_unitario: 0, insumo_id: "" });
+  const [calcPacotes, setCalcPacotes] = useState({ qtd: "", tamanho: "", unidade: "g" });
+  const [renomeandoInsumo, setRenomeandoInsumo] = useState(false);
+  const [nomeInsumoInput, setNomeInsumoInput] = useState("");
+  const [criarInsumoAberto, setCriarInsumoAberto] = useState(null); // id do item pedindo criação de insumo
+  const [novoInsumoNome, setNovoInsumoNome] = useState("");
+  const [novoInsumoUnidade, setNovoInsumoUnidade] = useState("un");
+  const [fornecedores, setFornecedores] = useState([]);
+  const [fornecedorAtual, setFornecedorAtual] = useState({ nome: documento.fornecedor || "", id: documento.fornecedor_id || null });
+  const [editandoFornecedor, setEditandoFornecedor] = useState(false);
+  const [nomeFornecedorInput, setNomeFornecedorInput] = useState("");
+  const [historicoFornecedor, setHistoricoFornecedor] = useState([]);
+  // --- regras de embalagem -------------------------------------------
+  const [regras, setRegras] = useState([]);
+  const [maiorNota, setMaiorNota] = useState(0);
+  const [conferidos, setConferidos] = useState(() => new Set()); // itens que o usuário jurou que estão certos
+  const [embalagemItem, setEmbalagemItem] = useState(null);      // id do item com o bloco de embalagem aberto
+  const [formEmb, setFormEmb] = useState({ pacotes: "1", porPacote: "1", unidade: "un", precoPor: "pacote" });
+  const [aplicadas, setAplicadas] = useState({});                // itemId -> { texto, anterior }
+  const regrasJaAplicadas = useRef(false);
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    const [{ data: itensData }, { data: insumosData }, { data: fornecedoresData }, { data: regrasData }, { data: maiorData }] = await Promise.all([
+      supabase.from("itens_documento_compra").select("*").eq("documento_id", documento.id).order("criado_em"),
+      supabase.from("insumos").select("id, nome, unidade").order("nome"),
+      supabase.from("fornecedores").select("*").order("nome"),
+      supabase.from("produto_regras").select("*"),
+      supabase.from("documentos_compra").select("valor_total").not("valor_total", "is", null).order("valor_total", { ascending: false }).limit(1),
+    ]);
+    setInsumos(insumosData || []);
+    setFornecedores(fornecedoresData || []);
+    setRegras(regrasData || []);
+    setMaiorNota(maiorData?.[0]?.valor_total || 0);
+    // As regras são aplicadas UMA vez por abertura da tela. Sem essa
+    // trava, cada carregar() reaplicaria os fatores em cima de valores
+    // que já foram corrigidos, e a quantidade despencaria a cada volta.
+    let listaFinal = itensData || [];
+    if (!regrasJaAplicadas.current) {
+      regrasJaAplicadas.current = true;
+      listaFinal = await aplicarRegras(listaFinal, regrasData || []);
+    }
+    setItens(listaFinal);
+    setCarregando(false);
+    if (documento.fornecedor_id) carregarHistoricoFornecedor(documento.fornecedor_id);
+  }, [documento.id]);
+  useEffect(() => { carregar(); }, [carregar]);
+  const carregarHistoricoFornecedor = async (fornecedorId) => {
+    const { data } = await supabase
+      .from("documentos_compra")
+      .select("id, data_documento, criado_em, valor_total")
+      .eq("fornecedor_id", fornecedorId)
+      .neq("id", documento.id)
+      .order("criado_em", { ascending: false })
+      .limit(10);
+    setHistoricoFornecedor(data || []);
+  };
+  // Aplica as regras já aprendidas nos itens recém-lidos pela IA.
+  const aplicarRegras = async (lista, listaRegras) => {
+    const banners = {};
+    const saida = [];
+    for (const item of lista) {
+      const regra = (listaRegras || []).find((r) => norm(r.nome_lido) === norm(item.nome_lido));
+      if (!regra) { saida.push(item); continue; }
+      const novaQtd = round2((item.quantidade || 0) * Number(regra.fator_quantidade || 1));
+      const novoPreco = round4((item.preco_unitario || 0) * Number(regra.fator_preco || 1));
+      if (novaQtd === item.quantidade && novoPreco === item.preco_unitario) { saida.push(item); continue; }
+      const atualizado = {
+        ...item,
+        quantidade: novaQtd,
+        preco_unitario: novoPreco,
+        unidade: regra.unidade || item.unidade,
+        insumo_id: item.insumo_id || regra.insumo_id || null,
+      };
+      await supabase.from("itens_documento_compra").update({
+        quantidade: atualizado.quantidade,
+        preco_unitario: atualizado.preco_unitario,
+        unidade: atualizado.unidade,
+        insumo_id: atualizado.insumo_id,
+      }).eq("id", item.id);
+      await supabase.from("produto_regras")
+        .update({ vezes_usada: (regra.vezes_usada || 0) + 1, atualizada_em: new Date().toISOString() })
+        .eq("id", regra.id);
+      banners[item.id] = {
+        texto: `${regra.pacotes} ${Number(regra.pacotes) > 1 ? "pacotes" : "pacote"} \u00d7 ${regra.unidades_por_pacote} ${regra.unidade} \u00b7 pre\u00e7o por ${regra.preco_por}`,
+        anterior: { quantidade: item.quantidade, preco_unitario: item.preco_unitario, unidade: item.unidade },
+      };
+      saida.push(atualizado);
+    }
+    if (Object.keys(banners).length) setAplicadas(banners);
+    return saida;
+  };
+
+  const desfazerRegra = async (item) => {
+    const info = aplicadas[item.id];
+    if (!info) return;
+    await supabase.from("itens_documento_compra").update(info.anterior).eq("id", item.id);
+    setItens((prev) => prev.map((it) => (it.id === item.id ? { ...it, ...info.anterior } : it)));
+    setAplicadas((prev) => { const copia = { ...prev }; delete copia[item.id]; return copia; });
+  };
+
+  const abrirEmbalagem = (item) => {
+    const det = detectarEmbalagem(item.nome_lido);
+    const ins = insumos.find((i) => i.id === item.insumo_id);
+    setFormEmb({
+      pacotes: String(det?.pacotes ?? 1),
+      porPacote: String(det?.porPacote ?? 1),
+      unidade: ins?.unidade || item.unidade || "un",
+      precoPor: "pacote",
     });
+    setEmbalagemItem(item.id);
   };
-  // Trocar a função só daquele dia. Vazio volta pro cadastro.
-  const alterarPapelDoDia = (pessoaId, papel) => {
-    marcarSujo(pessoaId);
-    setParticipacao((prev) => ({
-      ...prev,
-      [pessoaId]: { ...prev[pessoaId], papel: papel || null },
-    }));
-  };
-  const alterarHoras = (pessoaId, horas) => {
-    marcarSujo(pessoaId);
-    setParticipacao((prev) => ({ ...prev, [pessoaId]: { ...prev[pessoaId], horas: parseFloat(horas) || 0 } }));
-  };
-  const pesoDe = (pessoaId) => (participacao[pessoaId]?.horas || 0) / HORAS_PADRAO_TURNO;
-  // Função DO DIA. A Luciene é caixa no cadastro, mas se cobriu o salão
-  // num sábado, naquele dia ela entra na metade dos garçons. O cadastro
-  // dela não muda — senão o fechamento do mês passado se recalcularia
-  // como se ela sempre tivesse sido garçom, e dia fechado mudaria de
-  // valor sozinho.
-  const papelDe = (p) => participacao[p.id]?.papel || p.papel;
-  const selecionados = pessoas.filter((p) => participacao[p.id]?.incluido);
-  const garcons = selecionados.filter((p) => categoriaComissao(papelDe(p)) === "garcom");
-  const internos = selecionados.filter((p) => categoriaComissao(papelDe(p)) === "interno");
-  const taxaNum = parseFloat(taxaServico) || 0;
-  const poolGarcons = taxaNum * 0.5;
-  const poolInternos = taxaNum * 0.5;
-  // A taxa de serviço racha ao meio e cada metade é dividida POR CABEÇA,
-  // não por hora: quem estava na noite leva a mesma fatia do seu bolo.
-  // Até 22/08/2026 o rateio era proporcional às horas — estava errado em
-  // relação à regra da casa, e por isso quem esticava o turno levava mais
-  // comissão que os colegas do mesmo bolo.
-  const comissaoPorGarcom = garcons.length > 0 ? poolGarcons / garcons.length : 0;
-  const comissaoPorInterno = internos.length > 0 ? poolInternos / internos.length : 0;
-  // Diarista: dois métodos, vale o maior.
-  //   comissão = diária base CHEIA do cargo + a fatia da taxa
-  //   hora     = horas trabalhadas × valor/hora do cargo
-  // A base é cheia mesmo em jornada curta: trabalhou aquela noite, leva a
-  // base do cargo. (Antes ela era multiplicada pelo peso das horas, o que
-  // inflava a base de quem passava das 8h.)
-  // Registrado não entra nessa comparação — só recebe a comissão do dia
-  // (o salário dele é mensal, somado no Fechamento mensal). Gerente não
-  // entra na divisão de jeito nenhum — só mostra uma PRÉVIA do 2% do
-  // faturamento bruto do dia (o oficial fecha por mês).
-  const linhas = selecionados.map((p) => {
-    const horas = participacao[p.id]?.horas || 0;
-    const papelDia = papelDe(p);
-    if (papelDia === "gerente") {
-      const total = round2(faturamentoBrutoDia * 0.02);
-      return { pessoa: p, peso: 0, horas, comissao: 0, baseCategoriaValor: 0, metodoUsado: "gerente_previa", valorMetodoComissao: total, valorMetodoHora: null, total };
-    }
-    const peso = pesoDe(p.id); // guardado na presença como informação; não rateia mais
-    const comissao = categoriaComissao(papelDia) === "garcom" ? comissaoPorGarcom : comissaoPorInterno;
-    const baseCategoriaValor = parseFloat(baseCategoria[papelDia]) || 0;
-    const m = matriz[papelDia] || { valor_hora: 0 };
-    if (p.tipo_contrato === "diarista") {
-      const valorMetodoComissao = comissao + baseCategoriaValor;
-      const valorMetodoHora = horas * (m.valor_hora || 0);
-      const metodoUsado = valorMetodoHora > valorMetodoComissao ? "hora" : "comissao";
-      const total = Math.max(valorMetodoComissao, valorMetodoHora);
-      return { pessoa: p, peso, horas, comissao, baseCategoriaValor, metodoUsado, valorMetodoComissao, valorMetodoHora, total };
-    }
-    // registrado: só a taxa de serviço proporcional do dia — sem diária
-    // base (isso é só pra diarista, já que registrado recebe salário fixo
-    // acumulado no mês seguinte, no Fechamento mensal).
-    const total = comissao;
-    return { pessoa: p, peso, horas, comissao, baseCategoriaValor: 0, metodoUsado: null, valorMetodoComissao: comissao, valorMetodoHora: null, total };
-  });
-  // Grava o ponto de UMA pessoa, na hora. Salva só a presença — os
-  // valores (comissão, diária) continuam saindo no "Calcular e salvar",
-  // porque o rateio da taxa de serviço depende de quem mais trabalhou no
-  // dia: não dá pra fechar o dinheiro de uma pessoa isolada.
-  const salvarPonto = async (pessoa) => {
-    setSalvandoPessoa(pessoa.id);
-    setErro("");
-    const part = participacao[pessoa.id] || {};
-    let error = null;
-    if (part.incluido) {
-      ({ error } = await supabase.from("presencas_diarias").upsert({
-        pessoa_id: pessoa.id, dia, peso: pesoDe(pessoa.id), horas_trabalhadas: part.horas || 0,
-        hora_entrada: part.entrada || null,
-        hora_saida: part.saida || null,
-        intervalo_minutos: parseInt(part.intervalo) || 0,
-        papel_no_dia: part.papel || null,
-      }, { onConflict: "pessoa_id,dia" }));
-    } else {
-      // Desmarcou: tira do dia, senão a presença antiga fica para trás.
-      // A premiação vai junto — se ficasse, a pessoa continuaria
-      // aparecendo no acerto do dia com valor calculado.
-      ({ error } = await supabase.from("presencas_diarias").delete()
-        .eq("pessoa_id", pessoa.id).eq("dia", dia));
-      await supabase.from("premiacoes_diarias").delete()
-        .eq("pessoa_id", pessoa.id).eq("dia", dia);
-    }
-    setSalvandoPessoa(null);
+
+  const aplicarEmbalagem = async (item, salvarRegra) => {
+    const pacotes = parseFloat(formEmb.pacotes) || 1;
+    const porPacote = parseFloat(formEmb.porPacote) || 1;
+    const totalUnidades = round2(pacotes * porPacote);
+    const novoPreco = formEmb.precoPor === "pacote"
+      ? round4((item.preco_unitario || 0) / porPacote)
+      : round4(item.preco_unitario || 0);
+
+    const { error } = await supabase.from("itens_documento_compra").update({
+      quantidade: totalUnidades, preco_unitario: novoPreco, unidade: formEmb.unidade,
+    }).eq("id", item.id);
     if (error) { setErro(error.message); return; }
-    setSujos((prev) => {
-      const novo = new Set(prev);
-      novo.delete(pessoa.id);
-      return novo;
-    });
+
+    if (salvarRegra) {
+      // Guarda a RAZÃO entre o que a IA leu e o que estava certo — é isso
+      // que continua valendo quando o volume da próxima compra for outro.
+      const fatorQuantidade = item.quantidade > 0 ? totalUnidades / item.quantidade : 1;
+      const fatorPreco = item.preco_unitario > 0 ? novoPreco / item.preco_unitario : 1;
+      const { error: errRegra } = await supabase.from("produto_regras").upsert({
+        nome_lido: String(item.nome_lido || "").trim(),
+        insumo_id: item.insumo_id || null,
+        pacotes, unidades_por_pacote: porPacote, unidade: formEmb.unidade,
+        preco_por: formEmb.precoPor,
+        fator_quantidade: fatorQuantidade,
+        fator_preco: fatorPreco,
+        atualizada_em: new Date().toISOString(),
+      }, { onConflict: "nome_lido" });
+      if (errRegra) { setErro(errRegra.message); return; }
+    }
+    setEmbalagemItem(null);
+    setConferidos((prev) => { const c = new Set(prev); c.delete(item.id); return c; });
+    carregar();
   };
-  const salvarPremiacao = async () => {
-    if (selecionados.length === 0) { setErro("Marque quem trabalhou hoje."); return; }
-    if (isAdmin && taxaNum <= 0) { setErro("Informe a taxa de serviço do dia."); return; }
+
+  const salvarFornecedor = async () => {
+    const nome = nomeFornecedorInput.trim();
+    if (!nome) { setEditandoFornecedor(false); return; }
+    let fornecedor = fornecedores.find((f) => f.nome.toLowerCase() === nome.toLowerCase());
+    if (!fornecedor) {
+      const { data, error } = await supabase.from("fornecedores").insert({ nome }).select().single();
+      if (error) { setErro(error.message); return; }
+      fornecedor = data;
+      setFornecedores((prev) => [...prev, fornecedor].sort((a, b) => a.nome.localeCompare(b.nome)));
+    }
+    const { error: errDoc } = await supabase.from("documentos_compra").update({ fornecedor: nome, fornecedor_id: fornecedor.id }).eq("id", documento.id);
+    if (errDoc) { setErro(errDoc.message); return; }
+    setFornecedorAtual({ nome, id: fornecedor.id });
+    setEditandoFornecedor(false);
+    carregarHistoricoFornecedor(fornecedor.id);
+  };
+  const removerItem = async (id) => {
+    await supabase.from("itens_documento_compra").delete().eq("id", id);
+    setItens((prev) => prev.filter((it) => it.id !== id));
+  };
+  const adicionarItemManual = async () => {
+    const { data, error } = await supabase.from("itens_documento_compra")
+      .insert({ documento_id: documento.id, nome_lido: "Novo item", quantidade: 1, unidade: "un", preco_unitario: 0 })
+      .select().single();
+    if (error) { setErro(error.message); return; }
+    setItens((prev) => [...prev, data]);
+    abrirEdicao(data);
+  };
+  const abrirEdicao = (item) => {
+    setEditandoId(item.id);
+    setFormEdicao({ nome_lido: item.nome_lido, quantidade: item.quantidade, unidade: item.unidade, preco_unitario: item.preco_unitario, insumo_id: item.insumo_id || "" });
+    setCalcPacotes({ qtd: "", tamanho: "", unidade: item.unidade || "g" });
+  };
+  const aplicarCalculadoraPacotes = () => {
+    const qtd = parseFloat(calcPacotes.qtd) || 0;
+    const tamanho = parseFloat(calcPacotes.tamanho) || 0;
+    setFormEdicao((f) => ({ ...f, quantidade: round2(qtd * tamanho), unidade: calcPacotes.unidade }));
+  };
+  const renomearInsumoVinculado = async () => {
+    const nome = nomeInsumoInput.trim();
+    if (!nome || !formEdicao.insumo_id) { setRenomeandoInsumo(false); return; }
+    const { error } = await supabase.from("insumos").update({ nome }).eq("id", formEdicao.insumo_id);
+    if (error) { setErro(error.message); return; }
+    setInsumos((prev) => prev.map((i) => i.id === formEdicao.insumo_id ? { ...i, nome } : i).sort((a, b) => a.nome.localeCompare(b.nome)));
+    setRenomeandoInsumo(false);
+  };
+  const salvarEdicao = async () => {
+    const { error } = await supabase.from("itens_documento_compra").update({
+      nome_lido: formEdicao.nome_lido,
+      quantidade: parseFloat(formEdicao.quantidade) || 0,
+      unidade: formEdicao.unidade,
+      preco_unitario: parseFloat(formEdicao.preco_unitario) || 0,
+      insumo_id: formEdicao.insumo_id || null,
+    }).eq("id", editandoId).select().single();
+    if (error) { setErro(error.message); return; }
+    carregar();
+    setEditandoId(null);
+  };
+  const vincularInsumo = async (itemId, insumoId) => {
+    await supabase.from("itens_documento_compra").update({ insumo_id: insumoId }).eq("id", itemId);
+    carregar();
+  };
+  const criarEVincularInsumo = async (item) => {
+    const nome = novoInsumoNome.trim();
+    if (!nome) return;
+    setErro("");
+    let { data: insumo, error } = await supabase.from("insumos")
+      .insert({ nome, unidade: novoInsumoUnidade, custo_medio_atual: item.preco_unitario })
+      .select().single();
+
+    // 23505 = já existe insumo com esse nome. Isso não é erro do usuário:
+    // ele quis dizer "este item é este insumo". Antes a tela devolvia
+    // "duplicate key value violates unique constraint" e travava a nota
+    // inteira — agora ela acha o que já existe e vincula nele.
+    if (error && (error.code === "23505" || /duplicate key/i.test(error.message || ""))) {
+      const { data: achado } = await supabase.from("insumos")
+        .select("id, nome, unidade").ilike("nome", nome).limit(1).maybeSingle();
+      if (achado) {
+        insumo = achado;
+        error = null;
+        setErro(`"${achado.nome}" já existia — o item foi vinculado nele em vez de criar outro.`);
+      }
+    }
+    if (error) { setErro(error.message); return; }
+    await supabase.from("itens_documento_compra").update({ insumo_id: insumo.id }).eq("id", item.id);
+    setInsumos((prev) => [...prev, insumo].sort((a, b) => a.nome.localeCompare(b.nome)));
+    // Se esse item estava com o formulário de edição aberto, sincroniza o
+    // vínculo ali também — senão, clicar em "Confirmar edição" logo
+    // depois desfaria a criação que acabou de acontecer.
+    if (editandoId === item.id) setFormEdicao((f) => ({ ...f, insumo_id: insumo.id }));
+    setCriarInsumoAberto(null);
+    setNovoInsumoNome("");
+    carregar();
+  };
+  const todosVinculados = itens.length > 0 && itens.every((it) => it.insumo_id);
+  const algumaUnidadeDivergente = itens.some((it) => {
+    const ins = insumos.find((i) => i.id === it.insumo_id);
+    return ins && ins.unidade !== it.unidade;
+  });
+  // Trava de sanidade. Não depende de regra nenhuma: compara o item com o
+  // total da própria nota e com a maior nota já registrada. É o que teria
+  // pego os R$ 270.000,00 em copos descartáveis.
+  const motivoImplausivel = (item) => {
+    const total = (item.quantidade || 0) * (item.preco_unitario || 0);
+    if (total <= 0) return null;
+    if (documento.valor_total > 0 && total > documento.valor_total * 1.5) {
+      return `esse item sozinho vale ${brl(total)}, mais que o total da própria nota (${brl(documento.valor_total)})`;
+    }
+    if (maiorNota > 0 && total > maiorNota * 10) {
+      return `${brl(total)} num item só — mais de dez vezes a maior nota já registrada (${brl(maiorNota)})`;
+    }
+    if (!documento.valor_total && !maiorNota && total > 20000) {
+      return `${brl(total)} num item só parece alto demais`;
+    }
+    return null;
+  };
+  const implausiveis = itens.filter((it) => motivoImplausivel(it) && !conferidos.has(it.id));
+  const podeConfirmar = todosVinculados && !algumaUnidadeDivergente && implausiveis.length === 0;
+  const confirmar = async () => {
+    if (!todosVinculados) { setErro("Vincule todos os itens a um insumo antes de confirmar."); return; }
+    if (algumaUnidadeDivergente) { setErro("Tem item com unidade diferente da do insumo — corrija pelo lápis antes de confirmar."); return; }
+    if (implausiveis.length > 0) { setErro("Tem item com valor implausível — ajuste a embalagem ou marque \"conferi, está certo\" antes de confirmar."); return; }
     setSalvando(true);
     setErro("");
-
-    // PRIMEIRO tira do dia quem NÃO está marcado agora.
-    //
-    // Sem isto, desmarcar alguém não fazia nada: o salvar só regravava
-    // quem estava marcado, e a presença antiga de quem saiu continuava
-    // no banco — aparecendo no acerto, entrando na divisão da comissão e
-    // reduzindo a fatia de quem realmente trabalhou.
-    //
-    // A limpeza vem antes da gravação de propósito. Se viesse depois e
-    // desse erro no meio, sobraria gente a mais no dia; assim, o pior
-    // caso é um dia vazio, que se resolve salvando de novo.
+    const { data: userData } = await supabase.auth.getUser();
+    for (const item of itens) {
+      // grava a movimentação de entrada no estoque
+      const { error: errMov } = await supabase.from("movimentacoes_estoque").insert({
+        insumo_id: item.insumo_id,
+        tipo: "compra",
+        quantidade: item.quantidade,
+        preco_unitario: item.preco_unitario,
+        fornecedor: documento.fornecedor || null,
+        forma_pagamento: formaPagamento,
+        documento_compra_id: documento.id,
+        criado_por: userData?.user?.id,
+      });
+      if (errMov) { setErro(errMov.message); setSalvando(false); return; }
+      // atualiza o custo do insumo pro preço dessa última compra confirmada
+      // (só se o insumo não for composto — o custo dele é calculado, não digitado)
+      const { data: insumoAtual } = await supabase.from("insumos").select("composto").eq("id", item.insumo_id).single();
+      if (!insumoAtual?.composto) {
+        await supabase.from("insumos").update({ custo_medio_atual: item.preco_unitario, atualizado_em: new Date().toISOString() }).eq("id", item.insumo_id);
+      }
+      // aprende o sinônimo, se o nome lido for diferente do nome do insumo
+      const insumoVinculado = insumos.find((i) => i.id === item.insumo_id);
+      if (insumoVinculado && insumoVinculado.nome.trim().toLowerCase() !== item.nome_lido.trim().toLowerCase()) {
+        await supabase.from("insumo_sinonimos").insert({ nome_variante: item.nome_lido, insumo_id: item.insumo_id }).select();
+      }
+    }
+    // O valor do cabeçalho passa a ser a soma dos itens conferidos.
+    // Antes, o número que a IA leu da nota ficava para sempre no
+    // documento, mesmo depois de você corrigir os itens — e a lista
+    // mostrava um valor que não correspondia a nada (a nota da SIBELY
+    // aparecia como R$ 539.600 sendo que valeu R$ 549,40).
+    const valorConferido = round2(itens.reduce((s, it) => s + it.quantidade * it.preco_unitario, 0));
+    await supabase.from("documentos_compra").update({
+      status: "confirmado",
+      confirmado_em: new Date().toISOString(),
+      valor_total: valorConferido,
+    }).eq("id", documento.id);
+    // Toda nota confirmada vira um registro em Contas a Pagar — pago ou a
+    // pagar, mas sempre lá, pra ter o valor de toda compra num lugar só.
+    // Boleto entra como pendente (com vencimento); pix/débito/crédito
+    // entra já como pago (foi pago na hora da compra).
     {
-      const idsDoDia = selecionados.map((p) => p.id);
-      const filtro = `(${idsDoDia.join(",")})`;
-      if (idsDoDia.length > 0) {
-        await supabase.from("presencas_diarias").delete()
-          .eq("dia", dia).not("pessoa_id", "in", filtro);
-        await supabase.from("premiacoes_diarias").delete()
-          .eq("dia", dia).not("pessoa_id", "in", filtro);
-      } else {
-        await supabase.from("presencas_diarias").delete().eq("dia", dia);
-        await supabase.from("premiacoes_diarias").delete().eq("dia", dia);
-      }
-    }
-
-    // A presença (quem trabalhou + horário + horas) sempre salva, mesmo
-    // sem admin — é isso que qualquer pessoa aprovada pode registrar. Os
-    // valores calculados (comissão etc.) só entram quando tem taxa de
-    // serviço definida, o que só admin faz.
-    for (const p of selecionados) {
-      const part = participacao[p.id] || {};
-      await supabase.from("presencas_diarias").upsert({
-        pessoa_id: p.id, dia, peso: pesoDe(p.id), horas_trabalhadas: part.horas || 0,
-        hora_entrada: part.entrada || null,
-        hora_saida: part.saida || null,
-        intervalo_minutos: parseInt(part.intervalo) || 0,
-        papel_no_dia: part.papel || null,
-      }, { onConflict: "pessoa_id,dia" });
-    }
-    if (taxaNum > 0) {
-      for (const l of linhas) {
-        const { error } = await supabase.from("premiacoes_diarias").upsert({
-          pessoa_id: l.pessoa.id,
-          dia,
-          taxa_servico_dia: taxaNum,
-          comissao: round2(l.comissao),
-          valor_diaria: 0, // mantido só por compatibilidade com dias já salvos antes da matriz existir
-          base_categoria: round2(l.baseCategoriaValor),
-          total_dia: round2(l.total),
-          papel_no_dia: participacao[l.pessoa.id]?.papel || null,
-          metodo_usado: l.metodoUsado,
-          valor_metodo_comissao: l.metodoUsado ? round2(l.valorMetodoComissao) : null,
-          valor_metodo_hora: l.metodoUsado ? round2(l.valorMetodoHora) : null,
-        }, { onConflict: "pessoa_id,dia" });
-        if (error) { setErro(error.message); setSalvando(false); return; }
-      }
-    }
-    // Fiado: so agora, depois que os valores do dia fecharam. Cada
-    // pedido descontado vira uma linha em fiado_baixas e nao aparece mais
-    // como em aberto na proxima busca.
-    if (fiado.buscou) {
-      const { error: errFiado } = await fiado.baixarTodos("escala", dia);
-      if (errFiado) { setErro("Valores salvos, mas o fiado nao foi baixado: " + errFiado.message); }
+      const ehBoleto = formaPagamento === "boleto";
+      const dias = ehBoleto ? (parseInt(prazoBoleto) || 0) : 0;
+      const vencimento = new Date();
+      vencimento.setDate(vencimento.getDate() + dias);
+      const valorTotal = round2(itens.reduce((s, it) => s + it.quantidade * it.preco_unitario, 0));
+      await supabase.from("contas_pagar").insert({
+        documento_compra_id: documento.id,
+        fornecedor_id: fornecedorAtual.id,
+        fornecedor_nome: fornecedorAtual.nome,
+        descricao: `Nota fiscal — ${fornecedorAtual.nome || "fornecedor não identificado"}`,
+        valor_total: valorTotal,
+        valor_pago: ehBoleto ? 0 : valorTotal,
+        status: ehBoleto ? "pendente" : "pago",
+        forma_pagamento: formaPagamento,
+        categoria: "compra",
+        centro_custo: "insumos",
+        data_compra: documento.data_documento || new Date().toISOString().slice(0, 10),
+        data_vencimento: vencimento.toISOString().slice(0, 10),
+        criado_por: userData?.user?.id,
+      });
     }
     setSalvando(false);
-    setSujos(new Set());
-    setMensagem(taxaNum > 0 ? "Escala e valores do dia salvos." : "Escala do dia salva — falta um administrador definir a taxa de serviço pra calcular os valores.");
-    await carregar(); // recarrega já travado em modo leitura
+    onVoltar();
   };
-  // Dia já preenchido: mostra um resumo travado (não a tela de marcação),
-  // com os valores calculados de verdade que foram salvos (não recalcula
-  // com a matriz atual, que pode ter mudado desde então). Só admin vê o
-  // botão de reabrir pra editar.
-  if (modoLeitura && !carregando) {
-    const linhasSalvas = premiacoesSalvas
-      .map((pr) => ({ ...pr, pessoa: pessoas.find((p) => p.id === pr.pessoa_id) }))
-      .filter((l) => l.pessoa);
-    const idsComPremiacao = new Set(premiacoesSalvas.map((pr) => pr.pessoa_id));
-    const pessoasSemPremiacao = pessoas.filter((p) => participacao[p.id]?.incluido && !idsComPremiacao.has(p.id));
-    const taxaNumSalva = parseFloat(taxaServico) || 0;
-    const totalDoDia = linhasSalvas.reduce((s2, l) => s2 + (Number(l.total_dia) || 0), 0);
-    // Só o que ainda está em aberto entra no "a pagar" — o que já foi
-    // baixado saiu num acerto anterior e não desconta de novo.
-    const fiadoEmAbertoDoDia = [...linhasSalvas.map((l) => l.pessoa_id), ...pessoasSemPremiacao.map((p) => p.id)]
-      .reduce((s2, id) => s2 + (fiado.buscou ? fiado.saldoDe(id) : 0), 0);
-    return (
-      <div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-          <input type="date" value={dia} onChange={(e) => setDia(e.target.value)} style={inputStyle} />
-        </div>
-        <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 14, display: "flex", alignItems: "center", gap: 4 }}>
-          <Lock size={13} /> Já preenchida — modo leitura{!isAdmin ? " (só administradores editam)" : ""}
-        </div>
-        {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-        {isAdmin && (
-          <>
-            <div style={sectionLabel}>Fiado da equipe</div>
-            <BarraFiado fiado={fiado} aviso="Traz o que a equipe consumiu como fiado e ainda nao foi descontado, pra abater no pagamento deste dia." />
-            <PainelSemDono fiado={fiado} pessoas={pessoas} />
-          </>
-        )}
-        <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
-          {linhasSalvas.map((l, idx) => (
-            <div key={l.pessoa_id} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontSize: 13, color: "#22231F" }}>{l.pessoa.nome}</div>
-                  <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[l.pessoa.papel]}{l.pessoa.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[l.pessoa_id])}</div>
-                  {isAdmin && <LinhaPix pessoa={l.pessoa} />}
-                </div>
-                {isAdmin && <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{brl(l.total_dia)}</div>}
-              </div>
-              {isAdmin && l.metodo_usado && (
-                <div style={{ fontSize: 10, color: "#0F6E56", marginTop: 4 }}>
-                  ✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}
-                </div>
-              )}
-              {isAdmin && (
-                <FiadoNoAcerto fiado={fiado} pessoaId={l.pessoa_id} dia={dia} valorDoDia={l.total_dia} />
-              )}
-            </div>
-          ))}
-          {pessoasSemPremiacao.map((p, idx) => (
-            <div key={p.id} style={{ padding: "10px 14px", borderTop: (linhasSalvas.length + idx) > 0 ? "1px solid #F0EBDD" : "none" }}>
-              <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
-              <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[p.id])}</div>
-              {isAdmin && <LinhaPix pessoa={p} />}
-              {isAdmin && <FiadoNoAcerto fiado={fiado} pessoaId={p.id} dia={dia} valorDoDia={null} />}
-            </div>
-          ))}
-          {linhasSalvas.length === 0 && pessoasSemPremiacao.length === 0 && (
-            <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Ninguém marcado nesse dia.</div>
-          )}
-        </div>
-        {isAdmin && (
-          <div style={{ background: "#F6F1E7", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#8A8778", marginBottom: 16, display: "flex", flexDirection: "column", gap: 5 }}>
-            {taxaNumSalva > 0 && (
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span>Taxa de serviço do dia</span>
-                <span style={{ color: "#22231F", fontWeight: 700 }}>{brl(taxaNumSalva)}</span>
-              </div>
-            )}
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span>Total do dia</span>
-              <span style={{ color: "#22231F", fontWeight: 700 }}>{brl(totalDoDia)}</span>
-            </div>
-            {fiado.buscou && fiadoEmAbertoDoDia > 0 && (
-              <>
-                <div style={{ display: "flex", justifyContent: "space-between", color: "#A32D2D" }}>
-                  <span>(–) Fiado em aberto da equipe</span>
-                  <span style={{ fontWeight: 700 }}>{brl(fiadoEmAbertoDoDia)}</span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 5, borderTop: "1px solid #E8E2D2" }}>
-                  <span style={{ color: "#22231F", fontWeight: 700 }}>A pagar</span>
-                  <span style={{ color: "#22231F", fontWeight: 800 }}>{brl(totalDoDia - fiadoEmAbertoDoDia)}</span>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-        {isAdmin && (
-          <PagamentoDasDiarias
-            dia={dia}
-            linhasSalvas={linhasSalvas}
-            fiado={fiado}
-            pagamento={pagamentoDoDia}
-            aoMudar={carregar}
-            setErro={setErro}
-          />
-        )}
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <BotaoPdf>Baixar escala em PDF</BotaoPdf>
-          {isAdmin && (
-            <button onClick={() => setModoLeitura(false)} style={{ ...btnSecondary, flex: 1, minWidth: 140, display: "flex", justifyContent: "center", gap: 6 }}>
-              <Pencil size={15} /> Editar
-            </button>
-          )}
-        </div>
-
-        <FolhaEscala
-          dia={dia}
-          linhas={linhasSalvas}
-          participacao={participacao}
-          taxa={taxaNumSalva}
-          emitidoPor={nomeDeQuemImprime}
-        />
-      </div>
-    );
-  }
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-        <input type="date" value={dia} onChange={(e) => setDia(e.target.value)} style={inputStyle} />
+      <button onClick={onVoltar} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, marginBottom: 14 }}>
+        <ChevronLeft size={14} /> Voltar
+      </button>
+      <div style={{ ...cardStyle, marginBottom: 14, display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={iconBox}><FileText size={18} color="#8A8778" /></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {editandoFornecedor ? (
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+              <input list="lista-fornecedores" value={nomeFornecedorInput} onChange={(e) => setNomeFornecedorInput(e.target.value)}
+                placeholder="Nome do fornecedor" autoFocus
+                style={{ flex: 1, minWidth: 0, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
+              <datalist id="lista-fornecedores">
+                {fornecedores.map((f) => <option key={f.id} value={f.nome} />)}
+              </datalist>
+              <button onClick={salvarFornecedor} style={{ ...ghostIconBtn, color: "#2F8F5B", flexShrink: 0 }} aria-label="Salvar fornecedor"><Check size={16} /></button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F" }}>{fornecedorAtual.nome || "Fornecedor não identificado"}</div>
+              <button onClick={() => { setNomeFornecedorInput(fornecedorAtual.nome); setEditandoFornecedor(true); }} style={ghostIconBtn} aria-label="Editar fornecedor"><Pencil size={13} /></button>
+            </div>
+          )}
+          <div style={{ fontSize: 12, color: "#8A8778" }}>{fmtData(documento.data_documento || documento.criado_em)} · {itens.length} itens lidos pela IA</div>
+        </div>
+        <button onClick={abrirOriginal} disabled={abrindoOriginal}
+          style={{
+            ...btnSecondary, display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
+            ...(original ? { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" } : {}),
+          }}>
+          {abrindoOriginal ? <Loader2 size={14} /> : original ? <EyeOff size={14} /> : <Eye size={14} />}
+          {original ? "Fechar original" : "Ver original"}
+        </button>
+      </div>
+
+      {original && (
+        <div style={painelOriginal}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#8A8778", flex: 1 }}>
+              Nota original
+            </span>
+            <button onClick={() => window.open(original.url, "_blank")} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+              <ExternalLink size={12} /> abrir em outra aba
+            </button>
+          </div>
+          {original.ehPdf ? (
+            <>
+              <iframe src={original.url} title="Nota original"
+                style={{ width: "100%", height: "58vh", border: "1px solid #E8E2D2", borderRadius: 8, background: "#FFFFFF" }} />
+              {/* Safari no iPhone costuma não renderizar PDF em iframe —
+                  se o quadro vier vazio, o link acima resolve. */}
+            </>
+          ) : (
+            <img src={original.url} alt="Nota original"
+              style={{ width: "100%", maxHeight: "58vh", objectFit: "contain", display: "block", borderRadius: 8, background: "#FFFFFF" }} />
+          )}
+          <div style={{ fontSize: 11, color: "#8A8778", marginTop: 6 }}>
+            Role a lista abaixo conferindo item a item. O painel fica aberto
+            até você clicar em "Fechar original".
+          </div>
+        </div>
+      )}
+      {fornecedorAtual.id && historicoFornecedor.length > 0 && (
+        <div style={{ ...cardStyle, marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Histórico com {fornecedorAtual.nome}</div>
+          {historicoFornecedor.map((h) => (
+            <div key={h.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderTop: "1px solid #F0EBDD" }}>
+              <span style={{ color: "#8A8778" }}>{fmtData(h.data_documento || h.criado_em)}</span>
+              <span style={{ color: "#22231F" }}>{brl(h.valor_total)}</span>
+            </div>
+          ))}
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, paddingTop: 6, marginTop: 4, borderTop: "1px solid #E8E2D2" }}>
+            <span>Total no período</span>
+            <span>{brl(historicoFornecedor.reduce((s, h) => s + (h.valor_total || 0), 0))}</span>
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={sectionLabel}>Itens encontrados</div>
+        <button onClick={adicionarItemManual} style={{ ...linkBtn, fontSize: 12 }}>+ Adicionar item manualmente</button>
       </div>
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
-        <>
-          {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
-          {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-          {isAdmin ? (
-            <div style={{ ...cardStyle, marginBottom: 14 }}>
-              <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 6 }}>Taxa de serviço do dia (janela 17h–03h)</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input type="number" step="0.01" value={taxaServico} onChange={(e) => { setTaxaServico(e.target.value); setTaxaAutomatica(null); }}
-                  placeholder="R$ 0,00" style={{ ...inputStyle, flex: 1 }} />
-                <button onClick={buscarTaxaAutomatica} disabled={buscandoTaxa} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
-                  {buscandoTaxa ? <Loader2 size={14} /> : <RefreshCw size={14} />} Buscar
-                </button>
-              </div>
-              {taxaAutomatica === true && <div style={{ fontSize: 11, color: "#0F6E56", marginTop: 6 }}>Encontrado automaticamente no CardápioWeb.</div>}
-            </div>
-          ) : (
-            <div style={{ ...avisoStyle }}>Só administradores veem e definem a taxa de serviço e os valores calculados. Marque abaixo quem trabalhou e o horário — um administrador completa o resto.</div>
-          )}
-          <div style={sectionLabel}>Quem trabalhou hoje</div>
-          {jaTemPresenca && sujos.size === 0 && (
-            <div style={{ fontSize: 11, color: "#0F6E56", marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}>
-              <Check size={13} /> Ponto deste dia já gravado — pode continuar editando; só fecha de vez no "Calcular e salvar".
-            </div>
-          )}
-          <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
-            {pessoas.map((p) => {
-              const part = participacao[p.id] || { incluido: false, horas: 0, entrada: "", saida: "", intervalo: 0 };
-              const sujo = sujos.has(p.id);
-              const horasCalculadas = horasDoPonto(part.entrada, part.saida, part.intervalo);
-              const viraODia = part.entrada && part.saida && minutosDoHorario(part.saida) <= minutosDoHorario(part.entrada);
-              return (
-                <div key={p.id} style={{
-                  ...cardStyle, padding: "10px 12px",
-                  borderColor: sujo ? "#E8A33D" : "#E8E2D2",
-                }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <input type="checkbox" checked={part.incluido} onChange={() => alternarIncluido(p.id)} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, color: "#22231F", display: "flex", alignItems: "center", gap: 6 }}>
-                        {p.nome}
-                        {sujo && <span title="Alteração ainda não salva" style={pontoSujo} />}
-                      </div>
-                      <div style={{ fontSize: 11, color: "#8A8778" }}>
-                        {part.papel && part.papel !== p.papel ? (
-                          <>
-                            <span style={{ textDecoration: "line-through", opacity: 0.6 }}>{PAPEL_LABEL[p.papel]}</span>
-                            {" → "}
-                            <b style={{ color: "#C72B2E" }}>hoje como {PAPEL_LABEL[part.papel]}</b>
-                          </>
-                        ) : (
-                          PAPEL_LABEL[p.papel]
-                        )}
-                        {p.tipo_contrato === "diarista" ? " · diarista" : ""}
+        <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
+          <div style={{ ...linhaTabela, background: "#F6F1E7", borderBottom: "1px solid #E8E2D2", fontSize: 10, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "#8A8778" }}>
+            <span>Produto</span><span style={{ textAlign: "right" }}>Qtd.</span><span>Unid.</span><span style={{ textAlign: "right" }}>Vl. unit.</span><span style={{ textAlign: "right" }}>Vl. total</span><span></span>
+          </div>
+          {itens.map((item, idx) => {
+            const semInsumo = !item.insumo_id;
+            const insumoVinculadoRow = insumos.find((i) => i.id === item.insumo_id);
+            const unidadeDivergente = !semInsumo && insumoVinculadoRow && insumoVinculadoRow.unidade !== item.unidade;
+            const motivo = motivoImplausivel(item);
+            const alertaAtivo = motivo && !conferidos.has(item.id);
+            const det = detectarEmbalagem(item.nome_lido);
+            const temRegra = regras.some((r) => norm(r.nome_lido) === norm(item.nome_lido));
+            return (
+              <div key={item.id} style={{
+                background: alertaAtivo ? "#FCEBEB" : item.alerta_preco ? "#FCEBEB" : unidadeDivergente ? "#FBF3D9" : "#FFFFFF",
+                borderTop: idx > 0 ? "1px solid #F0EBDD" : "none",
+              }}>
+                <div style={linhaTabela}>
+                  <span style={{ fontSize: 12, color: item.alerta_preco ? "#501313" : "#22231F", fontWeight: item.alerta_preco ? 700 : 400, overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {item.nome_lido}
+                  </span>
+                  <span style={{ fontSize: 12, color: "#22231F", textAlign: "right" }}>{item.quantidade}</span>
+                  <span style={{ fontSize: 12, color: unidadeDivergente ? "#854F0B" : "#8A8778", fontWeight: unidadeDivergente ? 700 : 400 }}>{item.unidade}</span>
+                  <span style={{ fontSize: 12, color: "#22231F", textAlign: "right" }}>{brl(item.preco_unitario)}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#22231F", textAlign: "right" }}>{brl(item.quantidade * item.preco_unitario)}</span>
+                  <span style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                    <button onClick={() => abrirEdicao(item)} style={ghostIconBtn} aria-label="Editar item"><Pencil size={14} /></button>
+                    <button onClick={() => removerItem(item.id)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Remover item"><Trash2 size={14} /></button>
+                  </span>
+                </div>
+                {semInsumo && (
+                  <div style={{ fontSize: 11, color: "#8A6A0F", padding: "0 10px 8px" }}>→ insumo não reconhecido — escolher ou criar abaixo</div>
+                )}
+                {!semInsumo && (
+                  <div style={{ fontSize: 11, color: item.alerta_preco ? "#791F1F" : "#8A8778", padding: "0 10px 8px" }}>
+                    → vinculado a: {insumoVinculadoRow?.nome}
+                  </div>
+                )}
+                {unidadeDivergente && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderTop: "1px solid #E8D48A", fontSize: 12, color: "#7A6A1E" }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+                    Essa nota veio em <strong>{item.unidade}</strong>, mas o insumo "{insumoVinculadoRow?.nome}" é controlado em <strong>{insumoVinculadoRow?.unidade}</strong> — ajuste a quantidade e a unidade pelo lápis antes de confirmar, ou o estoque fica errado.
+                  </div>
+                )}
+                {item.alerta_preco && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderTop: "1px solid #F09595", fontSize: 12, color: "#791F1F" }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+                    {(((item.preco_unitario / item.preco_anterior) - 1) * 100).toFixed(0)}% acima da última compra ({brl(item.preco_anterior)})
+                  </div>
+                )}
+
+                {/* Regra de embalagem já aprendida foi aplicada nesse item */}
+                {aplicadas[item.id] && (
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "8px 10px", borderTop: "1px solid #A9D3C0", background: "#2F8F5B12", fontSize: 11.5, color: "#0F6E56" }}>
+                    <Check size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div>
+                      <b>Regra aplicada:</b> {aplicadas[item.id].texto}.{" "}
+                      <span style={{ color: "#8A8778" }}>
+                        A IA tinha lido {aplicadas[item.id].anterior.quantidade} {aplicadas[item.id].anterior.unidade} a {brl(aplicadas[item.id].anterior.preco_unitario)}.
+                      </span>{" "}
+                      <button onClick={() => desfazerRegra(item)} style={{ ...linkBtn, fontSize: 11.5, color: "#185FA5" }}>desfazer</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Trava de sanidade — bloqueia o confirmar */}
+                {alertaAtivo && (
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "9px 10px", borderTop: "1px solid #F09595", fontSize: 12, color: "#791F1F" }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div>
+                      <b>Esse valor não parece certo</b> — {motivo}.
+                      {det && (
+                        <> O nome traz <b>{det.pacotes}×{det.porPacote}</b>, então provavelmente são {round2(det.pacotes * det.porPacote)} unidades e o preço lido é o do pacote.</>
+                      )}
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 7 }}>
+                        <button onClick={() => abrirEmbalagem(item)} style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Definir embalagem</button>
+                        <button onClick={() => setConferidos((prev) => new Set(prev).add(item.id))} style={{ ...linkBtn, fontSize: 12, color: "#791F1F" }}>
+                          Conferi, está certo
+                        </button>
                       </div>
                     </div>
-                    {sujo && (
-                      <button onClick={() => salvarPonto(p)} disabled={salvandoPessoa === p.id}
-                        title="Salvar o ponto desta pessoa agora"
-                        style={btnSalvarLinha}>
-                        {salvandoPessoa === p.id ? <Loader2 size={13} /> : <Check size={13} />} Salvar
-                      </button>
-                    )}
-                    {part.incluido && (
-                      horasCalculadas !== null ? (
-                        // Horário preenchido: as horas viram resultado, não campo.
-                        <div style={{ background: "#F6F1E7", border: "1px solid #E8E2D2", borderRadius: 6, padding: "5px 9px", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}>
-                          = <strong style={{ color: "#0F6E56" }}>{horasCalculadas.toLocaleString("pt-BR")} h</strong>
-                        </div>
-                      ) : (
-                        // Sem entrada e saída, continua digitado à mão — é
-                        // assim que os dias antigos e os casos fora do
-                        // padrão seguem funcionando.
-                        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-                          <span style={{ fontSize: 11, color: "#8A8778" }}>horas</span>
-                          <input type="number" step="0.5" min="0" value={part.horas} onChange={(e) => alterarHoras(p.id, e.target.value)}
-                            style={{ width: 50, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                        </div>
-                      )
-                    )}
                   </div>
-                  {part.incluido && (
-                    <>
-                      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginTop: 10, paddingTop: 10, borderTop: "1px dashed #E8E2D2", flexWrap: "wrap" }}>
-                        <div style={{ flex: 1, minWidth: 74 }}>
-                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Entrada</label>
-                          <input type="time" value={part.entrada || ""} onChange={(e) => alterarPonto(p.id, "entrada", e.target.value)}
-                            style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: `1px solid ${part.entrada ? "#37A0E5" : "#E8E2D2"}`, fontSize: 12, background: "#FFFFFF" }} />
-                        </div>
-                        <div style={{ flex: 1, minWidth: 74 }}>
-                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Saída</label>
-                          <input type="time" value={part.saida || ""} onChange={(e) => alterarPonto(p.id, "saida", e.target.value)}
-                            style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: `1px solid ${part.saida ? "#37A0E5" : "#E8E2D2"}`, fontSize: 12, background: "#FFFFFF" }} />
-                        </div>
-                        <div style={{ flex: 1, minWidth: 74 }}>
-                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Intervalo (min)</label>
-                          <input type="number" min="0" step="5" value={part.intervalo || 0} onChange={(e) => alterarPonto(p.id, "intervalo", e.target.value)}
+                )}
+
+                {/* Atalho discreto quando não há alerta nem regra, mas o nome
+                    tem cara de embalagem múltipla (20X50U e afins) */}
+                {!alertaAtivo && !temRegra && !aplicadas[item.id] && det && embalagemItem !== item.id && (
+                  <div style={{ padding: "0 10px 8px" }}>
+                    <button onClick={() => abrirEmbalagem(item)} style={{ ...linkBtn, fontSize: 11.5 }}>
+                      Definir como esse produto vem embalado ({det.pacotes}×{det.porPacote})
+                    </button>
+                  </div>
+                )}
+
+                {/* Bloco que ensina a embalagem */}
+                {embalagemItem === item.id && (
+                  <div style={{ border: "1px dashed #37A0E5", borderRadius: 10, padding: 12, margin: "0 10px 12px", background: "#F7FBFE" }}>
+                    <div style={{ fontSize: 11.5, color: "#185FA5", fontWeight: 700, marginBottom: 2 }}>Como esse produto vem embalado?</div>
+                    <div style={{ fontSize: 11, color: "#5C5A4E", marginBottom: 10, lineHeight: 1.45 }}>
+                      {det
+                        ? <>Detectei <b>{det.pacotes}×{det.porPacote}</b> no nome e já preenchi abaixo. Confirme ou corrija.</>
+                        : <>Não achei um padrão no nome — preencha na mão.</>}
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                      <div style={{ flex: 1, minWidth: 80 }}>
+                        <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Vem em</label>
+                        <input type="number" value={formEmb.pacotes} onChange={(e) => setFormEmb((f) => ({ ...f, pacotes: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 80 }}>
+                        <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>pacotes, cada um com</label>
+                        <input type="number" value={formEmb.porPacote} onChange={(e) => setFormEmb((f) => ({ ...f, porPacote: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 12 }} />
+                      </div>
+                      <div style={{ width: 70 }}>
+                        <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>unidade</label>
+                        <select value={formEmb.unidade} onChange={(e) => setFormEmb((f) => ({ ...f, unidade: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 4px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                          {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, background: "#F6F1E7", border: "1px solid #E8E2D2", borderRadius: 6, padding: "6px 10px", marginTop: 9, display: "inline-block" }}>
+                      1 compra dessas = <b style={{ color: "#0F6E56" }}>{round2((parseFloat(formEmb.pacotes) || 0) * (parseFloat(formEmb.porPacote) || 0))} {formEmb.unidade}</b>
+                      {formEmb.precoPor === "pacote" && (parseFloat(formEmb.porPacote) || 0) > 0 && (
+                        <> · custo real <b style={{ color: "#0F6E56" }}>{brl((item.preco_unitario || 0) / (parseFloat(formEmb.porPacote) || 1))} / {formEmb.unidade}</b></>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: 14, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ color: "#8A8778", fontSize: 11 }}>O {brl(item.preco_unitario)} da nota é o preço de:</span>
+                      <label style={{ display: "flex", gap: 5, alignItems: "center", fontSize: 12 }}>
+                        <input type="radio" checked={formEmb.precoPor === "pacote"} onChange={() => setFormEmb((f) => ({ ...f, precoPor: "pacote" }))} /> 1 pacote
+                      </label>
+                      <label style={{ display: "flex", gap: 5, alignItems: "center", fontSize: 12 }}>
+                        <input type="radio" checked={formEmb.precoPor === "unidade"} onChange={() => setFormEmb((f) => ({ ...f, precoPor: "unidade" }))} /> 1 unidade
+                      </label>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                      <button onClick={() => aplicarEmbalagem(item, true)} style={{ ...btnPrimary, fontSize: 12.5, padding: "9px 15px" }}>
+                        Aplicar e lembrar desse produto
+                      </button>
+                      <button onClick={() => aplicarEmbalagem(item, false)} style={{ ...btnSecondary, fontSize: 12, padding: "7px 12px" }}>
+                        Só nessa nota
+                      </button>
+                      <button onClick={() => setEmbalagemItem(null)} style={{ ...linkBtn, fontSize: 12 }}>Cancelar</button>
+                    </div>
+                  </div>
+                )}
+                {/* O seletor fica SEMPRE aberto, não só quando falta vincular.
+                    O casamento automático erra — "OVOMALTINE 750 GRAMAS" já
+                    caiu em "Ovos" —, e antes só dava pra corrigir entrando na
+                    edição do item. Errar é rápido; consertar tinha que ser
+                    igual de rápido. */}
+                {criarInsumoAberto !== item.id && (
+                  <div style={{
+                    display: "flex", gap: 6, padding: "8px 10px", alignItems: "center",
+                    borderTop: `1px dashed ${semInsumo ? "#E8D48A" : "#E8E2D2"}`,
+                    flexWrap: "wrap",
+                  }}>
+                    <span style={{ fontSize: 11, color: "#8A8778", whiteSpace: "nowrap" }}>
+                      Vinculado a
+                    </span>
+                    <select value={item.insumo_id || ""}
+                      onChange={(e) => vincularInsumo(item.id, e.target.value || null)}
+                      style={{
+                        flex: 1, minWidth: 140, padding: "5px 8px", borderRadius: 6, fontSize: 12,
+                        border: `1px solid ${semInsumo ? "#E8D48A" : "#E8E2D2"}`,
+                        background: "#FFFFFF", fontFamily: "inherit",
+                      }}>
+                      <option value="">— nenhum insumo —</option>
+                      {insumos.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}
+                    </select>
+                    <button onClick={() => { setCriarInsumoAberto(item.id); setNovoInsumoNome(item.nome_lido); setNovoInsumoUnidade(item.unidade); }}
+                      style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Criar novo</button>
+                  </div>
+                )}
+                {criarInsumoAberto === item.id && (
+                  <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderTop: "1px dashed #E8D48A", flexWrap: "wrap" }}>
+                    <input value={novoInsumoNome} onChange={(e) => setNovoInsumoNome(e.target.value)}
+                      style={{ flex: 1, minWidth: 100, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                    <select value={novoInsumoUnidade} onChange={(e) => setNovoInsumoUnidade(e.target.value)}
+                      style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }}>
+                      {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                    </select>
+                    <button onClick={() => criarEVincularInsumo(item)} style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Salvar</button>
+                  </div>
+                )}
+                {editandoId === item.id && (
+                  <div style={{ padding: "10px", borderTop: "1px solid #E8E2D2", display: "grid", gap: 8 }}>
+                    <div>
+                      <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Descrição</label>
+                      <input value={formEdicao.nome_lido} onChange={(e) => setFormEdicao((f) => ({ ...f, nome_lido: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                    </div>
+                    <div style={{ border: "1px dashed #37A0E5", borderRadius: 8, padding: 10 }}>
+                      <div style={{ fontSize: 11, color: "#185FA5", marginBottom: 8 }}>Veio em pacotes/potes? Calcule a quantidade total aqui</div>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 2 }}>Quantos pacotes</label>
+                          <input type="number" value={calcPacotes.qtd} onChange={(e) => setCalcPacotes((c) => ({ ...c, qtd: e.target.value }))}
                             style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
                         </div>
-                        <div style={{ flex: 1.3, minWidth: 118 }}>
-                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Função hoje</label>
-                          <select value={part.papel || ""} onChange={(e) => alterarPapelDoDia(p.id, e.target.value)}
-                            style={{
-                              width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6,
-                              fontSize: 12, background: "#FFFFFF", fontFamily: "inherit",
-                              border: `1px solid ${part.papel && part.papel !== p.papel ? "#C72B2E" : "#E8E2D2"}`,
-                              color: part.papel && part.papel !== p.papel ? "#C72B2E" : "#22231F",
-                              fontWeight: part.papel && part.papel !== p.papel ? 700 : 400,
-                            }}>
-                            <option value="">{PAPEL_LABEL[p.papel]} (do cadastro)</option>
-                            {PAPEIS_COM_GERENTE.filter((x) => x !== p.papel).map((x) => (
-                              <option key={x} value={x}>{PAPEL_LABEL[x]}</option>
-                            ))}
-                          </select>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 2 }}>Tamanho de cada um</label>
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <input type="number" value={calcPacotes.tamanho} onChange={(e) => setCalcPacotes((c) => ({ ...c, tamanho: e.target.value }))}
+                              style={{ flex: 1, minWidth: 0, padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                            <select value={calcPacotes.unidade} onChange={(e) => setCalcPacotes((c) => ({ ...c, unidade: e.target.value }))}
+                              style={{ width: 55, padding: "5px 4px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                              {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                            </select>
+                          </div>
                         </div>
                       </div>
-                      {viraODia && (
-                        <div style={{ fontSize: 11, color: "#185FA5", marginTop: 6 }}>
-                          Saiu depois da meia-noite — contando como madrugada do dia seguinte.
-                        </div>
-                      )}
-                      {horasCalculadas === null && (part.entrada || part.saida) && (
-                        <div style={{ fontSize: 11, color: "#8A6A0F", marginTop: 6 }}>
-                          Falta {part.entrada ? "a saída" : "a entrada"} pra calcular — enquanto isso vale a hora digitada.
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              );
-            })}
-            {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Cadastre pessoas na aba "Pessoas" primeiro.</div>}
-          </div>
-          <div style={{ fontSize: 11, color: "#8A8778", marginTop: -10, marginBottom: 16 }}>
-            A divisão da comissão usa as horas como peso (turno padrão de {HORAS_PADRAO_TURNO}h = peso 1). Preenchendo entrada e saída, as horas saem da conta sozinhas.
-          </div>
-          {isAdmin && selecionados.length > 0 && (
-            <>
-              <div style={sectionLabel}>Valores por cargo</div>
-              <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>
-                Diária base e valor da hora — só leitura aqui. Pra mudar, vai em Gente e Gestão &gt; Matriz de cargos.
-              </div>
-              <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
-                {[...new Set(selecionados.map((p) => papelDe(p)))].map((papel) => (
-                  <div key={papel} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ flex: 1, fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[papel]}</span>
-                    <span style={{ fontSize: 11, color: "#8A8778" }}>Diária base <strong style={{ color: "#22231F" }}>{brl(parseFloat(baseCategoria[papel]) || 0)}</strong></span>
-                    <span style={{ fontSize: 11, color: "#8A8778" }}>Hora <strong style={{ color: "#22231F" }}>{brl(parseFloat(valorHora[papel]) || 0)}</strong></span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-          {isAdmin && selecionados.length > 0 && taxaNum > 0 && (
-            <>
-              <div style={sectionLabel}>Resultado</div>
-              <BarraFiado fiado={fiado} aviso="Traz o que a equipe consumiu como fiado e ainda nao foi descontado, pra abater no acerto de hoje." />
-              <PainelSemDono fiado={fiado} pessoas={pessoas} />
-              <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
-                  <span>Pessoa</span><span style={{ textAlign: "right" }}>Método</span><span style={{ textAlign: "right" }}>Total do dia</span>
-                </div>
-                {linhas.map((l, idx) => (
-                  <div key={l.pessoa.id} style={{ padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 6, fontSize: 12 }}>
-                      <span>
-                        {l.pessoa.nome}
-                        {l.baseCategoriaValor > 0 && <span style={{ fontSize: 10, color: "#185FA5" }}> + diária base</span>}
-                      </span>
-                      <span style={{ textAlign: "right", color: "#8A8778", fontSize: 11 }}>
-                        {l.metodoUsado === "hora" ? "por hora" : l.metodoUsado === "comissao" ? "taxa de serviço" : l.metodoUsado === "gerente_previa" ? "prévia 2%" : "—"}
-                      </span>
-                      <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(l.total)}</span>
-                    </div>
-                    {fiado.buscou && fiado.saldoDe(l.pessoa.id) > 0 && (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-                        <ChipFiado fiado={fiado} pessoaId={l.pessoa.id} />
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                         <span style={{ fontSize: 11, color: "#8A8778" }}>
-                          a pagar{" "}
-                          <strong style={{ color: "#22231F" }}>
-                            {brl(l.total - fiado.descontoDe(l.pessoa.id))}
-                          </strong>
+                          = {round2((parseFloat(calcPacotes.qtd) || 0) * (parseFloat(calcPacotes.tamanho) || 0))} {calcPacotes.unidade}
                         </span>
+                        <button onClick={aplicarCalculadoraPacotes} style={{ ...btnSecondary, fontSize: 11, padding: "4px 10px" }}>Usar esse valor</button>
                       </div>
-                    )}
-                    {l.metodoUsado === "gerente_previa" && (
-                      <div style={{ fontSize: 10, color: "#8A8778", marginTop: 4 }}>
-                        2% de {brl(faturamentoBrutoDia)} (faturamento bruto do dia) — prévia informativa, o valor oficial fecha por mês
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Quantidade</label>
+                        <input type="number" value={formEdicao.quantidade} onChange={(e) => setFormEdicao((f) => ({ ...f, quantidade: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
                       </div>
-                    )}
-                    {(l.metodoUsado === "hora" || l.metodoUsado === "comissao") && (
-                      <div style={{ display: "flex", gap: 10, marginTop: 4, fontSize: 10, color: "#8A8778" }}>
-                        <span style={{ fontWeight: l.metodoUsado === "comissao" ? 700 : 400, color: l.metodoUsado === "comissao" ? "#0F6E56" : "#8A8778" }}>
-                          Taxa de serviço + diária base: {brl(l.valorMetodoComissao)}
-                        </span>
-                        <span style={{ fontWeight: l.metodoUsado === "hora" ? 700 : 400, color: l.metodoUsado === "hora" ? "#0F6E56" : "#8A8778" }}>
-                          Hora ({l.horas}h): {brl(l.valorMetodoHora)}
-                        </span>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Unidade</label>
+                        <select value={formEdicao.unidade} onChange={(e) => setFormEdicao((f) => ({ ...f, unidade: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                          {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                        </select>
                       </div>
-                    )}
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Valor unitário</label>
+                        <input type="number" step="0.01" value={formEdicao.preco_unitario}
+                          onChange={(e) => setFormEdicao((f) => ({ ...f, preco_unitario: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Valor total</label>
+                        <input type="number" step="0.01"
+                          value={round2((parseFloat(formEdicao.quantidade) || 0) * (parseFloat(formEdicao.preco_unitario) || 0))}
+                          onChange={(e) => {
+                            const novoTotal = parseFloat(e.target.value) || 0;
+                            const qtd = parseFloat(formEdicao.quantidade) || 0;
+                            setFormEdicao((f) => ({ ...f, preco_unitario: qtd > 0 ? novoTotal / qtd : 0 }));
+                          }}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 12 }} />
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 10, color: "#8A8778" }}>Preenche um dos dois — o outro calcula sozinho (baseado na quantidade).</div>
+                    <div>
+                      <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Vinculado a</label>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <select value={formEdicao.insumo_id}
+                          onChange={(e) => {
+                            if (e.target.value === "__criar__") {
+                              setCriarInsumoAberto(item.id);
+                              setNovoInsumoNome(formEdicao.nome_lido);
+                              setNovoInsumoUnidade(formEdicao.unidade);
+                              return;
+                            }
+                            setFormEdicao((f) => ({ ...f, insumo_id: e.target.value }));
+                          }}
+                          style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                          <option value="">— nenhum insumo —</option>
+                          {insumos.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}
+                          <option value="__criar__">+ Criar novo insumo…</option>
+                        </select>
+                        {formEdicao.insumo_id && !renomeandoInsumo && (
+                          <button onClick={() => { setNomeInsumoInput(insumos.find((i) => i.id === formEdicao.insumo_id)?.nome || ""); setRenomeandoInsumo(true); }}
+                            style={ghostIconBtn} aria-label="Renomear insumo vinculado" title="Renomear esse insumo (corrige em todo lugar que usa ele)">
+                            <Pencil size={14} />
+                          </button>
+                        )}
+                        <button onClick={salvarEdicao} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
+                      </div>
+                      {renomeandoInsumo && (
+                        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                          <input value={nomeInsumoInput} onChange={(e) => setNomeInsumoInput(e.target.value)} autoFocus
+                            onKeyDown={(e) => e.key === "Enter" && renomearInsumoVinculado()}
+                            placeholder="Novo nome do insumo" style={{ flex: 1, padding: "5px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 12 }} />
+                          <button onClick={renomearInsumoVinculado} style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Salvar nome</button>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                ))}
-              </div>
-            </>
-          )}
-          <button onClick={salvarPremiacao} disabled={salvando} style={{ ...btnPrimary, width: "100%" }}>
-            {salvando ? <Loader2 size={16} /> : <Check size={16} />} Calcular e salvar
-          </button>
-          {/* Espaço para a barra fixa não cobrir o botão acima. */}
-          {sujos.size > 0 && <div style={{ height: 78 }} />}
-          {sujos.size > 0 && (
-            <div style={barraFixa}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, maxWidth: 760, margin: "0 auto", flexWrap: "wrap" }}>
-                <span style={pontoSujo} />
-                <div style={{ flex: 1, minWidth: 130, fontSize: 12.5, color: "#22231F" }}>
-                  <strong>{sujos.size}</strong> {sujos.size === 1 ? "pessoa" : "pessoas"} com alteração não salva
-                </div>
-                <button onClick={salvarPremiacao} disabled={salvando}
-                  style={{ ...btnPrimary, padding: "10px 16px", fontSize: 13, borderRadius: 8 }}>
-                  {salvando ? <Loader2 size={15} /> : <Check size={15} />} Salvar escala
-                </button>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-// ---------------------------------------------------------------------------
-// Folha do fechamento mensal
-// ---------------------------------------------------------------------------
-function FolhaFechamento({ mesRef, linhas, gerentes, vales, fiado, emitidoPor }) {
-  const tdCab = {
-    borderBottom: "1.5px solid #231A18", padding: "6px 4px", fontSize: 9.5, fontWeight: 800,
-    textTransform: "uppercase", letterSpacing: 0.5, color: "#8B8071", textAlign: "left",
-  };
-  const td = { padding: "7px 4px", borderBottom: "1px solid #F3EBDD", fontSize: 11.5 };
-  const n = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
-
-  const liquidoDe = (l) => {
-    const vale = Number(vales[l.pessoaId]?.valor || 0);
-    const desc = fiado.buscou ? fiado.descontoDe(l.pessoaId) : 0;
-    return { vale, desc, liquido: l.total - vale - desc };
-  };
-  const totalLiquido =
-    linhas.reduce((s2, l) => s2 + liquidoDe(l).liquido, 0) +
-    gerentes.reduce((s2, g) => s2 + g.total, 0);
-
-  return (
-    <div className="folha-pdf">
-      <CabecalhoFolha titulo="Fechamento mensal" subtitulo={mesRef} emitidoPor={emitidoPor} />
-
-      <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 14 }}>
-        <thead>
-          <tr>
-            <td style={tdCab}>Pessoa</td>
-            <td style={tdCab}>Cargo</td>
-            <td style={{ ...tdCab, textAlign: "right" }}>Dias</td>
-            <td style={{ ...tdCab, textAlign: "right" }}>Salário</td>
-            <td style={{ ...tdCab, textAlign: "right" }}>Comissão</td>
-            <td style={{ ...tdCab, textAlign: "right" }}>Vale</td>
-            <td style={{ ...tdCab, textAlign: "right" }}>Fiado</td>
-            <td style={{ ...tdCab, textAlign: "right" }}>Líquido</td>
-          </tr>
-        </thead>
-        <tbody>
-          {linhas.map((l) => {
-            const { vale, desc, liquido } = liquidoDe(l);
-            return (
-              <tr key={l.pessoaId || l.nome}>
-                <td style={td}>{l.nome}</td>
-                <td style={td}>{PAPEL_LABEL[l.papel]}</td>
-                <td style={n}>{l.dias}</td>
-                <td style={n}>{brl(l.salarioBase)}</td>
-                <td style={n}>{brl(l.comissao)}</td>
-                <td style={n}>{vale ? `− ${brl(vale)}` : "—"}</td>
-                <td style={n}>{desc ? `− ${brl(desc)}` : "—"}</td>
-                <td style={{ ...n, fontWeight: 700 }}>{brl(liquido)}</td>
-              </tr>
-            );
-          })}
-          {gerentes.map((g) => (
-            <tr key={g.nome}>
-              <td style={td}>{g.nome}</td>
-              <td style={td}>Gerente</td>
-              <td style={n}>—</td>
-              <td style={n}>{brl(g.salarioBase)}</td>
-              <td style={n}>{brl(g.doisPorcento)}</td>
-              <td style={n}>—</td>
-              <td style={n}>—</td>
-              <td style={{ ...n, fontWeight: 700 }}>{brl(g.total)}</td>
-            </tr>
-          ))}
-        </tbody>
-        <tfoot>
-          <tr>
-            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 11.5 }} colSpan={7}>
-              Total a pagar em {mesRef}
-            </td>
-            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 12.5, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-              {brl(totalLiquido)}
-            </td>
-          </tr>
-        </tfoot>
-      </table>
-
-      <div className="nao-quebrar" style={{ marginTop: 14, fontSize: 10.5, color: "#8B8071", lineHeight: 1.7 }}>
-        Comissão é a soma das fatias diárias da taxa de serviço nos dias em que a
-        pessoa trabalhou. <b>Vale</b> é o adiantamento pago no dia 20 — ele já saiu
-        do caixa e por isso desce do líquido. <b>Fiado</b> é o consumo da própria
-        pessoa, descontado no acerto. Gerente recebe salário mais 2% do
-        faturamento bruto do mês.
-      </div>
-
-      <div className="nao-quebrar" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 26, marginTop: 40 }}>
-        <div style={{ borderTop: "1px solid #231A18", paddingTop: 5, fontSize: 10.5, color: "#8B8071", textAlign: "center" }}>
-          Responsável pelo fechamento
-        </div>
-        <div style={{ borderTop: "1px solid #231A18", paddingTop: 5, fontSize: 10.5, color: "#8B8071", textAlign: "center" }}>
-          Conferido por
-        </div>
-      </div>
-
-      <div style={{ marginTop: 20, paddingTop: 8, borderTop: "1px solid #E9DFCE", fontSize: 9.5, color: "#8B8071", display: "flex", justifyContent: "space-between" }}>
-        <span>Painel Mr. Kong</span><span>Fechamento {mesRef}</span>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Vales do mes — o adiantamento do dia 20
-//
-// O vale nao e uma despesa separada: e parte do salario do mes, pago
-// antes. Por isso vai pra mesma conta 4.1, na competencia do mes, e o
-// fechamento desconta o que ja foi adiantado. Se fosse lancado em conta
-// propria, o Pessoal do DRE apareceria inflado.
-// ---------------------------------------------------------------------------
-function ValesDoMes({ mesRef, pessoas, vales, aoMudar, setErro }) {
-  const [aberto, setAberto] = useState(false);
-  const [valores, setValores] = useState({});
-  const [lancando, setLancando] = useState(null);
-
-  // Quem recebe por mes: registrado e gerente. Diarista e pago na noite.
-  const mensalistas = pessoas.filter(
-    (p) => p.ativo !== false && (p.tipo_contrato === "registrado" || p.papel === "gerente")
-  );
-  const jaLancados = mensalistas.filter((p) => vales[p.id]);
-  const totalVales = jaLancados.reduce((s, p) => s + Number(vales[p.id].valor || 0), 0);
-  const [ano, mes] = mesRef.split("-");
-  const dia20 = `${ano}-${mes}-20`;
-
-  const lancar = async (pessoa) => {
-    const bruto = String(valores[pessoa.id] ?? "").replace(",", ".");
-    const valor = parseFloat(bruto);
-    if (!valor || isNaN(valor) || valor <= 0) { setErro("Informe o valor do vale de " + pessoa.nome + "."); return; }
-    setLancando(pessoa.id);
-    setErro("");
-    const { data: contaId, error } = await supabase.rpc("lancar_despesa_paga", {
-      p_descricao: `Vale ${dia20.split("-").reverse().join("/")} — ${pessoa.nome}`,
-      p_valor: valor,
-      p_plano_conta: "4.1",
-      p_data: dia20,
-      p_observacao: `Adiantamento do salário de ${mesRef}.`,
-    });
-    if (error) { setErro(error.message); setLancando(null); return; }
-    const { data: userData } = await supabase.auth.getUser();
-    const { error: errVale } = await supabase.from("vales_mensais").insert({
-      mes: mesRef, pessoa_id: pessoa.id, valor, data_pagamento: dia20,
-      conta_pagar_id: contaId, criado_por: userData?.user?.id || null,
-    });
-    if (errVale) { setErro(errVale.message); setLancando(null); return; }
-    setValores((v) => ({ ...v, [pessoa.id]: "" }));
-    setLancando(null);
-    aoMudar();
-  };
-
-  const desfazer = async (pessoa) => {
-    setLancando(pessoa.id);
-    setErro("");
-    const registro = vales[pessoa.id];
-    await supabase.from("vales_mensais").delete().eq("mes", mesRef).eq("pessoa_id", pessoa.id);
-    if (registro?.conta_pagar_id) {
-      await supabase.from("contas_pagar").delete().eq("id", registro.conta_pagar_id);
-    }
-    setLancando(null);
-    aoMudar();
-  };
-
-  if (mensalistas.length === 0) return null;
-
-  return (
-    <div style={{ ...cardStyle, marginBottom: 14 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <div style={{ ...sectionLabel, marginBottom: 0, flex: 1, minWidth: 120 }}>
-          Vales do dia 20
-        </div>
-        {totalVales > 0 && (
-          <span style={{ fontSize: 13, fontWeight: 800, color: "#185FA5" }}>{brl(totalVales)}</span>
-        )}
-        <button onClick={() => setAberto((a) => !a)} style={{ ...linkBtn, fontSize: 11 }}>
-          {aberto ? "fechar" : jaLancados.length > 0 ? `${jaLancados.length} lançado(s) · abrir` : "lançar"}
-        </button>
-      </div>
-
-      {aberto && (
-        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 11.5, color: "#8A8778", lineHeight: 1.6 }}>
-            Adiantamento pago em <b>{dia20.split("-").reverse().join("/")}</b>. Vai
-            para a conta <b>4.1 Salários</b> como despesa já quitada, e o
-            fechamento do mês desconta automaticamente do que falta pagar.
-          </div>
-          {mensalistas.map((p) => {
-            const vale = vales[p.id];
-            return (
-              <div key={p.id} style={{ ...itemRowVale }}>
-                <div style={{ flex: 1, minWidth: 130 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F" }}>{p.nome}</div>
-                  <div style={{ fontSize: 11, color: "#8A8778" }}>
-                    {PAPEL_LABEL[p.papel]}
-                    {p.salario_base ? ` · salário ${brl(p.salario_base)}` : ""}
-                  </div>
-                </div>
-                {vale ? (
-                  <>
-                    <span style={{ ...pillFiado, background: "#37A0E522", border: "1px solid #37A0E540", color: "#185FA5" }}>
-                      vale {brl(vale.valor)} pago
-                    </span>
-                    <button onClick={() => desfazer(p)} disabled={lancando === p.id} style={{ ...linkBtn, fontSize: 11 }}>
-                      {lancando === p.id ? "..." : "desfazer"}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <input
-                      value={valores[p.id] ?? ""}
-                      onChange={(e) => setValores((v) => ({ ...v, [p.id]: e.target.value }))}
-                      placeholder="Valor"
-                      inputMode="decimal"
-                      style={{ ...inputStyle, width: 96, padding: "7px 9px", fontSize: 12 }}
-                    />
-                    <button onClick={() => lancar(p)} disabled={lancando === p.id}
-                      style={{ ...btnMiniEscuro }}>
-                      {lancando === p.id ? "..." : "Lançar vale"}
-                    </button>
-                  </>
                 )}
               </div>
             );
           })}
+          {itens.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum item lido nesse documento.</div>}
         </div>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// A regra da comissão, escrita onde ela é configurada
-//
-// Ela morava só no código. Quem abria a Matriz via dois numeros por cargo e
-// nenhuma pista de como o dinheiro da noite se reparte — e era a duvida que
-// mais voltava.
-// ---------------------------------------------------------------------------
-function ComoDivideComissao() {
-  const [aberto, setAberto] = useState(false);
-  return (
-    <div style={{ ...cardStyle, marginBottom: 14, padding: 12 }}>
-      <button onClick={() => setAberto((a) => !a)}
-        style={{ background: "none", border: "none", padding: 0, cursor: "pointer", width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ ...sectionLabel, marginBottom: 0, flex: 1 }}>Como a comissão do dia é dividida</span>
-        <span style={{ fontSize: 11, color: "#8A8778" }}>{aberto ? "fechar" : "ver a regra"}</span>
+      <div style={{ ...cardStyle, marginBottom: 14 }}>
+        <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Forma de pagamento</label>
+        <select value={formaPagamento} onChange={(e) => setFormaPagamento(e.target.value)}
+          style={{ width: "100%", boxSizing: "border-box", padding: "7px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }}>
+          {FORMAS_PAGAMENTO_COMPRA.map((f) => <option key={f.valor} value={f.valor}>{f.rotulo}</option>)}
+        </select>
+        {formaPagamento === "boleto" && (
+          <div style={{ marginTop: 6 }}>
+            <label style={{ fontSize: 10, color: "#8A6A0F", display: "block", marginBottom: 3 }}>Prazo do boleto (dias)</label>
+            <input type="number" value={prazoBoleto} onChange={(e) => setPrazoBoleto(e.target.value)}
+              style={{ width: 80, padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 13 }} />
+          </div>
+        )}
+        <div style={{ fontSize: 10, color: "#8A8778", marginTop: 6 }}>
+          {formaPagamento === "boleto" ? "Gera uma conta a pagar com esse prazo, no valor total da nota." : "Pix/débito/crédito entra em Contas a Pagar já marcado como pago."}
+        </div>
+      </div>
+      {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 12 }}>{erro}</div>}
+      <button onClick={confirmar} disabled={salvando || !podeConfirmar} style={{ ...btnPrimary, width: "100%" }}>
+        {salvando ? <Loader2 size={16} /> : <Check size={16} />}
+        Confirmar e lançar no estoque
       </button>
-
-      {aberto && (
-        <div style={{ marginTop: 12 }}>
-          {/* o racha ao meio */}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <div style={{ flex: 1, minWidth: 150, background: "#37A0E522", border: "1px solid #37A0E555", borderRadius: 10, padding: "10px 12px" }}>
-              <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, textTransform: "uppercase", color: "#185FA5" }}>Garçons · 50%</div>
-              <div style={{ fontSize: 12, color: "#8A8778", marginTop: 3 }}>dividido por cabeça entre os garçons da noite</div>
-            </div>
-            <div style={{ flex: 1, minWidth: 150, background: "#FAC77540", border: "1px solid #FAC77599", borderRadius: 10, padding: "10px 12px" }}>
-              <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: 0.5, textTransform: "uppercase", color: "#854F0B" }}>Equipe interna · 50%</div>
-              <div style={{ fontSize: 12, color: "#8A8778", marginTop: 3 }}>caixa · bar · chapa · cozinha · limpeza</div>
-            </div>
-          </div>
-
-          <div style={{ background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10, padding: "11px 13px", marginTop: 10, fontSize: 12.5, lineHeight: 2, fontVariantNumeric: "tabular-nums" }}>
-            <span style={{ color: "#8A8778" }}>fatia de cada um &nbsp;=&nbsp;</span> metade da taxa <span style={{ color: "#8A8778" }}>÷</span> quantas pessoas naquele bolo<br />
-            <span style={{ color: "#8A8778" }}>método comissão =&nbsp;</span> diária base do cargo <span style={{ color: "#8A8778" }}>+</span> fatia<br />
-            <span style={{ color: "#8A8778" }}>método hora &nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;</span> horas trabalhadas <span style={{ color: "#8A8778" }}>×</span> valor da hora
-          </div>
-
-          <div style={{ fontSize: 12, color: "#8A8778", marginTop: 10, lineHeight: 1.7 }}>
-            <b style={{ color: "#22231F" }}>Por cabeça, não por hora.</b> Quem esticou o turno não leva
-            comissão maior que o colega do mesmo bolo — o que muda com as horas
-            é só o método hora.
-            <div style={{ marginTop: 6 }}>
-              <b style={{ color: "#22231F" }}>A diária base é cheia.</b> Trabalhou a noite, leva a base do
-              cargo, mesmo em jornada curta.
-            </div>
-            <div style={{ marginTop: 6 }}>
-              <b style={{ color: "#22231F" }}>Diarista recebe o maior dos dois métodos.</b> Registrado leva
-              só a fatia da comissão — o salário dele fecha no mês. Gerente não
-              entra na divisão: recebe 2% do faturamento bruto, também no mês.
-            </div>
-          </div>
-
-          <div style={{ ...avisoStyle, marginTop: 10 }}>
-            <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-            <div style={{ fontSize: 12 }}>
-              Dias fechados antes de 22/08/2026 foram calculados pela regra
-              antiga, que rateava por hora e inflava a base. Para recalcular um
-              deles, abra a Escala do dia, clique em <b>Editar</b> e depois em
-              <b> Calcular e salvar</b>.
-            </div>
-          </div>
+      {!todosVinculados && !carregando && itens.length > 0 && (
+        <div style={{ fontSize: 12, color: "#8A8778", marginTop: 8, textAlign: "center" }}>Vincule todos os itens a um insumo pra poder confirmar.</div>
+      )}
+      {todosVinculados && algumaUnidadeDivergente && !carregando && (
+        <div style={{ fontSize: 12, color: "#854F0B", marginTop: 8, textAlign: "center" }}>Corrija a unidade divergente (destacada em amarelo) pra poder confirmar.</div>
+      )}
+      {implausiveis.length > 0 && !carregando && (
+        <div style={{ fontSize: 12, color: "#791F1F", marginTop: 8, textAlign: "center" }}>
+          {implausiveis.length === 1 ? "Tem 1 item com valor implausível" : `Tem ${implausiveis.length} itens com valor implausível`} (em vermelho) — ajuste a embalagem ou marque que conferiu.
         </div>
       )}
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
-// Fechamento mensal
+// Regras de produto: manutenção do que o sistema aprendeu sobre embalagem.
+// Existe pra você poder consertar uma regra que aprendeu errado sem ter que
+// esperar a próxima nota daquele produto chegar.
 // ---------------------------------------------------------------------------
-function FechamentoMensal() {
-  const [mesRef, setMesRef] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; });
-  const [linhas, setLinhas] = useState([]);
-  const [gerentes, setGerentes] = useState([]);
-  const [faturamentoMes, setFaturamentoMes] = useState(null); // { faturamento_bruto, atualizado_em } | null
-  const [buscandoFaturamento, setBuscandoFaturamento] = useState(false);
-  const [erro, setErro] = useState("");
-  const [pessoaAberta, setPessoaAberta] = useState(null);
-  const [extrato, setExtrato] = useState([]);
+function RegrasProduto({ onVoltar }) {
+  const [regras, setRegras] = useState([]);
+  const [insumos, setInsumos] = useState([]);
   const [carregando, setCarregando] = useState(true);
-  const [pessoas, setPessoas] = useState([]);
-  const [nomeDeQuemImprime, setNomeDeQuemImprime] = useState("");
-  // A aba Fechamento mensal so aparece pra administrador (SUBABAS.soAdmin),
-  // entao quem chega aqui ja passou pelo gate.
-  const [vales, setVales] = useState({}); // pessoa_id -> { valor, data_pagamento }
-  const fiado = useFiadoEquipe(pessoas, true);
-  const [lancados, setLancados] = useState(new Set()); // descrições já lançadas no Plano de Contas
-  const [lancando, setLancando] = useState(null); // nome sendo lançado agora
-  const limitesDoMes = useCallback(() => {
-    const [ano, mes] = mesRef.split("-").map(Number);
-    const inicio = `${mesRef}-01`;
-    const fim = new Date(ano, mes, 0).toISOString().slice(0, 10);
-    return { inicio, fim };
-  }, [mesRef]);
+  const [erro, setErro] = useState("");
+  const [editando, setEditando] = useState(null);
+  const [form, setForm] = useState({ pacotes: "1", porPacote: "1", unidade: "un", precoPor: "pacote" });
+
   const carregar = useCallback(async () => {
     setCarregando(true);
-    setErro("");
-    const { inicio, fim } = limitesDoMes();
-    const [{ data: premiacoes }, { data: pessoasData }, { data: faturamentoData }] = await Promise.all([
-      supabase.from("premiacoes_diarias").select("pessoa_id, dia, total_dia, pessoa:pessoas(nome, papel, tipo_contrato)").gte("dia", inicio).lte("dia", fim),
-      supabase.from("pessoas").select("*").eq("ativo", true),
-      supabase.from("faturamento_mensal").select("*").eq("mes_referencia", mesRef).maybeSingle(),
+    const [{ data: regrasData, error }, { data: insumosData }] = await Promise.all([
+      supabase.from("produto_regras").select("*").order("atualizada_em", { ascending: false }),
+      supabase.from("insumos").select("id, nome, unidade").order("nome"),
     ]);
-    setFaturamentoMes(faturamentoData || null);
-    const mapaSalario = Object.fromEntries((pessoasData || []).map((p) => [p.id, p]));
-    const porPessoa = {};
-    (premiacoes || []).forEach((pr) => {
-      if (pr.pessoa?.tipo_contrato !== "registrado" || pr.pessoa?.papel === "gerente") return; // diarista já recebeu por dia; gerente é calculada à parte
-      if (!porPessoa[pr.pessoa_id]) porPessoa[pr.pessoa_id] = { nome: pr.pessoa.nome, papel: pr.pessoa.papel, dias: 0, comissao: 0 };
-      porPessoa[pr.pessoa_id].dias += 1;
-      porPessoa[pr.pessoa_id].comissao += pr.total_dia;
-    });
-    setPessoas([...(pessoasData || [])].sort(porNome));
-    const listaRegistrados = Object.entries(porPessoa).map(([pessoaId, v]) => {
-      const salarioBase = mapaSalario[pessoaId]?.salario_base || 0;
-      return { ...v, pessoaId, salarioBase, total: v.comissao + salarioBase };
-    });
-    setLinhas(listaRegistrados.sort((a, b) => a.nome.localeCompare(b.nome)));
-    const listaGerentes = (pessoasData || []).filter((p) => p.papel === "gerente").map((p) => {
-      const faturamentoBruto = faturamentoData?.faturamento_bruto || 0;
-      const doisPorcento = faturamentoBruto * 0.02;
-      const salarioBase = p.salario_base || 0;
-      return { pessoaId: p.id, nome: p.nome, salarioBase, faturamentoBruto, doisPorcento, total: salarioBase + doisPorcento };
-    });
-    setGerentes(listaGerentes);
-    const { data: usuarioAtual } = await supabase.auth.getUser();
-    if (usuarioAtual?.user?.id) {
-      const { data: meuPerfil } = await supabase
-        .from("perfis").select("nome").eq("id", usuarioAtual.user.id).maybeSingle();
-      setNomeDeQuemImprime(meuPerfil?.nome || "");
-    }
-    const { data: valesData } = await supabase
-      .from("vales_mensais").select("pessoa_id, valor, data_pagamento").eq("mes", mesRef);
-    setVales(Object.fromEntries((valesData || []).map((v) => [v.pessoa_id, v])));
-    const { data: contasPessoas } = await supabase.from("contas_pagar").select("descricao").eq("centro_custo", "pessoas");
-    setLancados(new Set((contasPessoas || []).map((c) => c.descricao)));
+    if (error) setErro(error.message);
+    setRegras(regrasData || []);
+    setInsumos(insumosData || []);
     setCarregando(false);
-  }, [mesRef, limitesDoMes]);
+  }, []);
   useEffect(() => { carregar(); }, [carregar]);
-  // O valor que vira conta a pagar é o LÍQUIDO: o acumulado do mês menos
-  // o fiado que a pessoa consumiu, quando marcado pra abater. O bruto
-  // continua guardado nas premiações diárias — o desconto é só no que sai
-  // do caixa.
-  const lancarPessoa = async (nome, valor, pessoaId) => {
-    setLancando(nome);
-    setErro("");
-    const desconto = pessoaId && fiado.buscou ? fiado.descontoDe(pessoaId) : 0;
-    // O vale do dia 20 ja foi lancado na conta 4.1 quando foi pago. Se o
-    // fechamento lancasse o salario cheio, o DRE contaria duas vezes.
-    const valeJaPago = pessoaId ? Number(vales[pessoaId]?.valor || 0) : 0;
-    const liquido = round2(valor - desconto - valeJaPago);
-    const { data: userData } = await supabase.auth.getUser();
-    const [ano, mes] = mesRef.split("-").map(Number);
-    const fimMes = new Date(ano, mes, 0).toISOString().slice(0, 10);
-    const descricao = `${nome} — Fechamento ${mesRef}`;
-    const { error } = await supabase.from("contas_pagar").insert({
-      descricao: [
-        descricao,
-        desconto > 0 ? `fiado ${brl(desconto)}` : null,
-        valeJaPago > 0 ? `vale ${brl(valeJaPago)}` : null,
-      ].filter(Boolean).length > 1
-        ? `${descricao} (${[desconto > 0 ? `fiado ${brl(desconto)}` : null, valeJaPago > 0 ? `vale ${brl(valeJaPago)}` : null].filter(Boolean).join(" e ")} descontado)`
-        : descricao,
-      valor_total: liquido, categoria: "pessoas", centro_custo: "pessoas",
-      status: "pendente", data_vencimento: fimMes, criado_por: userData?.user?.id,
+
+  const abrirEdicao = (r) => {
+    setEditando(r.id);
+    setForm({
+      pacotes: String(r.pacotes ?? 1),
+      porPacote: String(r.unidades_por_pacote ?? 1),
+      unidade: r.unidade || "un",
+      precoPor: r.preco_por || "pacote",
     });
-    if (error) { setLancando(null); setErro(error.message); return; }
-    if (desconto > 0) {
-      const { error: errFiado } = await darBaixa(pessoaId, fiado.emAbertoDe(pessoaId), "fechamento", mesRef);
-      if (errFiado) { setLancando(null); setErro("Conta lançada, mas o fiado não foi baixado: " + errFiado.message); return; }
-      fiado.buscar();
-    }
-    setLancando(null);
-    setLancados((prev) => new Set(prev).add(descricao));
   };
-  const buscarFaturamento = async () => {
-    setBuscandoFaturamento(true);
-    setErro("");
-    const { inicio, fim } = limitesDoMes();
-    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
-      body: { acao: "faturamento_periodo", data_inicio: `${inicio}T00:00:00-03:00`, data_fim: `${fim}T23:59:59-03:00` },
-    });
-    setBuscandoFaturamento(false);
-    if (error) { setErro(await extrairErroFuncao(error)); return; }
-    if (data?.error) { setErro(data.error); return; }
-    const { error: errSalvar } = await supabase.from("faturamento_mensal").upsert({
-      mes_referencia: mesRef,
-      faturamento_bruto: data.faturamento_bruto,
-      atualizado_em: new Date().toISOString(),
-    }, { onConflict: "mes_referencia" });
-    if (errSalvar) { setErro(errSalvar.message); return; }
+
+  const salvar = async (r) => {
+    const pacotes = parseFloat(form.pacotes) || 1;
+    const porPacote = parseFloat(form.porPacote) || 1;
+    // Recalcula os fatores mantendo a proporção original entre o que a IA
+    // leu e o que ficou certo — se a embalagem muda, o fator muda junto.
+    const fatorQuantidade = Number(r.unidades_por_pacote) > 0 && Number(r.pacotes) > 0
+      ? Number(r.fator_quantidade) * ((pacotes * porPacote) / (Number(r.pacotes) * Number(r.unidades_por_pacote)))
+      : Number(r.fator_quantidade);
+    const fatorPreco = form.precoPor === "pacote" ? 1 / porPacote : 1;
+    const { error } = await supabase.from("produto_regras").update({
+      pacotes, unidades_por_pacote: porPacote, unidade: form.unidade, preco_por: form.precoPor,
+      fator_quantidade: fatorQuantidade, fator_preco: fatorPreco,
+      atualizada_em: new Date().toISOString(),
+    }).eq("id", r.id);
+    if (error) { setErro(error.message); return; }
+    setEditando(null);
     carregar();
   };
-  const abrirExtrato = async (nome) => {
-    const { inicio, fim } = limitesDoMes();
-    const { data } = await supabase
-      .from("premiacoes_diarias")
-      .select("dia, comissao, base_categoria, taxa_servico_dia, metodo_usado, valor_metodo_comissao, valor_metodo_hora, total_dia, pessoa:pessoas!inner(nome)")
-      .eq("pessoa.nome", nome)
-      .gte("dia", inicio).lte("dia", fim)
-      .order("dia");
-    setExtrato(data || []);
-    setPessoaAberta(nome);
+
+  const excluir = async (r) => {
+    if (!window.confirm(`Esquecer a regra de "${r.nome_lido}"? As notas já confirmadas não mudam — só para de aplicar daqui pra frente.`)) return;
+    const { error } = await supabase.from("produto_regras").delete().eq("id", r.id);
+    if (error) { setErro(error.message); return; }
+    carregar();
   };
-  const mudarMes = (delta) => {
-    const [ano, mes] = mesRef.split("-").map(Number);
-    const d = new Date(ano, mes - 1 + delta, 1);
-    setMesRef(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
-  };
-  const nomeMes = new Date(`${mesRef}-01T12:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
-  const total = linhas.reduce((s, l) => s + l.total, 0) + gerentes.reduce((s, g) => s + g.total, 0);
-  if (pessoaAberta) {
-    return (
-      <div>
-        <button onClick={() => setPessoaAberta(null)} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, marginBottom: 14 }}>
-          <ChevronLeft size={14} /> Voltar
-        </button>
-        <div style={{ fontSize: 15, fontWeight: 700, color: "#22231F", marginBottom: 12 }}>{pessoaAberta} — {nomeMes}</div>
-        <div style={{ display: "grid", gap: 6 }}>
-          {extrato.map((e, idx) => (
-            <div key={idx} style={{ ...cardStyle, padding: "10px 12px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 12, color: "#22231F" }}>{new Date(e.dia + "T12:00:00").toLocaleDateString("pt-BR")}</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(e.total_dia)}</span>
-              </div>
-              <div style={{ fontSize: 10, color: "#8A8778", marginTop: 3 }}>
-                {e.metodo_usado ? (
-                  <>
-                    <span style={{ fontWeight: e.metodo_usado === "comissao" ? 700 : 400, color: e.metodo_usado === "comissao" ? "#0F6E56" : "#8A8778" }}>
-                      Taxa de serviço + diária base: {brl(e.valor_metodo_comissao)}
-                    </span>
-                    {" · "}
-                    <span style={{ fontWeight: e.metodo_usado === "hora" ? 700 : 400, color: e.metodo_usado === "hora" ? "#0F6E56" : "#8A8778" }}>
-                      Hora: {brl(e.valor_metodo_hora)}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    Taxa de serviço (sua parte): {brl(e.comissao)}
-                    {e.base_categoria > 0 && ` · diária base: ${brl(e.base_categoria)}`}
-                    {` · taxa de serviço do dia (total): ${brl(e.taxa_servico_dia)}`}
-                  </>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
+
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-        <button onClick={() => mudarMes(-1)} style={ghostIconBtn}><ChevronLeft size={18} /></button>
-        <input type="month" value={mesRef} onChange={(e) => setMesRef(e.target.value)}
-          style={{ ...inputStyle, flex: 1, textAlign: "center", textTransform: "capitalize" }} />
-        <button onClick={() => mudarMes(1)} style={ghostIconBtn}><ChevronRight size={18} /></button>
+      <button onClick={onVoltar} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, marginBottom: 14 }}>
+        <ChevronLeft size={14} /> Voltar
+      </button>
+      <div style={sectionLabel}>Regras aprendidas</div>
+      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 12, lineHeight: 1.5 }}>
+        Cada regra guarda como um produto vem embalado. Quando esse mesmo produto aparecer numa nota nova, a quantidade e o preço já chegam convertidos.
       </div>
-      <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 10 }}>Só pessoas registradas — diaristas já recebem por dia.</div>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
+      ) : regras.length === 0 ? (
+        <div style={{ ...cardStyle, fontSize: 13, color: "#8A8778" }}>
+          Nenhuma regra ainda. Elas nascem na conferência de uma nota, quando você define como um produto vem embalado e marca pra lembrar.
+        </div>
       ) : (
-        <>
-          <BarraFiado fiado={fiado} aviso="Traz o que a equipe consumiu como fiado e ainda nao foi descontado, pra abater no acerto do mes." />
-          <PainelSemDono fiado={fiado} pessoas={pessoas} />
-          <ValesDoMes
-            mesRef={mesRef}
-            pessoas={pessoas}
-            vales={vales}
-            aoMudar={carregar}
-            setErro={setErro}
-          />
-          <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
-              <span>Pessoa</span><span>Papel</span><span style={{ textAlign: "right" }}>Dias</span><span style={{ textAlign: "right" }}>Acumulado</span>
-            </div>
-            {linhas.map((l, idx) => {
-              const descricaoLancamento = `${l.nome} — Fechamento ${mesRef}`;
-              const jaLancado = lancados.has(descricaoLancamento);
-              return (
-                <div key={l.nome} style={{ borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
-                  <button onClick={() => abrirExtrato(l.nome)}
-                    style={{ display: "block", width: "100%", padding: "10px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, fontSize: 13 }}>
-                      <span style={{ color: "#22231F" }}>{l.nome}</span>
-                      <span style={{ color: "#8A8778", fontSize: 12 }}>{PAPEL_LABEL[l.papel]}</span>
-                      <span style={{ textAlign: "right", color: "#8A8778" }}>{l.dias}</span>
-                      <span style={{ textAlign: "right", fontWeight: 700, color: "#22231F" }}>{brl(l.total)}</span>
+        <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
+          {regras.map((r, idx) => {
+            const ins = insumos.find((i) => i.id === r.insumo_id);
+            return (
+              <div key={r.id} style={{ borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", padding: "10px 12px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis" }}>{r.nome_lido}</div>
+                    <div style={{ fontSize: 11, color: "#8A8778", marginTop: 2 }}>
+                      → {ins ? ins.nome : "sem insumo vinculado"} · {r.pacotes} × {r.unidades_por_pacote} {r.unidade} · preço por {r.preco_por}
                     </div>
-                    <LinhaPix pessoa={pessoas.find((x) => x.id === l.pessoaId)} />
-                    {l.salarioBase > 0 && (
-                      <div style={{ fontSize: 10, color: "#8A8778", marginTop: 2 }}>salário {brl(l.salarioBase)} + comissão {brl(l.comissao)}</div>
-                    )}
-                  </button>
-                  {((fiado.buscou && fiado.saldoDe(l.pessoaId) > 0) || vales[l.pessoaId]) && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px 8px", flexWrap: "wrap" }}>
-                      {fiado.buscou && fiado.saldoDe(l.pessoaId) > 0 && (
-                        <ChipFiado fiado={fiado} pessoaId={l.pessoaId} />
-                      )}
-                      {vales[l.pessoaId] && (
-                        <span style={{ ...pillFiado, background: "#37A0E522", border: "1px solid #37A0E540", color: "#185FA5" }}>
-                          vale {brl(vales[l.pessoaId].valor)} pago
-                        </span>
-                      )}
-                      <span style={{ fontSize: 11, color: "#8A8778" }}>
-                        a pagar <strong style={{ color: "#22231F" }}>
-                          {brl(l.total - (fiado.buscou ? fiado.descontoDe(l.pessoaId) : 0) - Number(vales[l.pessoaId]?.valor || 0))}
-                        </strong>
-                      </span>
-                    </div>
-                  )}
-                  <div style={{ padding: "0 10px 10px" }}>
-                    {jaLancado ? (
-                      <span style={{ fontSize: 11, color: "#2F8F5B" }}>✓ Já lançado no Plano de Contas</span>
-                    ) : (
-                      <button onClick={(e) => { e.stopPropagation(); lancarPessoa(l.nome, l.total, l.pessoaId); }} disabled={lancando === l.nome}
-                        style={{ ...linkBtn, fontSize: 11 }}>
-                        {lancando === l.nome ? "Lançando…" : "+ Lançar no Plano de Contas"}
-                      </button>
-                    )}
                   </div>
+                  <span style={{ ...pill, background: r.vezes_usada > 0 ? "#2F8F5B22" : "#FAC77555", color: r.vezes_usada > 0 ? "#0F6E56" : "#854F0B", whiteSpace: "nowrap", flexShrink: 0 }}>
+                    {r.vezes_usada > 0 ? `${r.vezes_usada} ${r.vezes_usada === 1 ? "nota" : "notas"}` : "nunca usada"}
+                  </span>
+                  <button onClick={() => abrirEdicao(r)} style={ghostIconBtn} aria-label="Editar regra"><Pencil size={14} /></button>
+                  <button onClick={() => excluir(r)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Esquecer regra"><Trash2 size={14} /></button>
                 </div>
-              );
-            })}
-            {linhas.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Nenhuma premiação registrada nesse mês ainda.</div>}
-          </div>
-          <div style={sectionLabel}>Gerência</div>
-          <div style={{ ...cardStyle, marginBottom: 10 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontSize: 12, color: "#8A8778" }}>Faturamento bruto do mês</div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "#22231F" }}>{faturamentoMes ? brl(faturamentoMes.faturamento_bruto) : "—"}</div>
-              </div>
-              <button onClick={buscarFaturamento} disabled={buscandoFaturamento} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
-                {buscandoFaturamento ? <Loader2 size={14} /> : <RefreshCw size={14} />} Buscar
-              </button>
-            </div>
-          </div>
-          {gerentes.length > 0 && (
-            <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
-              {gerentes.map((g, idx) => {
-                const descricaoLancamento = `${g.nome} — Fechamento ${mesRef}`;
-                const jaLancado = lancados.has(descricaoLancamento);
-                return (
-                  <div key={g.nome} style={{ padding: "12px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>{g.nome}</div>
-                    <div style={{ marginBottom: 4 }}><LinhaPix pessoa={pessoas.find((x) => x.id === g.pessoaId)} /></div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
-                      <span>Salário base</span><span>{brl(g.salarioBase)}</span>
+                {editando === r.id && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginTop: 10, paddingTop: 10, borderTop: "1px dashed #E8E2D2" }}>
+                    <div style={{ flex: 1, minWidth: 78 }}>
+                      <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Pacotes</label>
+                      <input type="number" value={form.pacotes} onChange={(e) => setForm((f) => ({ ...f, pacotes: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
-                      <span>2% de {brl(g.faturamentoBruto)} (faturamento bruto)</span><span>{brl(g.doisPorcento)}</span>
+                    <div style={{ flex: 1, minWidth: 78 }}>
+                      <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Cada um com</label>
+                      <input type="number" value={form.porPacote} onChange={(e) => setForm((f) => ({ ...f, porPacote: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 12 }} />
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, color: "#22231F", marginTop: 4, paddingTop: 4, borderTop: "1px solid #F0EBDD" }}>
-                      <span>Total do mês</span><span>{brl(g.total)}</span>
+                    <div style={{ width: 68 }}>
+                      <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Unidade</label>
+                      <select value={form.unidade} onChange={(e) => setForm((f) => ({ ...f, unidade: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "6px 4px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                        {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                      </select>
                     </div>
-                    {fiado.buscou && fiado.saldoDe(g.pessoaId) > 0 && (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-                        <ChipFiado fiado={fiado} pessoaId={g.pessoaId} />
-                        <span style={{ fontSize: 11, color: "#8A8778" }}>
-                          a pagar <strong style={{ color: "#22231F" }}>{brl(g.total - fiado.descontoDe(g.pessoaId))}</strong>
-                        </span>
-                      </div>
-                    )}
-                    <div style={{ marginTop: 6 }}>
-                      {jaLancado ? (
-                        <span style={{ fontSize: 11, color: "#2F8F5B" }}>✓ Já lançado no Plano de Contas</span>
-                      ) : (
-                        <button onClick={() => lancarPessoa(g.nome, g.total, g.pessoaId)} disabled={lancando === g.nome} style={{ ...linkBtn, fontSize: 11 }}>
-                          {lancando === g.nome ? "Lançando…" : "+ Lançar no Plano de Contas"}
-                        </button>
-                      )}
+                    <div style={{ minWidth: 130 }}>
+                      <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Preço da nota é por</label>
+                      <select value={form.precoPor} onChange={(e) => setForm((f) => ({ ...f, precoPor: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
+                        <option value="pacote">pacote</option>
+                        <option value="unidade">unidade</option>
+                      </select>
                     </div>
+                    <button onClick={() => salvar(r)} style={{ ...btnSecondary, fontSize: 12, padding: "7px 12px" }}>Salvar</button>
+                    <button onClick={() => setEditando(null)} style={{ ...linkBtn, fontSize: 12 }}>Cancelar</button>
                   </div>
-                );
-              })}
-            </div>
-          )}
-          {(linhas.length > 0 || gerentes.length > 0) && (
-            <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px", fontSize: 13, color: "#8A8778" }}>
-              <span>Total geral do mês</span><span style={{ fontWeight: 700, color: "#22231F" }}>{brl(total)}</span>
-            </div>
-          )}
-
-          {(linhas.length > 0 || gerentes.length > 0) && (
-            <>
-              <BotaoPdf>Baixar fechamento em PDF</BotaoPdf>
-              <FolhaFechamento
-                mesRef={mesRef}
-                linhas={linhas}
-                gerentes={gerentes}
-                vales={vales}
-                fiado={fiado}
-                emitidoPor={nomeDeQuemImprime}
-              />
-            </>
-          )}
-        </>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
 }
-function round2(n) { return Math.round(n * 100) / 100; }
+
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
-const seloBase = {
-  fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 999,
-  textTransform: "uppercase", letterSpacing: 0.3, textAlign: "center", whiteSpace: "nowrap",
-};
-const seloGarcom = { ...seloBase, background: "#37A0E522", color: "#185FA5", border: "1px solid #37A0E555" };
-const seloInterna = { ...seloBase, background: "#FAC77540", color: "#854F0B", border: "1px solid #FAC77599" };
-const seloFora = { ...seloBase, background: "#F6F1E7", color: "#8A8778", border: "1px solid #E8E2D2" };
-const pillFiado = {
-  fontSize: 11.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, whiteSpace: "nowrap",
-};
-const itemRowVale = {
-  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-  background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10,
-  padding: "8px 11px", flexWrap: "wrap",
-};
-const btnPdf = {
-  display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-  background: "#F2D742", border: "1px solid #D9BE2C", color: "#4A3B06",
-  borderRadius: 10, padding: "11px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer",
-};
-const btnMiniEscuro = {
-  background: "#22231F", color: "#F3EFE3", border: "1px solid #22231F", borderRadius: 8,
-  padding: "5px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
-};
-const pontoSujo = {
-  width: 8, height: 8, borderRadius: "50%", background: "#E8A33D",
-  display: "inline-block", flexShrink: 0,
-};
-const btnSalvarLinha = {
-  display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
-  background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 8,
-  padding: "6px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-};
-const barraFixa = {
-  position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 40,
-  background: "#FBF3D9", borderTop: "1px solid #E8D48A",
-  padding: "12px 16px", boxShadow: "0 -4px 16px rgba(34,35,31,.10)",
-};
-const inputStyle = { padding: "9px 10px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF", color: "#22231F" };
+const linhaTabela = { display: "grid", gridTemplateColumns: "2fr 0.6fr 0.5fr 0.8fr 0.8fr 0.6fr", gap: 6, padding: "8px 10px", alignItems: "center" };
+const itemRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10, padding: "12px 14px" };
+const iconBox = { width: 36, height: 44, borderRadius: 6, background: "#F6F1E7", border: "1px solid #E8E2D2", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
 const ghostIconBtn = { border: "none", background: "none", color: "#8A8778", cursor: "pointer", padding: 2, display: "flex" };
+const iconBtnWrap = { border: "none", background: "none", padding: 0, cursor: "pointer", flexShrink: 0, display: "flex" };
+const painelOriginal = {
+  background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12,
+  padding: 12, marginBottom: 14,
+  position: "sticky", top: 8, zIndex: 5,
+  boxShadow: "0 6px 18px rgba(34,35,31,.08)",
+};
+const overlayStyle = { position: "fixed", inset: 0, background: "rgba(34,35,31,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 50 };
+const modalStyle = { background: "#F3EFE3", border: "1px solid #E8E2D2", borderRadius: 14, width: "min(680px, 94vw)", maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 12px 34px rgba(0,0,0,0.28)" };
+const modalBarra = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", borderBottom: "1px solid #E8E2D2", background: "#F6F1E7" };
+const modalCorpo = { padding: 10, overflow: "auto", background: "#FFFFFF" };
 const btnPrimary = { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
 const btnSecondary = { background: "#F6F1E7", border: "1px solid #E8E2D2", color: "#22231F", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" };
 const linkBtn = { background: "none", border: "none", color: "#8A6A0F", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0, textAlign: "left" };
 const sectionLabel = { fontSize: 12, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#8A8778", marginBottom: 8 };
 const pill = { fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 999 };
 const avisoStyle = { display: "flex", gap: 8, background: "#FBF3D9", border: "1px solid #E8D48A", color: "#7A6A1E", borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 };
-const tabBtn = { padding: "8px 14px", borderRadius: 999, border: "1px solid #E8E2D2", background: "#FFFFFF", color: "#8A8778", fontSize: 13, fontWeight: 600, cursor: "pointer" };
-const tabBtnAtivo = { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" };
