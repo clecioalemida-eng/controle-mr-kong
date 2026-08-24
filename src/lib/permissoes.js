@@ -38,6 +38,14 @@ export const CATALOGO = [
       { chave: "supply.curvaabc", nome: "Curva ABC" },
     ],
   },
+  {
+    chave: "desempenho",
+    nome: "Desempenho",
+    filhos: [
+      { chave: "desempenho.estacao",  nome: "Marcar produção" },
+      { chave: "desempenho.produtos", nome: "Estação dos produtos" },
+    ],
+  },
   { chave: "marketing",       nome: "Marketing" },
   { chave: "comercial",       nome: "Comercial" },
   { chave: "sac",             nome: "SAC" },
