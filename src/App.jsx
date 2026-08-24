@@ -13,6 +13,7 @@ import SupplyChain from "./modules/SupplyChain";
 import Permissoes from "./modules/Permissoes";
 import DashboardModulo from "./modules/DashboardModulo";
 import GenteGestao from "./modules/GenteGestao";
+import Desempenho from "./modules/Desempenho";
 // Mapa: chave do módulo (banco) -> componente React que o renderiza.
 // Para adicionar um novo card no futuro: crie o componente, cadastre uma
 // linha na tabela `modulos` (ver supabase/002_auth_e_modulos.sql) com a
@@ -27,6 +28,7 @@ const COMPONENTES_MODULO = {
   comercial: Comercial,
   sac: Sac,
   supply: SupplyChain,
+  desempenho: Desempenho,
 };
 export default function App() {
   const [carregandoAuth, setCarregandoAuth] = useState(true);
@@ -297,6 +299,103 @@ function TelaAguardando({ perfil, onSair }) {
   );
 }
 // ---------------------------------------------------------------------------
+// Atalho da estação
+//
+// Quem é da chapa abre o app às 21h com a mão suja. Se precisar navegar
+// por menu até a tela de marcar produção, na terceira noite ninguém marca
+// mais nada — e sem marcação o salão não tem tempo nenhum.
+//
+// O cartão aparece SÓ quando existe pedido na fila da estação da pessoa.
+// Cartão que fica sempre ali vira paisagem e o número deixa de ser lido.
+// ---------------------------------------------------------------------------
+const CARGO_PARA_ESTACAO = {
+  chapeiro: "chapa", chapa: "chapa",
+  bar: "bar", barman: "bar", barmam: "bar",
+  caixa: "caixa",
+  garcom: "garcom", garcons: "garcom",
+  gerente: "gerencia", gerencia: "gerencia",
+  cozinha: "cozinha", cozinheiro: "cozinha",
+};
+function chaveSimples(t) {
+  return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+}
+
+function AtalhoEstacao({ perfil, onAbrir }) {
+  const [dados, setDados] = useState(null);
+
+  const carregar = useCallback(async () => {
+    if (!perfil?.cargo_id) return;
+    const { data: cargo } = await supabase
+      .from("cargos").select("nome").eq("id", perfil.cargo_id).maybeSingle();
+    const setor = CARGO_PARA_ESTACAO[chaveSimples(cargo?.nome)];
+    if (!setor) { setDados(null); return; }
+
+    const { data: fila, error } = await supabase.rpc("estacao_fila_agrupada", { p_setor: setor });
+    if (error || !fila || fila.length === 0) { setDados(null); return; }
+
+    const maior = fila.reduce((a, p) => Math.max(a, Number(p.segundos) || 0), 0);
+    const atrasados = fila.filter(
+      (p) => (Number(p.segundos) || 0) >= (Number(p.vermelho_min) || 12) * 60,
+    ).length;
+    const { data: se } = await supabase
+      .from("setores_estoque").select("label").eq("chave", setor).maybeSingle();
+
+    setDados({ setor, label: se?.label || setor, pedidos: fila.length, maior, atrasados });
+  }, [perfil?.cargo_id]);
+
+  useEffect(() => { carregar(); }, [carregar]);
+  useEffect(() => {
+    const t = setInterval(carregar, 30000);
+    return () => clearInterval(t);
+  }, [carregar]);
+
+  if (!dados) return null;
+
+  const m = Math.floor(dados.maior / 60);
+  const s = String(dados.maior % 60).padStart(2, "0");
+
+  return (
+    <button onClick={onAbrir}
+      style={{
+        width: "100%", textAlign: "left", border: "none", cursor: "pointer",
+        background: KONG.vermelho, color: "#FFFFFF", borderRadius: 14,
+        padding: "14px 16px", marginBottom: 14,
+        boxShadow: "0 3px 10px rgba(199,43,46,.28)",
+      }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <div>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em",
+                        opacity: .85, fontWeight: 700 }}>
+            Sua estação
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-.3px", marginTop: 1 }}>
+            {dados.label}
+          </div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
+            {dados.pedidos}
+          </div>
+          <div style={{ fontSize: 10.5, opacity: .85, marginTop: 2 }}>
+            {dados.pedidos === 1 ? "pedido" : "pedidos"}
+          </div>
+        </div>
+      </div>
+      <div style={{ marginTop: 11, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.25)",
+                    fontSize: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span>o mais antigo há <b style={{ fontVariantNumeric: "tabular-nums" }}>{m}:{s}</b></span>
+        {dados.atrasados > 0 && (
+          <span style={{ background: "rgba(255,255,255,.2)", padding: "3px 8px",
+                         borderRadius: 99, fontSize: 11, fontWeight: 700 }}>
+            {dados.atrasados} atrasado{dados.atrasados > 1 ? "s" : ""}
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Início: grid de cards
 // ---------------------------------------------------------------------------
 function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, onAbrirModulo, onAbrirPermissoes, onSair }) {
@@ -345,6 +444,7 @@ function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, o
           </div>
         ) : (
           <div className="cards-grid">
+            <AtalhoEstacao perfil={perfil} onAbrir={() => onAbrirModulo("desempenho")} />
             {modulos.map((m) => (
               <button key={m.id} onClick={() => onAbrirModulo(m.chave)}
                 style={{
