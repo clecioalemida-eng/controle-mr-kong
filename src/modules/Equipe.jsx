@@ -1531,6 +1531,7 @@ function PremiacaoDoDia({ isAdmin }) {
           entrada,
           saida,
           intervalo: INTERVALO_PADRAO_MIN,
+          papel: null,
         };
       });
       (presencasData || []).forEach((pr) => {
@@ -1543,6 +1544,7 @@ function PremiacaoDoDia({ isAdmin }) {
           // Aqui o `?? ` importa: intervalo 0 gravado de propósito não
           // pode virar 60 por causa do padrão.
           intervalo: pr.intervalo_minutos ?? INTERVALO_PADRAO_MIN,
+          papel: pr.papel_no_dia || null,
         };
       });
       setParticipacao(mapaPart);
@@ -1660,14 +1662,28 @@ function PremiacaoDoDia({ isAdmin }) {
       return { ...prev, [pessoaId]: novo };
     });
   };
+  // Trocar a função só daquele dia. Vazio volta pro cadastro.
+  const alterarPapelDoDia = (pessoaId, papel) => {
+    marcarSujo(pessoaId);
+    setParticipacao((prev) => ({
+      ...prev,
+      [pessoaId]: { ...prev[pessoaId], papel: papel || null },
+    }));
+  };
   const alterarHoras = (pessoaId, horas) => {
     marcarSujo(pessoaId);
     setParticipacao((prev) => ({ ...prev, [pessoaId]: { ...prev[pessoaId], horas: parseFloat(horas) || 0 } }));
   };
   const pesoDe = (pessoaId) => (participacao[pessoaId]?.horas || 0) / HORAS_PADRAO_TURNO;
+  // Função DO DIA. A Luciene é caixa no cadastro, mas se cobriu o salão
+  // num sábado, naquele dia ela entra na metade dos garçons. O cadastro
+  // dela não muda — senão o fechamento do mês passado se recalcularia
+  // como se ela sempre tivesse sido garçom, e dia fechado mudaria de
+  // valor sozinho.
+  const papelDe = (p) => participacao[p.id]?.papel || p.papel;
   const selecionados = pessoas.filter((p) => participacao[p.id]?.incluido);
-  const garcons = selecionados.filter((p) => categoriaComissao(p.papel) === "garcom");
-  const internos = selecionados.filter((p) => categoriaComissao(p.papel) === "interno");
+  const garcons = selecionados.filter((p) => categoriaComissao(papelDe(p)) === "garcom");
+  const internos = selecionados.filter((p) => categoriaComissao(papelDe(p)) === "interno");
   const taxaNum = parseFloat(taxaServico) || 0;
   const poolGarcons = taxaNum * 0.5;
   const poolInternos = taxaNum * 0.5;
@@ -1690,14 +1706,15 @@ function PremiacaoDoDia({ isAdmin }) {
   // faturamento bruto do dia (o oficial fecha por mês).
   const linhas = selecionados.map((p) => {
     const horas = participacao[p.id]?.horas || 0;
-    if (p.papel === "gerente") {
+    const papelDia = papelDe(p);
+    if (papelDia === "gerente") {
       const total = round2(faturamentoBrutoDia * 0.02);
       return { pessoa: p, peso: 0, horas, comissao: 0, baseCategoriaValor: 0, metodoUsado: "gerente_previa", valorMetodoComissao: total, valorMetodoHora: null, total };
     }
     const peso = pesoDe(p.id); // guardado na presença como informação; não rateia mais
-    const comissao = categoriaComissao(p.papel) === "garcom" ? comissaoPorGarcom : comissaoPorInterno;
-    const baseCategoriaValor = parseFloat(baseCategoria[p.papel]) || 0;
-    const m = matriz[p.papel] || { valor_hora: 0 };
+    const comissao = categoriaComissao(papelDia) === "garcom" ? comissaoPorGarcom : comissaoPorInterno;
+    const baseCategoriaValor = parseFloat(baseCategoria[papelDia]) || 0;
+    const m = matriz[papelDia] || { valor_hora: 0 };
     if (p.tipo_contrato === "diarista") {
       const valorMetodoComissao = comissao + baseCategoriaValor;
       const valorMetodoHora = horas * (m.valor_hora || 0);
@@ -1726,11 +1743,16 @@ function PremiacaoDoDia({ isAdmin }) {
         hora_entrada: part.entrada || null,
         hora_saida: part.saida || null,
         intervalo_minutos: parseInt(part.intervalo) || 0,
+        papel_no_dia: part.papel || null,
       }, { onConflict: "pessoa_id,dia" }));
     } else {
       // Desmarcou: tira do dia, senão a presença antiga fica para trás.
+      // A premiação vai junto — se ficasse, a pessoa continuaria
+      // aparecendo no acerto do dia com valor calculado.
       ({ error } = await supabase.from("presencas_diarias").delete()
         .eq("pessoa_id", pessoa.id).eq("dia", dia));
+      await supabase.from("premiacoes_diarias").delete()
+        .eq("pessoa_id", pessoa.id).eq("dia", dia);
     }
     setSalvandoPessoa(null);
     if (error) { setErro(error.message); return; }
@@ -1745,6 +1767,31 @@ function PremiacaoDoDia({ isAdmin }) {
     if (isAdmin && taxaNum <= 0) { setErro("Informe a taxa de serviço do dia."); return; }
     setSalvando(true);
     setErro("");
+
+    // PRIMEIRO tira do dia quem NÃO está marcado agora.
+    //
+    // Sem isto, desmarcar alguém não fazia nada: o salvar só regravava
+    // quem estava marcado, e a presença antiga de quem saiu continuava
+    // no banco — aparecendo no acerto, entrando na divisão da comissão e
+    // reduzindo a fatia de quem realmente trabalhou.
+    //
+    // A limpeza vem antes da gravação de propósito. Se viesse depois e
+    // desse erro no meio, sobraria gente a mais no dia; assim, o pior
+    // caso é um dia vazio, que se resolve salvando de novo.
+    {
+      const idsDoDia = selecionados.map((p) => p.id);
+      const filtro = `(${idsDoDia.join(",")})`;
+      if (idsDoDia.length > 0) {
+        await supabase.from("presencas_diarias").delete()
+          .eq("dia", dia).not("pessoa_id", "in", filtro);
+        await supabase.from("premiacoes_diarias").delete()
+          .eq("dia", dia).not("pessoa_id", "in", filtro);
+      } else {
+        await supabase.from("presencas_diarias").delete().eq("dia", dia);
+        await supabase.from("premiacoes_diarias").delete().eq("dia", dia);
+      }
+    }
+
     // A presença (quem trabalhou + horário + horas) sempre salva, mesmo
     // sem admin — é isso que qualquer pessoa aprovada pode registrar. Os
     // valores calculados (comissão etc.) só entram quando tem taxa de
@@ -1756,6 +1803,7 @@ function PremiacaoDoDia({ isAdmin }) {
         hora_entrada: part.entrada || null,
         hora_saida: part.saida || null,
         intervalo_minutos: parseInt(part.intervalo) || 0,
+        papel_no_dia: part.papel || null,
       }, { onConflict: "pessoa_id,dia" });
     }
     if (taxaNum > 0) {
@@ -1768,6 +1816,7 @@ function PremiacaoDoDia({ isAdmin }) {
           valor_diaria: 0, // mantido só por compatibilidade com dias já salvos antes da matriz existir
           base_categoria: round2(l.baseCategoriaValor),
           total_dia: round2(l.total),
+          papel_no_dia: participacao[l.pessoa.id]?.papel || null,
           metodo_usado: l.metodoUsado,
           valor_metodo_comissao: l.metodoUsado ? round2(l.valorMetodoComissao) : null,
           valor_metodo_hora: l.metodoUsado ? round2(l.valorMetodoHora) : null,
@@ -1957,7 +2006,18 @@ function PremiacaoDoDia({ isAdmin }) {
                         {p.nome}
                         {sujo && <span title="Alteração ainda não salva" style={pontoSujo} />}
                       </div>
-                      <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""}</div>
+                      <div style={{ fontSize: 11, color: "#8A8778" }}>
+                        {part.papel && part.papel !== p.papel ? (
+                          <>
+                            <span style={{ textDecoration: "line-through", opacity: 0.6 }}>{PAPEL_LABEL[p.papel]}</span>
+                            {" → "}
+                            <b style={{ color: "#C72B2E" }}>hoje como {PAPEL_LABEL[part.papel]}</b>
+                          </>
+                        ) : (
+                          PAPEL_LABEL[p.papel]
+                        )}
+                        {p.tipo_contrato === "diarista" ? " · diarista" : ""}
+                      </div>
                     </div>
                     {sujo && (
                       <button onClick={() => salvarPonto(p)} disabled={salvandoPessoa === p.id}
@@ -2002,6 +2062,22 @@ function PremiacaoDoDia({ isAdmin }) {
                           <input type="number" min="0" step="5" value={part.intervalo || 0} onChange={(e) => alterarPonto(p.id, "intervalo", e.target.value)}
                             style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
                         </div>
+                        <div style={{ flex: 1.3, minWidth: 118 }}>
+                          <label style={{ fontSize: 10, color: "#8A8778", display: "block", marginBottom: 3 }}>Função hoje</label>
+                          <select value={part.papel || ""} onChange={(e) => alterarPapelDoDia(p.id, e.target.value)}
+                            style={{
+                              width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6,
+                              fontSize: 12, background: "#FFFFFF", fontFamily: "inherit",
+                              border: `1px solid ${part.papel && part.papel !== p.papel ? "#C72B2E" : "#E8E2D2"}`,
+                              color: part.papel && part.papel !== p.papel ? "#C72B2E" : "#22231F",
+                              fontWeight: part.papel && part.papel !== p.papel ? 700 : 400,
+                            }}>
+                            <option value="">{PAPEL_LABEL[p.papel]} (do cadastro)</option>
+                            {PAPEIS_COM_GERENTE.filter((x) => x !== p.papel).map((x) => (
+                              <option key={x} value={x}>{PAPEL_LABEL[x]}</option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
                       {viraODia && (
                         <div style={{ fontSize: 11, color: "#185FA5", marginTop: 6 }}>
@@ -2030,7 +2106,7 @@ function PremiacaoDoDia({ isAdmin }) {
                 Diária base e valor da hora — só leitura aqui. Pra mudar, vai em Gente e Gestão &gt; Matriz de cargos.
               </div>
               <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
-                {[...new Set(selecionados.map((p) => p.papel))].map((papel) => (
+                {[...new Set(selecionados.map((p) => papelDe(p)))].map((papel) => (
                   <div key={papel} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ flex: 1, fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[papel]}</span>
                     <span style={{ fontSize: 11, color: "#8A8778" }}>Diária base <strong style={{ color: "#22231F" }}>{brl(parseFloat(baseCategoria[papel]) || 0)}</strong></span>
