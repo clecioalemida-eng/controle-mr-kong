@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   CheckCircle2, XCircle, Clock, AlertTriangle, ChevronLeft,
   LayoutDashboard, Flame, Wine, CircleDollarSign, Utensils, ClipboardList,
-  ShieldCheck, Loader2, Pencil, Trash2, Plus, Check, Truck,
+  ShieldCheck, Loader2, Pencil, Trash2, Plus, Check, Truck, Trophy,
 } from "lucide-react";
 import { supabase, TABELA_CHECKLIST } from "../lib/supabaseClient";
 // ---------------------------------------------------------------------------
@@ -83,6 +83,8 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
   const [deptAtual, setDeptAtual] = useState(null);
   const [etapaAtual, setEtapaAtual] = useState(null);
   const [itens, setItens] = useState({});
+  const [obsItens, setObsItens] = useState({});   // item -> motivo
+  const [obsTurno, setObsTurno] = useState("");
   const [salvando, setSalvando] = useState(false);
   const [carregandoItem, setCarregandoItem] = useState(false);
   const [jaEnviado, setJaEnviado] = useState(false);
@@ -145,11 +147,13 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
     setEtapaAtual(etapa);
     setJaEnviado(false);
     setItens({});
+    setObsItens({});
+    setObsTurno("");
     setCarregandoItem(true);
     setTela("checklist");
     const { data, error } = await supabase
       .from(TABELA_CHECKLIST)
-      .select("itens, responsavel")
+      .select("itens, responsavel, observacao, observacoes_itens")
       .eq("dia_operacional", opDate)
       .eq("departamento", deptKey)
       .eq("etapa", etapa)
@@ -158,6 +162,8 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
       setErro("Não foi possível carregar o checklist: " + error.message);
     } else if (data) {
       setItens(data.itens || {});
+      setObsItens(data.observacoes_itens || {});
+      setObsTurno(data.observacao || "");
       setJaEnviado(true);
     }
     setCarregandoItem(false);
@@ -174,6 +180,16 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
       setErro(`Preencha todos os itens (${totalPreenchidos}/${totalItens}) antes de salvar.`);
       return;
     }
+    // "Não conforme" sem motivo escrito vira um número vermelho que
+    // ninguém sabe o que fazer com ele. O banco também recusa — aqui é
+    // só pra pessoa saber ANTES de tentar salvar.
+    const semMotivo = listaItensAtual.filter(
+      (i) => itens[i] === "nao_conforme" && !String(obsItens[i] || "").trim(),
+    );
+    if (semMotivo.length > 0) {
+      setErro(`Escreva o que aconteceu em: ${semMotivo.join(", ")}`);
+      return;
+    }
     setSalvando(true);
     setErro("");
     const { error } = await supabase.from(TABELA_CHECKLIST).upsert(
@@ -183,6 +199,8 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
         etapa: etapaAtual,
         responsavel: nomeUsuario,
         itens,
+        observacao: obsTurno.trim() || null,
+        observacoes_itens: obsItens,
         completado_em: new Date().toISOString(),
       },
       { onConflict: "dia_operacional,departamento,etapa" }
@@ -205,6 +223,7 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
           </div>
         ) : (
           <div className="cards-grid">
+            <FaixaCorrida aoAbrir={() => setTela("corrida")} />
             {deptKeys.map((k) => {
               const dept = aparenciaDe(k);
               const Icon = dept.icon;
@@ -267,6 +286,10 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
       </Shell>
     );
   }
+  if (tela === "corrida") {
+    return <Corrida onVoltar={() => setTela("home")} isAdmin={isAdmin} />;
+  }
+
   if (tela === "compras") {
     return (
       <ListaDeCompra
@@ -317,25 +340,70 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
               {jaEnviado && <div style={{ display: "flex", alignItems: "center", gap: 4, color: "#2F8F5B", fontSize: 13, fontWeight: 600 }}><CheckCircle2 size={15} /> Enviado</div>}
             </div>
             <div style={{ display: "grid", gap: 8 }}>
-              {listaItensAtual.map((item) => (
-                <div key={item} style={itemRow}>
-                  <div style={{ fontSize: 14, color: "#22231F", flex: 1 }}>{item}</div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button onClick={() => marcarItem(item, "conforme")}
-                      style={{ ...pillBtn, ...(itens[item] === "conforme" ? pillOk : {}) }}>
-                      <CheckCircle2 size={14} /> Conforme
-                    </button>
-                    <button onClick={() => marcarItem(item, "nao_conforme")}
-                      style={{ ...pillBtn, ...(itens[item] === "nao_conforme" ? pillNok : {}) }}>
-                      <XCircle size={14} /> Não conforme
-                    </button>
+              {listaItensAtual.map((item) => {
+                const nok = itens[item] === "nao_conforme";
+                return (
+                  <div key={item} style={{
+                    ...itemRow, display: "block",
+                    borderColor: nok ? "#F0C0B8" : "#E8E2D2",
+                    background: nok ? "#FFFBFA" : "#FFFFFF",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ fontSize: 14, color: "#22231F", flex: 1 }}>{item}</div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button onClick={() => marcarItem(item, "conforme")}
+                          style={{ ...pillBtn, ...(itens[item] === "conforme" ? pillOk : {}) }}>
+                          <CheckCircle2 size={14} /> Conforme
+                        </button>
+                        <button onClick={() => marcarItem(item, "nao_conforme")}
+                          style={{ ...pillBtn, ...(nok ? pillNok : {}) }}>
+                          <XCircle size={14} /> Não conforme
+                        </button>
+                      </div>
+                    </div>
+                    {nok && (
+                      <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px dashed #EFE7D9" }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#C4432B",
+                                      textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 5 }}>
+                          Obrigatório · o que aconteceu?
+                        </div>
+                        <textarea
+                          value={obsItens[item] || ""}
+                          onChange={(e) => setObsItens((o) => ({ ...o, [item]: e.target.value }))}
+                          rows={2}
+                          placeholder="Ex: freezer 2 marcando -8°C, avisei o Marcelo"
+                          style={{
+                            width: "100%", boxSizing: "border-box", border: "1.5px solid #C4432B",
+                            borderRadius: 9, padding: "9px 11px", fontSize: 13.5,
+                            fontFamily: "inherit", background: "#FFFFFF", color: "#22231F", resize: "none",
+                          }} />
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
               {listaItensAtual.length === 0 && (
                 <div style={{ fontSize: 13, color: "#8A8778" }}>Esse turno ainda não tem item cadastrado.</div>
               )}
             </div>
+            <div style={{ marginTop: 12, border: "1px solid #E8E2D2", borderRadius: 10,
+                          padding: 12, background: "#FCFAF6" }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "#8A8778",
+                            textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                Observação do turno · opcional
+              </div>
+              <textarea
+                value={obsTurno}
+                onChange={(e) => setObsTurno(e.target.value)}
+                rows={2}
+                placeholder="Alguma coisa que valha registrar…"
+                style={{
+                  width: "100%", boxSizing: "border-box", border: "1px solid #E8E2D2",
+                  borderRadius: 9, padding: "9px 11px", fontSize: 13.5,
+                  fontFamily: "inherit", background: "#FFFFFF", color: "#22231F", resize: "none",
+                }} />
+            </div>
+
             {erro && <div style={{ color: "#C4432B", fontSize: 13, marginTop: 10 }}>{erro}</div>}
             <button onClick={salvarChecklist} disabled={salvando} style={{ ...btnPrimary, marginTop: 16, width: "100%" }}>
               {salvando ? <Loader2 size={16} /> : <CheckCircle2 size={16} />}
@@ -532,6 +600,281 @@ function Shell({ titulo, subtitulo, children, onBack, onDashboard, onCompras }) 
     </div>
   );
 }
+// ---------------------------------------------------------------------------
+// A corrida do checklist
+//
+// A REGRA QUE SUSTENTA TUDO: não se ganha ponto por "está tudo certo".
+// Item marcado como não conforme, com a observação escrita, vale o mesmo
+// que um item conforme. Se a corrida premiasse o tudo-ok, em duas semanas
+// ninguém marcaria "não" — e o checklist perderia justamente a informação
+// pela qual existe. O que dá ponto é FAZER E RELATAR.
+//
+// E não existe ponto negativo: quem ficou pra trás alcança, não afunda.
+// ---------------------------------------------------------------------------
+const CORES_DEP = {
+  caixa: "#C9A227", bar: "#2F8F5B", chapa: "#C4432B",
+  gerencia: "#4A5D8A", garcom: "#8A6A0F", cozinha: "#8A6A0F",
+};
+const EMOJI_DEP = {
+  caixa: "\uD83D\uDCB0", bar: "\uD83C\uDF7A", chapa: "\uD83D\uDD25",
+  gerencia: "\uD83D\uDEE1\uFE0F", garcom: "\uD83C\uDF7D\uFE0F", cozinha: "\uD83C\uDF73",
+};
+
+function FaixaCorrida({ aoAbrir }) {
+  const [placar, setPlacar] = useState([]);
+
+  useEffect(() => {
+    let vivo = true;
+    supabase.rpc("corrida_placar").then(({ data }) => {
+      if (vivo) setPlacar(data || []);
+    });
+    return () => { vivo = false; };
+  }, []);
+
+  if (placar.length === 0) return null;
+  const lider = placar[0];
+  const meta = Number(lider.meta) || 200;
+  const pct = Math.min(100, Math.round((Number(lider.total) / meta) * 100));
+
+  return (
+    <button onClick={aoAbrir} style={{
+      width: "100%", textAlign: "left", cursor: "pointer",
+      background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12,
+      padding: "12px 14px", marginBottom: 4,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Trophy size={17} color="#C9A227" />
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 14.5, color: "#22231F" }}>Corrida do checklist</div>
+            <div style={{ fontSize: 11.5, color: "#8A8778" }}>
+              {lider.label} na frente · faltam {Math.max(0, meta - Number(lider.total))} pontos
+            </div>
+          </div>
+        </div>
+        <div style={{ fontSize: 19, fontWeight: 800, color: CORES_DEP[lider.departamento] || "#22231F",
+                      fontVariantNumeric: "tabular-nums" }}>
+          {lider.total}
+        </div>
+      </div>
+      <div style={{ height: 6, background: "#F1EBDF", borderRadius: 99, marginTop: 9, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: pct + "%",
+                      background: CORES_DEP[lider.departamento] || "#C72B2E" }} />
+      </div>
+    </button>
+  );
+}
+
+function Corrida({ onVoltar, isAdmin }) {
+  const [placar, setPlacar] = useState([]);
+  const [dias, setDias] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [premio, setPremio] = useState("");
+  const [editandoPremio, setEditandoPremio] = useState(false);
+
+  const carregar = useCallback(async () => {
+    const [{ data: p, error: e1 }, { data: d, error: e2 }] = await Promise.all([
+      supabase.rpc("corrida_placar"),
+      supabase.rpc("corrida_dia_a_dia", { p_dias: 14 }),
+    ]);
+    if (e1) setErro(e1.message);
+    if (e2) setErro(e2.message);
+    setPlacar(p || []);
+    setDias(d || []);
+    setPremio((p && p[0]?.premio) || "");
+    setCarregando(false);
+  }, []);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const salvarPremio = async () => {
+    setErro("");
+    const { error } = await supabase.from("corrida_temporadas")
+      .update({ premio: premio.trim() || null })
+      .is("encerrada_em", null);
+    if (error) { setErro(error.message); return; }
+    setEditandoPremio(false);
+    carregar();
+  };
+
+  if (carregando) {
+    return (
+      <Shell titulo="Corrida do checklist" onBack={onVoltar}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A8778", fontSize: 13 }}>
+          <Loader2 size={16} /> Carregando…
+        </div>
+      </Shell>
+    );
+  }
+
+  if (placar.length === 0) {
+    return (
+      <Shell titulo="Corrida do checklist" onBack={onVoltar}>
+        <div style={avisoBloqueio}>
+          <AlertTriangle size={16} />
+          A corrida ainda não existe no banco. Falta rodar a migração 074.
+        </div>
+      </Shell>
+    );
+  }
+
+  const meta = Number(placar[0].meta) || 200;
+  const inicio = placar[0].inicio;
+  const diasUnicos = [...new Set(dias.map((d) => d.dia))].sort().slice(-7);
+
+  return (
+    <Shell titulo="Corrida do checklist"
+      subtitulo={`desde ${formatDiaLabel(inicio)} · chegada em ${meta} pontos`}
+      onBack={onVoltar}>
+
+      {erro && <div style={{ ...avisoBloqueio, background: "#FDECEA", borderColor: "#F0C0B8", color: "#A32D2D", marginBottom: 12 }}>
+        <AlertTriangle size={16} /> {erro}
+      </div>}
+
+      {/* prêmio */}
+      <div style={{ ...cardStyle, marginBottom: 14, background: premio ? "#FFF9E8" : "#FFFFFF",
+                    borderColor: premio ? "#E8D48A" : "#E8E2D2" }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "#8A8778", textTransform: "uppercase",
+                      letterSpacing: 0.5, marginBottom: 5 }}>
+          Prêmio
+        </div>
+        {editandoPremio ? (
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={premio} onChange={(e) => setPremio(e.target.value)} autoFocus
+              placeholder="Ex: R$ 200 pro departamento, ou folga no domingo"
+              onKeyDown={(e) => e.key === "Enter" && salvarPremio()}
+              style={{ ...inputStyle, flex: 1 }} />
+            <button onClick={salvarPremio} style={btnPrimary}><Check size={14} /></button>
+          </div>
+        ) : premio ? (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>{premio}</div>
+            {isAdmin && (
+              <button onClick={() => setEditandoPremio(true)} style={ghostIconBtn}><Pencil size={14} /></button>
+            )}
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: "#8A8778" }}>
+            Ainda sem prêmio.{" "}
+            {isAdmin && (
+              <button onClick={() => setEditandoPremio(true)}
+                style={{ ...ghostIconBtn, display: "inline", color: "#C72B2E", fontWeight: 700, textDecoration: "underline" }}>
+                definir agora
+              </button>
+            )}
+            <div style={{ marginTop: 4 }}>
+              Corrida sem prêmio dito antes vira placar que ninguém olha.
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* pista */}
+      <div style={{ ...cardStyle, marginBottom: 14, position: "relative", overflow: "hidden" }}>
+        <div style={{ position: "absolute", right: 14, top: 10, bottom: 10, width: 10, borderRadius: 3,
+                      background: "repeating-linear-gradient(45deg,#22231F,#22231F 5px,#fff 5px,#fff 10px)" }} />
+        <div style={{ position: "absolute", right: 30, top: 6, fontSize: 9.5, fontWeight: 800,
+                      color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.6 }}>
+          chegada
+        </div>
+        <div style={{ marginTop: 14 }}>
+          {placar.map((p) => {
+            const cor = CORES_DEP[p.departamento] || "#C72B2E";
+            const pct = Math.min(100, (Number(p.total) / meta) * 100);
+            return (
+              <div key={p.departamento} style={{
+                display: "grid", gridTemplateColumns: "84px 1fr 44px", gap: 8,
+                alignItems: "center", marginBottom: 12,
+              }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 99, background: cor, flexShrink: 0 }} />
+                  {p.label}
+                </div>
+                <div style={{ position: "relative", height: 22, background: "#F1EBDF",
+                              borderRadius: 99, marginRight: 26 }}>
+                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 99,
+                                width: pct + "%", background: cor, opacity: 0.25 }} />
+                  <div style={{
+                    position: "absolute", top: -5, left: pct + "%", transform: "translateX(-15px)",
+                    width: 30, height: 30, borderRadius: 99, background: "#fff",
+                    border: "2px solid " + cor, display: "flex", alignItems: "center",
+                    justifyContent: "center", fontSize: 13,
+                  }}>
+                    {EMOJI_DEP[p.departamento] || "\u2022"}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right", fontWeight: 800, fontSize: 14,
+                              fontVariantNumeric: "tabular-nums" }}>
+                  {p.total}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* dia a dia */}
+      <div style={{ ...cardStyle, marginBottom: 14, overflowX: "auto" }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "#8A8778", textTransform: "uppercase",
+                      letterSpacing: 0.5, marginBottom: 8 }}>
+          Dia a dia
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", padding: "0 6px 7px", color: "#8A8778", fontSize: 10.5 }}>Depto</th>
+              {diasUnicos.map((d) => (
+                <th key={d} style={{ textAlign: "right", padding: "0 6px 7px", color: "#8A8778", fontSize: 10.5 }}>
+                  {String(d).slice(8, 10)}/{String(d).slice(5, 7)}
+                </th>
+              ))}
+              <th style={{ textAlign: "right", padding: "0 6px 7px", color: "#8A8778", fontSize: 10.5 }}>Seq.</th>
+            </tr>
+          </thead>
+          <tbody>
+            {placar.map((p) => (
+              <tr key={p.departamento}>
+                <td style={{ padding: "8px 6px", borderTop: "1px solid #F4EEE3", fontWeight: 600 }}>{p.label}</td>
+                {diasUnicos.map((d) => {
+                  const r = dias.find((x) => x.dia === d && x.departamento === p.departamento);
+                  const v = Number(r?.pontos || 0);
+                  return (
+                    <td key={d} style={{
+                      padding: "8px 6px", borderTop: "1px solid #F4EEE3", textAlign: "right",
+                      fontVariantNumeric: "tabular-nums", fontWeight: v === 20 ? 700 : 400,
+                      color: v === 0 ? "#C3B8A7" : v === 20 ? "#2F8F5B" : "#B3701A",
+                    }}>
+                      {v}
+                    </td>
+                  );
+                })}
+                <td style={{ padding: "8px 6px", borderTop: "1px solid #F4EEE3", textAlign: "right",
+                             fontVariantNumeric: "tabular-nums" }}>
+                  {p.sequencia_dias}d{Number(p.bonus) > 0 ? ` +${p.bonus}` : ""}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* regras */}
+      <div style={{ ...cardStyle, fontSize: 12.5, color: "#8A8778", lineHeight: 1.7 }}>
+        <div><b style={{ color: "#22231F" }}>+10</b> preencheu dentro do horário</div>
+        <div><b style={{ color: "#22231F" }}>+5</b> preencheu depois do horário</div>
+        <div><b style={{ color: "#22231F" }}>+3</b> a cada 3 dias seguidos sem furo</div>
+        <div><b style={{ color: "#22231F" }}>0</b> não preencheu — e não existe ponto negativo</div>
+        <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px dashed #EFE7D9" }}>
+          <b style={{ color: "#22231F" }}>Não pontua por "está tudo certo".</b> Item marcado como
+          não conforme, com a observação escrita, vale igual a um conforme. O que dá ponto é
+          fazer e relatar.
+        </div>
+      </div>
+    </Shell>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Contagem de estoque do setor
 //
