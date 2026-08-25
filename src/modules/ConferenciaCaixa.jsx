@@ -71,6 +71,9 @@ export default function ConferenciaCaixa() {
   const [porAtendente, setPorAtendente] = useState([]);
   const [taxasDoDia, setTaxasDoDia] = useState(null); // { servico, entrega, adicional }
   const [repasse, setRepasse] = useState({ valorAte22: "9.00", qtdAte22: 0, valorApos22: "15.00", qtdApos22: 0 });
+  // Conta a pagar gerada pelo botão de enviar. Nulo = ainda não enviado.
+  const [repasseContaId, setRepasseContaId] = useState(null);
+  const [enviandoRepasse, setEnviandoRepasse] = useState(false);
   const [escalaDoDia, setEscalaDoDia] = useState([]);
 
   const carregarSalvo = useCallback(async () => {
@@ -81,6 +84,7 @@ export default function ConferenciaCaixa() {
       supabase.from("repasses_delivery").select("*").eq("dia", dia).maybeSingle(),
       supabase.from("presencas_diarias").select("pessoa_id, peso, horas_trabalhadas, pessoa:pessoas(nome, papel)").eq("dia", dia),
     ]);
+    setRepasseContaId(repasseData?.conta_pagar_id || null);
     if (repasseData) {
       setRepasse((prev) => ({ ...prev, valorAte22: String(repasseData.valor_ate_22h), valorApos22: String(repasseData.valor_apos_22h) }));
     }
@@ -220,6 +224,79 @@ export default function ConferenciaCaixa() {
     setMensagem("Conferência salva.");
   };
 
+  const totalRepasse = round2(
+    repasse.qtdAte22 * (parseFloat(repasse.valorAte22) || 0) +
+    repasse.qtdApos22 * (parseFloat(repasse.valorApos22) || 0)
+  );
+
+  // Entregador recebe na hora, então a conta já nasce QUITADA — é a
+  // mesma função que a Escala do dia usa pra diária. Vai na conta 4.7,
+  // separada das Diárias (4.2), pra dar pra ver quanto o delivery custa
+  // por mês sem misturar com a equipe da casa.
+  const enviarRepasse = async () => {
+    if (totalRepasse <= 0) return;
+    setEnviandoRepasse(true);
+    setErro("");
+    const { data: userData } = await supabase.auth.getUser();
+
+    // Grava o repasse antes de lançar: se a pessoa mexeu nos números e
+    // não salvou a conferência, o que vai pro DRE tem que ser o que está
+    // na tela, não o que estava no banco.
+    const { error: errSalvar } = await supabase.from("repasses_delivery").upsert({
+      dia,
+      valor_ate_22h: parseFloat(repasse.valorAte22) || 0,
+      qtd_ate_22h: repasse.qtdAte22,
+      valor_apos_22h: parseFloat(repasse.valorApos22) || 0,
+      qtd_apos_22h: repasse.qtdApos22,
+      criado_por: userData?.user?.id,
+    }, { onConflict: "dia" });
+    if (errSalvar) { setErro(errSalvar.message); setEnviandoRepasse(false); return; }
+
+    const entregas = repasse.qtdAte22 + repasse.qtdApos22;
+    const { data: contaId, error } = await supabase.rpc("lancar_despesa_paga", {
+      p_descricao: `Repasse de entrega ${dia.split("-").reverse().join("/")} — ${entregas} entrega(s)`,
+      p_valor: totalRepasse,
+      p_plano_conta: "4.7",
+      p_data: dia,
+      p_observacao: `${repasse.qtdAte22} até 22h a ${brl(parseFloat(repasse.valorAte22) || 0)} · ${repasse.qtdApos22} após 22h a ${brl(parseFloat(repasse.valorApos22) || 0)}`,
+    });
+    if (error) {
+      setErro(/does not exist|schema cache|4\.7/i.test(error.message)
+        ? "Falta rodar a migração 083 no banco — é ela que cria a conta 4.7 Repasse de entregador."
+        : error.message);
+      setEnviandoRepasse(false);
+      return;
+    }
+
+    const { error: errMarca } = await supabase.from("repasses_delivery")
+      .update({ conta_pagar_id: contaId }).eq("dia", dia);
+    setEnviandoRepasse(false);
+    if (errMarca) {
+      // A conta já existe. Melhor gritar do que deixar o dia parecendo
+      // não enviado e a pessoa lançar de novo em cima.
+      setErro("Conta lançada, mas não consegui marcar o dia como enviado: " + errMarca.message);
+      return;
+    }
+    setRepasseContaId(contaId);
+    setMensagem("Repasse enviado para Contas a pagar e DRE.");
+  };
+
+  const desfazerRepasse = async () => {
+    setEnviandoRepasse(true);
+    setErro("");
+    // Ordem importa: desmarca primeiro, pra nunca sobrar o dia apontando
+    // pra uma conta que já não existe.
+    const { error } = await supabase.from("repasses_delivery")
+      .update({ conta_pagar_id: null }).eq("dia", dia);
+    if (error) { setErro(error.message); setEnviandoRepasse(false); return; }
+    if (repasseContaId) {
+      await supabase.from("contas_pagar").delete().eq("id", repasseContaId);
+    }
+    setRepasseContaId(null);
+    setEnviandoRepasse(false);
+    setMensagem("Envio desfeito. O repasse saiu de Contas a pagar e do DRE.");
+  };
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
@@ -343,12 +420,47 @@ export default function ConferenciaCaixa() {
                 </div>
               </div>
 
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px 16px", fontSize: 13 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px 10px", fontSize: 13 }}>
                 <span style={{ color: "#8A8778" }}>Total do repasse</span>
-                <span style={{ fontWeight: 700, color: "#22231F" }}>
-                  {brl(repasse.qtdAte22 * (parseFloat(repasse.valorAte22) || 0) + repasse.qtdApos22 * (parseFloat(repasse.valorApos22) || 0))}
-                </span>
+                <span style={{ fontWeight: 700, color: "#22231F" }}>{brl(totalRepasse)}</span>
               </div>
+
+              {repasseContaId ? (
+                <div style={{ ...cardStyleBox, borderColor: "#C4DBA6", background: "#F7FBF2", marginBottom: 16, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <Check size={16} color="#27500A" />
+                  <div style={{ flex: 1, minWidth: 170 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#27500A" }}>
+                      Repasse enviado — {brl(totalRepasse)}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#8A8778" }}>
+                      {repasse.qtdAte22 + repasse.qtdApos22} entrega(s) · em Contas a pagar (paga) e no DRE, conta 4.7 Repasse de entregador
+                    </div>
+                  </div>
+                  <button onClick={desfazerRepasse} disabled={enviandoRepasse}
+                    style={{ background: "none", border: "none", color: "#8A8778", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: "4px 2px" }}>
+                    {enviandoRepasse ? "desfazendo…" : "desfazer"}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <button onClick={enviarRepasse} disabled={enviandoRepasse || totalRepasse <= 0}
+                    style={{
+                      ...btnSecondary, width: "100%", display: "flex", alignItems: "center",
+                      justifyContent: "center", gap: 7, marginBottom: 6,
+                      background: totalRepasse > 0 ? "#22231F" : "#F6F1E7",
+                      color: totalRepasse > 0 ? "#F3EFE3" : "#B3AC96",
+                      borderColor: totalRepasse > 0 ? "#22231F" : "#E8E2D2",
+                    }}>
+                    {enviandoRepasse ? <Loader2 size={15} /> : <Receipt size={15} />}
+                    {enviandoRepasse ? "Enviando…" : "Enviar para Contas a pagar e DRE"}
+                  </button>
+                  <div style={{ fontSize: 10.5, color: "#8A8778", marginBottom: 16, lineHeight: 1.6, padding: "0 2px" }}>
+                    Entregador recebe na hora, então a conta entra <b>já quitada</b>, com a data do dia.
+                    Vai na conta <b>4.7 Repasse de entregador</b> — separada das Diárias, pra dar pra ver
+                    quanto o delivery custa por mês sem misturar com a equipe da casa.
+                  </div>
+                </>
+              )}
             </>
           )}
 
