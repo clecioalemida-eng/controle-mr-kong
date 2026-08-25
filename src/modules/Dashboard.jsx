@@ -26,7 +26,10 @@ const SEGUNDOS_POR_DIA = 25;  // estimativa: histórico + detalhe de cada pedido
 const PAUSA_ENTRE_FATIAS = 20000;   // 20s — a função já espera 12s entre dias
 const PAUSA_APOS_LIMITE = 75000;    // se o CardápioWeb reclamar, espera mais
 
-const CENTRO_CUSTO_LABEL = {
+// Padrão, usado enquanto os rótulos não chegam do banco (ou se a
+// migração 080 ainda não rodou). A lista de verdade fica em
+// `listas_opcoes` e é editada em DRE → Listas.
+const CENTRO_CUSTO_PADRAO = {
   pessoas: "Pessoas", insumos: "Insumos", utensilios: "Utensílios", manutencao: "Consertos e manutenção",
   imobilizado: "Imobilizado", ocupacao: "Ocupação", utilidades: "Utilidades", impostos: "Impostos e taxas",
   marketing: "Marketing e vendas", administrativo: "Administrativo",
@@ -101,6 +104,21 @@ export default function Dashboard() {
   const [cobertura, setCobertura] = useState(null);
   const [erroProdutos, setErroProdutos] = useState("");
   const [verTodos, setVerTodos] = useState(false);
+  const [centroLabel, setCentroLabel] = useState(CENTRO_CUSTO_PADRAO);
+
+  // Os nomes dos centros de custo agora são editáveis (DRE → Listas).
+  // Se um centro novo aparecer aqui sem rótulo, cai no próprio código —
+  // feio, mas nunca some da tela.
+  React.useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("listas_opcoes").select("valor, rotulo")
+        .eq("lista", "centro_custo").eq("ativo", true);
+      if (data && data.length > 0) {
+        setCentroLabel({ ...CENTRO_CUSTO_PADRAO, ...Object.fromEntries(data.map((c) => [c.valor, c.rotulo])) });
+      }
+    })();
+  }, []);
 
   // ------------------------------------------------------------------
   // Custos (Plano de Contas) — igual ao que já existia
@@ -708,7 +726,7 @@ export default function Dashboard() {
               <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
                 {Object.entries(custos.porCentroCusto).sort((a, b) => b[1] - a[1]).map(([centro, valor], idx) => (
                   <div key={centro} style={{ display: "flex", justifyContent: "space-between", padding: "8px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
-                    <span style={{ color: centro === "sem_centro" ? "#A32D2D" : "#22231F" }}>{centro === "sem_centro" ? "Sem centro de custo" : (CENTRO_CUSTO_LABEL[centro] || centro)}</span>
+                    <span style={{ color: centro === "sem_centro" ? "#A32D2D" : "#22231F" }}>{centro === "sem_centro" ? "Sem centro de custo" : (centroLabel[centro] || centro)}</span>
                     <span style={{ color: "#22231F" }}>{brl(valor)}</span>
                   </div>
                 ))}
