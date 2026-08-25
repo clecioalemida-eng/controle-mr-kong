@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, EyeOff, Search, X, ExternalLink, RotateCcw,
 } from "lucide-react";
@@ -15,6 +16,189 @@ function round2(n) { return Math.round((n || 0) * 100) / 100; }
 function fmtData(d) { if (!d) return ""; return new Date(d).toLocaleDateString("pt-BR"); }
 function round4(n) { return Math.round((n || 0) * 10000) / 10000; }
 function norm(s) { return String(s || "").trim().toLowerCase().replace(/\s+/g, " "); }
+// Tira acento e caixa alta pra comparar: "Açaí" e "ACAI" viram "acai".
+// A faixa \u0300-\u036f é escrita em código escapado de propósito — o
+// caractere acentuado cru se perde quando o arquivo passa por editor.
+function semAcento(t) {
+  return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+const LIMITE_BUSCA = 50;
+
+// Campo de busca de insumo.
+//
+// Substitui o <select> com centenas de nomes: digitando, ele filtra por
+// pedaço do nome (não só pelo começo), ignorando acento, e aceita as
+// palavras fora de ordem — "po leite" acha "Leite em pó".
+//
+// A lista é desenhada por portal, em position:fixed. O container da
+// tabela de itens tem overflow:hidden pros cantos arredondados, e um
+// dropdown absoluto ali dentro ficaria cortado nos últimos itens da nota.
+function BuscaInsumo({ insumos, valor, onEscolher, onCriar, alerta = false }) {
+  const [aberto, setAberto] = useState(false);
+  const [busca, setBusca] = useState("");
+  const [sel, setSel] = useState(-1);
+  const [caixa, setCaixa] = useState(null);
+  const inputRef = useRef(null);
+  const fecharRef = useRef(null);
+
+  const escolhido = insumos.find((i) => i.id === valor) || null;
+
+  const achados = useMemo(() => {
+    const termos = semAcento(busca).split(/\s+/).filter(Boolean);
+    if (termos.length === 0) return insumos;
+    const casam = insumos.filter((i) => {
+      const plano = semAcento(i.nome);
+      return termos.every((t) => plano.includes(t));
+    });
+    // Quem COMEÇA com o que foi digitado vem primeiro. Sem isso, quem
+    // digita "leite" recebe "Adicional leite em pó" antes de "Leite em
+    // pó", só porque a lista está em ordem alfabética. O sort do
+    // JavaScript é estável, então dentro de cada grupo a ordem
+    // alfabética continua valendo.
+    const primeiro = termos[0];
+    const peso = (nome) => {
+      const plano = semAcento(nome);
+      if (plano.startsWith(primeiro)) return 0;
+      if (plano.split(/[^a-z0-9]+/).some((palavra) => palavra.startsWith(primeiro))) return 1;
+      return 2;
+    };
+    return [...casam].sort((a, b) => peso(a.nome) - peso(b.nome));
+  }, [insumos, busca]);
+
+  const mostrados = achados.slice(0, LIMITE_BUSCA);
+  const podeCriar = busca.trim().length > 0 && achados.length === 0;
+  const podeLimpar = !!valor && busca.trim().length === 0;
+
+  const posicionar = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const folgaAbaixo = window.innerHeight - r.bottom;
+    const paraCima = folgaAbaixo < 180 && r.top > folgaAbaixo;
+    setCaixa({
+      left: r.left,
+      width: r.width,
+      top: paraCima ? null : r.bottom + 4,
+      bottom: paraCima ? window.innerHeight - r.top + 4 : null,
+      maxAltura: Math.max(120, (paraCima ? r.top : folgaAbaixo) - 14),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!aberto) return undefined;
+    posicionar();
+    const refazer = () => posicionar();
+    window.addEventListener("scroll", refazer, true);
+    window.addEventListener("resize", refazer);
+    return () => {
+      window.removeEventListener("scroll", refazer, true);
+      window.removeEventListener("resize", refazer);
+    };
+  }, [aberto, posicionar]);
+
+  useEffect(() => () => clearTimeout(fecharRef.current), []);
+
+  const fechar = () => { setAberto(false); setBusca(""); setSel(-1); };
+
+  const escolher = (insumo) => {
+    onEscolher(insumo ? insumo.id : null);
+    fechar();
+    inputRef.current?.blur();
+  };
+
+  const aoTeclar = (e) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setAberto(true);
+      setSel((v) => Math.min(v + 1, mostrados.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSel((v) => Math.max(v - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (podeCriar) { onCriar(busca.trim()); fechar(); return; }
+      const alvo = mostrados[sel >= 0 ? sel : 0];
+      if (alvo) escolher(alvo);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      fechar();
+      inputRef.current?.blur();
+    }
+  };
+
+  const borda = alerta ? "#E8D48A" : "#E8E2D2";
+
+  return (
+    <div style={{ flex: 1, minWidth: 150, position: "relative" }}>
+      <input
+        ref={inputRef}
+        type="text"
+        autoComplete="off"
+        value={aberto ? busca : (escolhido?.nome || "")}
+        placeholder={escolhido ? escolhido.nome : "Digite pra procurar…"}
+        onFocus={() => { setBusca(""); setSel(-1); setAberto(true); }}
+        onChange={(e) => { setBusca(e.target.value); setSel(-1); setAberto(true); }}
+        onKeyDown={aoTeclar}
+        onBlur={() => { fecharRef.current = setTimeout(fechar, 120); }}
+        style={{
+          width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6,
+          fontSize: 12, fontFamily: "inherit", background: "#FFFFFF", color: "#22231F",
+          border: `1px solid ${borda}`,
+        }}
+      />
+      {aberto && caixa && createPortal(
+        <div
+          onMouseDown={(e) => e.preventDefault()}
+          style={{
+            position: "fixed", left: caixa.left, width: caixa.width,
+            ...(caixa.top != null ? { top: caixa.top } : { bottom: caixa.bottom }),
+            maxHeight: caixa.maxAltura, overflowY: "auto", zIndex: 60,
+            background: "#FFFFFF", border: "1px solid #DDD5BF", borderRadius: 8,
+            boxShadow: "0 8px 24px rgba(34,35,31,.15)",
+          }}
+        >
+          {podeLimpar && (
+            <div onClick={() => escolher(null)} style={{ ...optStyle, color: "#8A8778" }}>— tirar o vínculo —</div>
+          )}
+          {achados.length === 0 && (
+            <div style={{ ...optStyle, color: "#8A8778", cursor: "default" }}>Nenhum insumo com esse nome.</div>
+          )}
+          {podeCriar && (
+            <div
+              onClick={() => { onCriar(busca.trim()); fechar(); }}
+              style={{ ...optStyle, color: "#0F6E56", fontWeight: 700, borderTop: "1px solid #F0EBDD" }}
+            >
+              + Criar “{busca.trim()}”
+            </div>
+          )}
+          {mostrados.map((i, idx) => (
+            <div
+              key={i.id}
+              onClick={() => escolher(i)}
+              onMouseEnter={() => setSel(idx)}
+              style={{
+                ...optStyle,
+                display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline",
+                background: idx === sel ? "#F6F1E7" : "#FFFFFF",
+                fontWeight: i.id === valor ? 700 : 400,
+              }}
+            >
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{i.nome}</span>
+              <span style={{ fontSize: 10, color: "#8A8778", flexShrink: 0 }}>{i.unidade}</span>
+            </div>
+          ))}
+          {achados.length > mostrados.length && (
+            <div style={{ padding: "6px 10px", fontSize: 10, color: "#8A8778", borderTop: "1px solid #F0EBDD", background: "#FCFAF3" }}>
+              mostrando {mostrados.length} de {achados.length} — continue digitando pra afinar
+            </div>
+          )}
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+}
 // Lê o padrão de embalagem que quase toda nota de descartável traz no
 // próprio nome do produto: "20X50U", "(20X100U)", "700U GALVANOTEK".
 // Serve só pra SUGERIR — quem decide é quem está conferindo.
@@ -898,16 +1082,13 @@ function Conferencia({ documento, onVoltar }) {
                     <span style={{ fontSize: 11, color: "#8A8778", whiteSpace: "nowrap" }}>
                       Vinculado a
                     </span>
-                    <select value={item.insumo_id || ""}
-                      onChange={(e) => vincularInsumo(item.id, e.target.value || null)}
-                      style={{
-                        flex: 1, minWidth: 140, padding: "5px 8px", borderRadius: 6, fontSize: 12,
-                        border: `1px solid ${semInsumo ? "#E8D48A" : "#E8E2D2"}`,
-                        background: "#FFFFFF", fontFamily: "inherit",
-                      }}>
-                      <option value="">— nenhum insumo —</option>
-                      {insumos.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}
-                    </select>
+                    <BuscaInsumo
+                      insumos={insumos}
+                      valor={item.insumo_id || ""}
+                      alerta={semInsumo}
+                      onEscolher={(id) => vincularInsumo(item.id, id)}
+                      onCriar={(texto) => { setCriarInsumoAberto(item.id); setNovoInsumoNome(texto); setNovoInsumoUnidade(item.unidade); }}
+                    />
                     <button onClick={() => { setCriarInsumoAberto(item.id); setNovoInsumoNome(item.nome_lido); setNovoInsumoUnidade(item.unidade); }}
                       style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Criar novo</button>
                   </div>
@@ -994,21 +1175,17 @@ function Conferencia({ documento, onVoltar }) {
                     <div>
                       <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Vinculado a</label>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <select value={formEdicao.insumo_id}
-                          onChange={(e) => {
-                            if (e.target.value === "__criar__") {
-                              setCriarInsumoAberto(item.id);
-                              setNovoInsumoNome(formEdicao.nome_lido);
-                              setNovoInsumoUnidade(formEdicao.unidade);
-                              return;
-                            }
-                            setFormEdicao((f) => ({ ...f, insumo_id: e.target.value }));
+                        <BuscaInsumo
+                          insumos={insumos}
+                          valor={formEdicao.insumo_id}
+                          alerta={!formEdicao.insumo_id}
+                          onEscolher={(id) => setFormEdicao((f) => ({ ...f, insumo_id: id || "" }))}
+                          onCriar={(texto) => {
+                            setCriarInsumoAberto(item.id);
+                            setNovoInsumoNome(texto);
+                            setNovoInsumoUnidade(formEdicao.unidade);
                           }}
-                          style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
-                          <option value="">— nenhum insumo —</option>
-                          {insumos.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}
-                          <option value="__criar__">+ Criar novo insumo…</option>
-                        </select>
+                        />
                         {formEdicao.insumo_id && !renomeandoInsumo && (
                           <button onClick={() => { setNomeInsumoInput(insumos.find((i) => i.id === formEdicao.insumo_id)?.nome || ""); setRenomeandoInsumo(true); }}
                             style={ghostIconBtn} aria-label="Renomear insumo vinculado" title="Renomear esse insumo (corrige em todo lugar que usa ele)">
@@ -1207,6 +1384,7 @@ function RegrasProduto({ onVoltar }) {
   );
 }
 
+const optStyle = { padding: "7px 10px", fontSize: 12.5, color: "#22231F", cursor: "pointer" };
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
 const linhaTabela = { display: "grid", gridTemplateColumns: "2fr 0.6fr 0.5fr 0.8fr 0.8fr 0.6fr", gap: 6, padding: "8px 10px", alignItems: "center" };
 const itemRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10, padding: "12px 14px" };
