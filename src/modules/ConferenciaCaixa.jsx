@@ -1,5 +1,6 @@
+// ===== ConferenciaCaixa.jsx =====
 import React, { useState, useEffect, useCallback } from "react";
-import { Loader2, RefreshCw, AlertTriangle, Check } from "lucide-react";
+import { Loader2, RefreshCw, AlertTriangle, Check, Receipt } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
