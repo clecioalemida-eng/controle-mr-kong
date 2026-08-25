@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   Loader2, AlertTriangle, RefreshCw, Plus, Trash2, Check,
-  Calculator, Package, Tag, Settings,
+  Calculator, Package, Tag, Settings, List, Lock, Pencil, Power,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { podeEditar } from "../lib/permissoes";
@@ -30,6 +30,7 @@ const ABAS = [
   { chave: "classificar", label: "Classificar",   icone: Tag },
   { chave: "lancamentos", label: "Lançamentos",   icone: Plus },
   { chave: "imobilizado", label: "Imobilizado",   icone: Package },
+  { chave: "listas",      label: "Listas",        icone: List },
   { chave: "config",      label: "Configuração",  icone: Settings },
 ];
 
@@ -57,7 +58,8 @@ export default function DRE({ permissoes }) {
   const admin = !!permissoes?.admin;
   const [aba, setAba] = useState("dre");
 
-  const abasVisiveis = ABAS.filter((a) => (a.chave === "config" ? admin : true));
+  const soAdmin = ["config", "listas"];
+  const abasVisiveis = ABAS.filter((a) => (soAdmin.includes(a.chave) ? admin : true));
 
   return (
     <div>
@@ -77,6 +79,7 @@ export default function DRE({ permissoes }) {
       {aba === "classificar" && <Classificar editar={editar} />}
       {aba === "lancamentos" && <Lancamentos editar={editar} />}
       {aba === "imobilizado" && <Imobilizado editar={editar} />}
+      {aba === "listas" && admin && <Listas />}
       {aba === "config" && admin && <Configuracao />}
     </div>
   );
@@ -516,9 +519,25 @@ function Imobilizado({ editar }) {
     carregar();
   };
 
+  // Quantos meses de depreciacao ainda faltam para este bem.
+  // O DRE so cobra o desgaste DENTRO da vida util: uma chapa de 5 anos
+  // comprada em 2018 nao gera mais despesa nenhuma. Se a tela somasse
+  // todo mundo que esta "ativo", o numero daqui nunca bateria com o do
+  // Demonstrativo — e a pessoa perderia a tarde procurando a diferenca.
+  const mesesRestantes = (b) => {
+    const vida = Number(b.vida_util_meses) || 0;
+    if (!b.data_aquisicao || vida <= 0) return 0;
+    const [ano, mes] = b.data_aquisicao.split("-").map(Number);
+    const hoje = new Date();
+    const decorridos =
+      (hoje.getFullYear() - ano) * 12 + (hoje.getMonth() + 1 - mes);
+    return Math.max(0, vida - Math.max(0, decorridos));
+  };
+  const depreciando = (b) => b.ativo && mesesRestantes(b) > 0;
   const depreciacaoMes = lista
-    .filter((b) => b.ativo)
+    .filter(depreciando)
     .reduce((s, b) => s + (Number(b.valor) || 0) / (Number(b.vida_util_meses) || 1), 0);
+  const jaQuitados = lista.filter((b) => b.ativo && mesesRestantes(b) === 0).length;
 
   return (
     <div>
@@ -531,7 +550,16 @@ function Imobilizado({ editar }) {
 
       <div style={{ ...statBox, marginBottom: 14, textAlign: "left" }}>
         <div style={statNum}>{brl(depreciacaoMes)}</div>
-        <div style={statLabel}>Depreciação mensal dos bens ativos</div>
+        <div style={statLabel}>
+          Depreciação deste mês — é este valor que entra no DRE, conta 10.1
+        </div>
+        {jaQuitados > 0 && (
+          <div style={{ fontSize: 11, color: "#8A8778", marginTop: 6 }}>
+            {jaQuitados} bem(ns) já passaram da vida útil e não geram mais
+            despesa. Continuam na lista porque ainda são seus — só pararam
+            de custar.
+          </div>
+        )}
       </div>
 
       {editar && (
@@ -576,6 +604,13 @@ function Imobilizado({ editar }) {
                   {b.data_aquisicao ? ` · desde ${b.data_aquisicao.split("-").reverse().join("/")}` : ""}
                   {b.ativo ? "" : " · baixado"}
                 </div>
+                {b.ativo && (
+                  <div style={{ fontSize: 11, marginTop: 2, color: depreciando(b) ? "#185FA5" : "#8A8778" }}>
+                    {depreciando(b)
+                      ? `faltam ${mesesRestantes(b)} ${mesesRestantes(b) === 1 ? "mês" : "meses"} de depreciação`
+                      : "já totalmente depreciado — não entra mais no DRE"}
+                  </div>
+                )}
               </div>
               {editar && (
                 <>
@@ -765,12 +800,532 @@ function Configuracao() {
 // =====================================================================
 // Estilos — mesmos tokens do resto do painel
 // =====================================================================
+// =====================================================================
+// 6. Listas do sistema
+//
+// O plano de contas e as três listas que antes viviam fixas no código
+// (formas de pagamento, categorias de conta recorrente e centros de
+// custo). Só administrador chega aqui.
+//
+// A regra que vale nas quatro: nada em uso é apagado. Quem já tem
+// lançamento só pode ser DESLIGADO — some dos menus, para de aceitar
+// coisa nova, e os meses fechados continuam batendo. Quem nunca foi
+// usado some de verdade.
+// =====================================================================
+
+const GRUPOS = [
+  { n: 0,  label: "0 — Fora do DRE (sai do caixa, não é resultado)" },
+  { n: 1,  label: "1 — Receita bruta" },
+  { n: 2,  label: "2 — Deduções da receita" },
+  { n: 3,  label: "3 — Custo da mercadoria vendida" },
+  { n: 4,  label: "4 — Pessoal" },
+  { n: 5,  label: "5 — Ocupação" },
+  { n: 6,  label: "6 — Utilidades" },
+  { n: 7,  label: "7 — Comercial e marketing" },
+  { n: 8,  label: "8 — Administrativo" },
+  { n: 9,  label: "9 — Manutenção e utensílios" },
+  { n: 10, label: "10 — Não operacional" },
+];
+const TIPOS = [
+  { v: "patrimonial",     label: "Patrimonial — só caixa" },
+  { v: "receita",         label: "Receita" },
+  { v: "deducao",         label: "Dedução" },
+  { v: "cmv",             label: "CMV" },
+  { v: "despesa",         label: "Despesa" },
+  { v: "nao_operacional", label: "Não operacional" },
+];
+const SUBLISTAS = [
+  { chave: "plano",                label: "Plano de contas" },
+  { chave: "forma_pagamento",      label: "Formas de pagamento" },
+  { chave: "categoria_recorrente", label: "Contas recorrentes" },
+  { chave: "centro_custo",         label: "Centros de custo" },
+];
+
+// A chave gravada no banco sai do rótulo, sem acento e sem espaço.
+// Ela nunca muda depois de criada: é ela que está escrita nas contas
+// antigas. O rótulo, esse pode mudar à vontade.
+function chaveDoRotulo(texto) {
+  return String(texto || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40);
+}
+
+function Listas() {
+  const [qual, setQual] = useState("plano");
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+        {SUBLISTAS.map((l) => (
+          <button key={l.chave} onClick={() => setQual(l.chave)}
+            style={{ ...subTab, ...(qual === l.chave ? subTabAtiva : {}) }}>
+            {l.label}
+          </button>
+        ))}
+      </div>
+      {qual === "plano"
+        ? <PlanoDeContas />
+        : <ListaSimples key={qual} lista={qual} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// 6.1 Plano de contas
+// ---------------------------------------------------------------------
+const CONTA_VAZIA = { codigo: "", nome: "", grupo: 4, tipo: "despesa", descricao: "", entra_dre: true, ordem: 0 };
+
+function PlanoDeContas() {
+  const [contas, setContas] = useState(null);
+  const [uso, setUso] = useState({});
+  const [erro, setErro] = useState("");
+  const [aviso, setAviso] = useState(null); // { texto, codigo }
+  const [editando, setEditando] = useState(null); // codigo
+  const [form, setForm] = useState(CONTA_VAZIA);
+  const [criando, setCriando] = useState(false);
+  const [salvando, setSalvando] = useState(false);
+
+  const carregar = useCallback(async () => {
+    const [rContas, rPagar, rLanc] = await Promise.all([
+      supabase.from("plano_contas").select("*").order("ordem"),
+      supabase.from("contas_pagar").select("plano_conta"),
+      supabase.from("dre_lancamentos").select("conta_codigo"),
+    ]);
+    if (rContas.error) { setErro(rContas.error.message); return; }
+    const contagem = {};
+    (rPagar.data || []).forEach((c) => { if (c.plano_conta) contagem[c.plano_conta] = (contagem[c.plano_conta] || 0) + 1; });
+    (rLanc.data || []).forEach((l) => { if (l.conta_codigo) contagem[l.conta_codigo] = (contagem[l.conta_codigo] || 0) + 1; });
+    setUso(contagem);
+    setContas(rContas.data || []);
+  }, []);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const abrirNova = () => {
+    setForm(CONTA_VAZIA);
+    setEditando(null);
+    setCriando(true);
+    setErro("");
+  };
+  const abrirEdicao = (c) => {
+    setForm({ codigo: c.codigo, nome: c.nome, grupo: c.grupo, tipo: c.tipo, descricao: c.descricao || "", entra_dre: c.entra_dre, ordem: c.ordem });
+    setCriando(false);
+    setEditando(c.codigo);
+    setErro("");
+  };
+  const fechar = () => { setCriando(false); setEditando(null); setErro(""); };
+
+  const salvar = async () => {
+    const codigo = form.codigo.trim();
+    if (!codigo || !form.nome.trim()) { setErro("Código e nome são obrigatórios."); return; }
+    setSalvando(true);
+    const linha = {
+      nome: form.nome.trim(),
+      grupo: Number(form.grupo),
+      tipo: form.tipo,
+      descricao: form.descricao.trim() || null,
+      entra_dre: form.entra_dre,
+      ordem: Number(form.ordem) || Number(form.grupo) * 100,
+    };
+    const r = criando
+      ? await supabase.from("plano_contas").insert({ codigo, origem: "manual", ...linha })
+      : await supabase.from("plano_contas").update(linha).eq("codigo", codigo);
+    setSalvando(false);
+    if (r.error) {
+      setErro(/duplicate key|23505/i.test(r.error.message)
+        ? `Já existe uma conta com o código ${codigo}.`
+        : r.error.message);
+      return;
+    }
+    fechar();
+    carregar();
+  };
+
+  const alternarAtivo = async (c) => {
+    await supabase.from("plano_contas").update({ ativo: !c.ativo }).eq("codigo", c.codigo);
+    setAviso(null);
+    carregar();
+  };
+
+  const excluir = async (c) => {
+    setErro("");
+    setAviso(null);
+    const { error } = await supabase.rpc("excluir_conta_plano", { p_codigo: c.codigo });
+    if (error) {
+      // O banco explica em português por que não deu. Se for por uso,
+      // a saída é desligar — e o botão pra isso aparece junto.
+      setAviso({ texto: error.message, codigo: c.travada ? null : c.codigo });
+      return;
+    }
+    carregar();
+  };
+
+  if (contas === null) return <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>;
+
+  const porGrupo = GRUPOS.map((g) => ({ ...g, itens: contas.filter((c) => c.grupo === g.n) })).filter((g) => g.itens.length > 0);
+  const alvoAviso = aviso?.codigo ? contas.find((c) => c.codigo === aviso.codigo) : null;
+
+  return (
+    <div>
+      {erro && !criando && !editando && (
+        <div style={{ ...avisoStyle, marginBottom: 12 }}><AlertTriangle size={16} /><div>{erro}</div></div>
+      )}
+      {aviso && (
+        <div style={{ ...avisoStyle, marginBottom: 12 }}>
+          <AlertTriangle size={16} />
+          <div style={{ flex: 1 }}>
+            {aviso.texto}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              {alvoAviso && alvoAviso.ativo && (
+                <button onClick={() => alternarAtivo(alvoAviso)} style={btnMini}>Desligar essa conta</button>
+              )}
+              <button onClick={() => setAviso(null)} style={btnMini}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!criando && !editando && (
+        <button onClick={abrirNova} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6, marginBottom: 14 }}>
+          <Plus size={14} /> Nova conta
+        </button>
+      )}
+
+      {(criando || editando) && (
+        <FormularioConta form={form} setForm={setForm} criando={criando} salvando={salvando}
+          erro={erro} onSalvar={salvar} onCancelar={fechar} />
+      )}
+
+      {porGrupo.map((g) => (
+        <div key={g.n} style={{ marginBottom: 14 }}>
+          <div style={sectionLabel}>{g.label}</div>
+          <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
+            {g.itens.map((c, idx) => {
+              const usos = uso[c.codigo] || 0;
+              return (
+                <div key={c.codigo} style={{
+                  display: "flex", alignItems: "center", gap: 9, padding: "9px 12px",
+                  borderTop: idx > 0 ? "1px solid #F0EBDD" : "none",
+                  background: c.ativo ? "#FFFFFF" : "#FAF8F2",
+                }}>
+                  <span style={{ fontSize: 11, color: "#8A8778", width: 34, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{c.codigo}</span>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{
+                      fontSize: 13, color: c.ativo ? "#22231F" : "#A8A290",
+                      textDecoration: c.ativo ? "none" : "line-through",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>{c.nome}</div>
+                    {c.descricao && (
+                      <div style={{ fontSize: 10, color: "#8A8778", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.descricao}</div>
+                    )}
+                  </div>
+                  {!c.entra_dre && <span style={{ ...selo, background: "#F1EEE4", color: "#7A745E" }}>fora do DRE</span>}
+                  {usos > 0 && <span style={{ ...selo, background: "#EAF1F7", color: "#3A6684" }}>{usos}</span>}
+                  <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                    <button onClick={() => abrirEdicao(c)} style={iconMini} title="Editar"><Pencil size={13} /></button>
+                    <button onClick={() => alternarAtivo(c)} style={iconMini} title={c.ativo ? "Desligar" : "Religar"}>
+                      <Power size={13} color={c.ativo ? "#8A8778" : "#0F6E56"} />
+                    </button>
+                    {c.travada ? (
+                      <span style={{ ...iconMini, cursor: "not-allowed", color: "#C0B99F" }} title="O DRE calcula sozinho nessa conta — dá pra renomear, não pra apagar">
+                        <Lock size={13} />
+                      </span>
+                    ) : (
+                      <button onClick={() => excluir(c)} style={{ ...iconMini, color: "#A32D2D" }} title="Excluir"><Trash2 size={13} /></button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      <div style={{ fontSize: 11, color: "#8A8778", lineHeight: 1.5, padding: "0 2px" }}>
+        O cadeado marca as contas em que o próprio DRE escreve pelo código — Simples Nacional,
+        taxas de cartão, insumos consumidos, depreciação e as outras automáticas. Renomear pode;
+        apagar quebraria o cálculo do mês. O número azul é quantos lançamentos apontam pra conta.
+      </div>
+    </div>
+  );
+}
+
+function FormularioConta({ form, setForm, criando, salvando, erro, onSalvar, onCancelar }) {
+  const mudar = (campo) => (e) => setForm((f) => ({ ...f, [campo]: e.target.value }));
+  return (
+    <div style={{ ...cardStyle, marginBottom: 14, display: "grid", gap: 9 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 9 }}>
+        <div>
+          <label style={rotuloCampo}>Código</label>
+          <input value={form.codigo} onChange={mudar("codigo")} disabled={!criando} placeholder="0.3"
+            style={{ ...inputStyle, width: "100%", boxSizing: "border-box", background: criando ? "#FFFFFF" : "#F6F1E7", color: criando ? "#22231F" : "#8A8778" }} />
+        </div>
+        <div>
+          <label style={rotuloCampo}>Grupo</label>
+          <select value={form.grupo} onChange={mudar("grupo")} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}>
+            {GRUPOS.map((g) => <option key={g.n} value={g.n}>{g.label}</option>)}
+          </select>
+        </div>
+      </div>
+      <div>
+        <label style={rotuloCampo}>Nome</label>
+        <input value={form.nome} onChange={mudar("nome")} placeholder="Pagamento de contas antigas"
+          style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} />
+      </div>
+      <div>
+        <label style={rotuloCampo}>Descrição (aparece embaixo do nome)</label>
+        <input value={form.descricao} onChange={mudar("descricao")}
+          style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 9 }}>
+        <div>
+          <label style={rotuloCampo}>Tipo</label>
+          <select value={form.tipo} onChange={mudar("tipo")} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}>
+            {TIPOS.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={rotuloCampo}>Ordem</label>
+          <input type="number" value={form.ordem} onChange={mudar("ordem")}
+            style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} />
+        </div>
+      </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#22231F" }}>
+        <input type="checkbox" checked={form.entra_dre}
+          onChange={(e) => setForm((f) => ({ ...f, entra_dre: e.target.checked }))} />
+        Entra no resultado do mês (DRE)
+      </label>
+      <div style={{ fontSize: 11, color: "#8A8778", lineHeight: 1.5, marginTop: -4 }}>
+        Desmarcado, o dinheiro sai do caixa mas não desconta do lucro do mês. É assim que
+        funcionam a compra de estoque, o imobilizado e o pagamento de conta antiga.
+      </div>
+      {erro && <div style={{ fontSize: 12, color: "#A32D2D" }}>{erro}</div>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={onSalvar} disabled={salvando} style={btnPrimary}>
+          {salvando ? "Salvando…" : criando ? "Criar conta" : "Salvar"}
+        </button>
+        <button onClick={onCancelar} style={btnSecondary}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// 6.2 As três listas simples
+// ---------------------------------------------------------------------
+const COLUNA_DE_USO = {
+  forma_pagamento: "forma_pagamento",
+  categoria_recorrente: "categoria",
+  centro_custo: "centro_custo",
+};
+const TITULO_LISTA = {
+  forma_pagamento: "forma de pagamento",
+  categoria_recorrente: "categoria",
+  centro_custo: "centro de custo",
+};
+
+function ListaSimples({ lista }) {
+  const [opcoes, setOpcoes] = useState(null);
+  const [centros, setCentros] = useState([]);
+  const [uso, setUso] = useState({});
+  const [erro, setErro] = useState("");
+  const [aviso, setAviso] = useState(null);
+  const [editando, setEditando] = useState(null); // id
+  const [form, setForm] = useState({ rotulo: "", centro_custo: "", ordem: 0 });
+  const [criando, setCriando] = useState(false);
+
+  const carregar = useCallback(async () => {
+    const [rOpc, rPagar] = await Promise.all([
+      supabase.from("listas_opcoes").select("*").order("ordem"),
+      supabase.from("contas_pagar").select("forma_pagamento, categoria, centro_custo"),
+    ]);
+    if (rOpc.error) {
+      setErro(/does not exist|schema cache/i.test(rOpc.error.message)
+        ? "Essas listas ainda não foram instaladas no banco — falta rodar a migração 080."
+        : rOpc.error.message);
+      setOpcoes([]);
+      return;
+    }
+    const todas = rOpc.data || [];
+    setCentros(todas.filter((o) => o.lista === "centro_custo" && o.ativo));
+    setOpcoes(todas.filter((o) => o.lista === lista));
+    const coluna = COLUNA_DE_USO[lista];
+    const contagem = {};
+    (rPagar.data || []).forEach((c) => {
+      const v = c[coluna];
+      if (v) contagem[v] = (contagem[v] || 0) + 1;
+    });
+    setUso(contagem);
+  }, [lista]);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const abrirNova = () => { setForm({ rotulo: "", centro_custo: "", ordem: (opcoes?.length || 0) + 1 }); setEditando(null); setCriando(true); setErro(""); };
+  const abrirEdicao = (o) => { setForm({ rotulo: o.rotulo, centro_custo: o.centro_custo || "", ordem: o.ordem }); setCriando(false); setEditando(o.id); setErro(""); };
+  const fechar = () => { setCriando(false); setEditando(null); setErro(""); };
+
+  const salvar = async () => {
+    const rotulo = form.rotulo.trim();
+    if (!rotulo) { setErro("O nome é obrigatório."); return; }
+    const linha = {
+      rotulo,
+      centro_custo: lista === "categoria_recorrente" ? (form.centro_custo || null) : null,
+      ordem: Number(form.ordem) || 0,
+    };
+    let r;
+    if (criando) {
+      const valor = chaveDoRotulo(rotulo);
+      if (!valor) { setErro("Esse nome não gera uma chave válida — use letras ou números."); return; }
+      r = await supabase.from("listas_opcoes").insert({ lista, valor, ...linha });
+    } else {
+      r = await supabase.from("listas_opcoes").update(linha).eq("id", editando);
+    }
+    if (r.error) {
+      setErro(/duplicate key|23505/i.test(r.error.message)
+        ? "Já existe uma opção com esse nome nessa lista."
+        : r.error.message);
+      return;
+    }
+    fechar();
+    carregar();
+  };
+
+  const alternarAtivo = async (o) => {
+    await supabase.from("listas_opcoes").update({ ativo: !o.ativo }).eq("id", o.id);
+    setAviso(null);
+    carregar();
+  };
+
+  const excluir = async (o) => {
+    setAviso(null);
+    const { error } = await supabase.rpc("excluir_opcao_lista", { p_id: o.id });
+    if (error) { setAviso({ texto: error.message, id: o.id }); return; }
+    carregar();
+  };
+
+  if (opcoes === null) return <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>;
+
+  const alvoAviso = aviso?.id ? opcoes.find((o) => o.id === aviso.id) : null;
+
+  return (
+    <div>
+      {erro && !criando && !editando && (
+        <div style={{ ...avisoStyle, marginBottom: 12 }}><AlertTriangle size={16} /><div>{erro}</div></div>
+      )}
+      {aviso && (
+        <div style={{ ...avisoStyle, marginBottom: 12 }}>
+          <AlertTriangle size={16} />
+          <div style={{ flex: 1 }}>
+            {aviso.texto}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              {alvoAviso && alvoAviso.ativo && (
+                <button onClick={() => alternarAtivo(alvoAviso)} style={btnMini}>Desligar</button>
+              )}
+              <button onClick={() => setAviso(null)} style={btnMini}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!criando && !editando && (
+        <button onClick={abrirNova} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6, marginBottom: 14 }}>
+          <Plus size={14} /> Nova {TITULO_LISTA[lista]}
+        </button>
+      )}
+
+      {(criando || editando) && (
+        <div style={{ ...cardStyle, marginBottom: 14, display: "grid", gap: 9 }}>
+          <div>
+            <label style={rotuloCampo}>Nome</label>
+            <input value={form.rotulo} onChange={(e) => setForm((f) => ({ ...f, rotulo: e.target.value }))}
+              autoFocus style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} />
+            {criando && form.rotulo.trim() && (
+              <div style={{ fontSize: 10, color: "#8A8778", marginTop: 3 }}>
+                Vai ficar gravado no banco como <strong>{chaveDoRotulo(form.rotulo)}</strong> — isso não muda depois.
+              </div>
+            )}
+          </div>
+          {lista === "categoria_recorrente" && (
+            <div>
+              <label style={rotuloCampo}>Centro de custo</label>
+              <select value={form.centro_custo} onChange={(e) => setForm((f) => ({ ...f, centro_custo: e.target.value }))}
+                style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}>
+                <option value="">— nenhum —</option>
+                {centros.map((c) => <option key={c.valor} value={c.valor}>{c.rotulo}</option>)}
+              </select>
+              <div style={{ fontSize: 10, color: "#8A8778", marginTop: 3 }}>
+                A conta recebe esse centro sozinha. Sem ele, ela cai em "sem centro de custo" no Dashboard.
+              </div>
+            </div>
+          )}
+          <div>
+            <label style={rotuloCampo}>Ordem</label>
+            <input type="number" value={form.ordem} onChange={(e) => setForm((f) => ({ ...f, ordem: e.target.value }))}
+              style={{ ...inputStyle, width: 110 }} />
+          </div>
+          {erro && <div style={{ fontSize: 12, color: "#A32D2D" }}>{erro}</div>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={salvar} style={btnPrimary}>{criando ? "Criar" : "Salvar"}</button>
+            <button onClick={fechar} style={btnSecondary}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
+        {opcoes.map((o, idx) => {
+          const usos = uso[o.valor] || 0;
+          const centro = centros.find((c) => c.valor === o.centro_custo);
+          return (
+            <div key={o.id} style={{
+              display: "flex", alignItems: "center", gap: 9, padding: "9px 12px",
+              borderTop: idx > 0 ? "1px solid #F0EBDD" : "none",
+              background: o.ativo ? "#FFFFFF" : "#FAF8F2",
+            }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{
+                  fontSize: 13, color: o.ativo ? "#22231F" : "#A8A290",
+                  textDecoration: o.ativo ? "none" : "line-through",
+                }}>{o.rotulo}</div>
+                {lista === "categoria_recorrente" && (
+                  <div style={{ fontSize: 10, color: centro ? "#8A8778" : "#A32D2D" }}>
+                    {centro ? `centro de custo: ${centro.rotulo}` : "sem centro de custo"}
+                  </div>
+                )}
+              </div>
+              {usos > 0 && <span style={{ ...selo, background: "#EAF1F7", color: "#3A6684" }}>{usos} {usos === 1 ? "conta" : "contas"}</span>}
+              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                <button onClick={() => abrirEdicao(o)} style={iconMini} title="Editar"><Pencil size={13} /></button>
+                <button onClick={() => alternarAtivo(o)} style={iconMini} title={o.ativo ? "Desligar" : "Religar"}>
+                  <Power size={13} color={o.ativo ? "#8A8778" : "#0F6E56"} />
+                </button>
+                <button onClick={() => excluir(o)} style={{ ...iconMini, color: "#A32D2D" }} title="Excluir"><Trash2 size={13} /></button>
+              </div>
+            </div>
+          );
+        })}
+        {opcoes.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Nenhuma opção cadastrada.</div>}
+      </div>
+
+      <div style={{ fontSize: 11, color: "#8A8778", lineHeight: 1.5, padding: "8px 2px 0" }}>
+        O que já está em uso não some: a lixeira oferece desligar. Desligado some dos menus e
+        para de aceitar coisa nova, mas as contas antigas continuam com a classificação certa.
+      </div>
+    </div>
+  );
+}
+
+
 const subTab = {
   display: "flex", alignItems: "center", gap: 5,
   padding: "7px 12px", borderRadius: 999, border: "1px solid #E8E2D2",
   background: "#FFFFFF", color: "#8A8778", fontSize: 12, fontWeight: 600, cursor: "pointer",
 };
 const subTabAtiva = { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" };
+const selo = { fontSize: 9, fontWeight: 700, padding: "1.5px 6px", borderRadius: 999, flexShrink: 0, letterSpacing: 0.2 };
+const iconMini = { border: "none", background: "none", padding: 2, cursor: "pointer", color: "#8A8778", display: "flex", alignItems: "center" };
+const rotuloCampo = { display: "block", fontSize: 10, color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 };
 const cardStyle = {
   background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14,
 };
