@@ -1,5 +1,5 @@
 import React, { useState, useRef } from "react";
-import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, Loader2, RefreshCw, TrendingUp, TrendingDown, Trophy, Layers } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
@@ -32,6 +32,50 @@ const CENTRO_CUSTO_LABEL = {
   marketing: "Marketing e vendas", administrativo: "Administrativo",
 };
 
+// Piso pro ranking de crescimento e queda: produto que custa menos que
+// isso fica de fora. Bala, bombom e refrigerante sobem e descem muito em
+// percentual sem mover o caixa — sem esse piso, uma bala que vendeu 10
+// no mês passado e 30 nesse vira "+200%" e empurra pra fora da lista o
+// combo que cresceu de verdade. O preço é o MÉDIO praticado nos dois
+// períodos, não o de tabela: pega também o item que ainda não está no
+// cadastro de pratos.
+const PISO_PRECO = 9;
+const QUANTOS_NO_RANKING = 5;
+
+// Janela de comparação. "mes" casa com o bloco semana a semana que já
+// existe na tela: do dia 1 até hoje, contra os mesmos dias do mês
+// passado. As outras duas terminam ONTEM, porque o dia de hoje ainda
+// não fechou no CardápioWeb.
+function janelas(modo) {
+  const hoje = new Date();
+  if (modo === "mes") {
+    const iniAnt = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+    const ultimoDiaAnt = diasNoMes(iniAnt.getFullYear(), iniAnt.getMonth());
+    return {
+      ini: new Date(hoje.getFullYear(), hoje.getMonth(), 1),
+      fim: hoje,
+      iniAnt,
+      fimAnt: new Date(iniAnt.getFullYear(), iniAnt.getMonth(), Math.min(hoje.getDate(), ultimoDiaAnt)),
+      titulo: "Mês atual até hoje",
+      comparado: "mesmos dias do mês passado",
+    };
+  }
+  const n = modo === "7" ? 7 : 30;
+  return {
+    ini: somarDias(hoje, -n),
+    fim: somarDias(hoje, -1),
+    iniAnt: somarDias(hoje, -2 * n),
+    fimAnt: somarDias(hoje, -n - 1),
+    titulo: `Últimos ${n} dias`,
+    comparado: `os ${n} dias anteriores`,
+  };
+}
+
+function variacao(atual, anterior) {
+  if (!anterior || anterior <= 0) return null;
+  return ((atual - anterior) / anterior) * 100;
+}
+
 // Dashboard: junta previsão de faturamento (resto do mês, mês seguinte,
 // comparativo semana a semana vs mês anterior) com os custos do Plano
 // de Contas (o que já foi lançado nesse mês + a média histórica dos
@@ -51,6 +95,12 @@ export default function Dashboard() {
   const [sincronizando, setSincronizando] = useState(false);
   const [progresso, setProgresso] = useState(null); // { fatia, totalFatias, diasFeitos, totalDias, de, ate }
   const cancelarRef = useRef(false);
+  const [periodo, setPeriodo] = useState("mes");   // mes | 30 | 7
+  const [produtos, setProdutos] = useState(null);  // linhas de desempenho_produtos
+  const [linhas, setLinhas] = useState(null);      // linhas de desempenho_linhas
+  const [cobertura, setCobertura] = useState(null);
+  const [erroProdutos, setErroProdutos] = useState("");
+  const [verTodos, setVerTodos] = useState(false);
 
   // ------------------------------------------------------------------
   // Custos (Plano de Contas) — igual ao que já existia
@@ -101,6 +151,49 @@ export default function Dashboard() {
   }, []);
 
   // ------------------------------------------------------------------
+  // Desempenho por linha e por produto
+  //
+  // Vem do detalhe dos pedidos (`pedidos_cache`), não do total diário —
+  // é a única fonte que sabe QUAL item foi vendido. Três funções do
+  // banco, chamadas de uma vez só pra não pesar no celular.
+  // ------------------------------------------------------------------
+  const buscarProdutos = React.useCallback(async (modo) => {
+    const j = janelas(modo);
+    const args = { p_inicio: ymd(j.ini), p_fim: ymd(j.fim), p_inicio_ant: ymd(j.iniAnt), p_fim_ant: ymd(j.fimAnt) };
+    const [rProd, rLinhas, rCob] = await Promise.all([
+      supabase.rpc("desempenho_produtos", args),
+      supabase.rpc("desempenho_linhas", args),
+      supabase.rpc("cobertura_produtos", { p_inicio: args.p_inicio, p_fim: args.p_fim }),
+    ]);
+    const falha = rProd.error || rLinhas.error || rCob.error;
+    if (falha) {
+      setErroProdutos(
+        /does not exist|não existe|schema cache/i.test(falha.message || "")
+          ? "O desempenho por produto ainda não foi instalado no banco — falta rodar a migração 079."
+          : falha.message
+      );
+      setProdutos(null); setLinhas(null); setCobertura(null);
+      return;
+    }
+    setErroProdutos("");
+    setProdutos((rProd.data || []).map((l) => ({
+      ...l,
+      qtd_atual: Number(l.qtd_atual) || 0,
+      valor_atual: Number(l.valor_atual) || 0,
+      qtd_ant: Number(l.qtd_ant) || 0,
+      valor_ant: Number(l.valor_ant) || 0,
+      preco_medio: Number(l.preco_medio) || 0,
+    })));
+    setLinhas((rLinhas.data || []).map((l) => ({
+      ...l,
+      valor_atual: Number(l.valor_atual) || 0,
+      valor_ant: Number(l.valor_ant) || 0,
+      qtd_atual: Number(l.qtd_atual) || 0,
+    })));
+    setCobertura((rCob.data && rCob.data[0]) || null);
+  }, []);
+
+  // ------------------------------------------------------------------
   // Cache de vendas — um select simples, sem chamada externa
   // ------------------------------------------------------------------
   const listaDaJanela = React.useCallback(() => {
@@ -121,31 +214,31 @@ export default function Dashboard() {
       .lte("dia", dias[dias.length - 1])
       .order("dia", { ascending: true });
     if (error) { setErro(error.message); return null; }
-    const linhas = data || [];
-    const presentes = new Set(linhas.map((l) => l.dia));
+    const diasCache = data || [];
+    const presentes = new Set(diasCache.map((l) => l.dia));
     const faltando = dias.filter((d) => !presentes.has(d));
     let atualizadoEm = null;
-    linhas.forEach((l) => {
+    diasCache.forEach((l) => {
       if (l.atualizado_em && (!atualizadoEm || l.atualizado_em > atualizadoEm)) atualizadoEm = l.atualizado_em;
     });
     setCache({
-      total: linhas.length,
-      ultimoDia: linhas.length ? linhas[linhas.length - 1].dia : null,
+      total: diasCache.length,
+      ultimoDia: diasCache.length ? diasCache[diasCache.length - 1].dia : null,
       atualizadoEm,
       faltando,
     });
-    return linhas;
+    return diasCache;
   }, [listaDaJanela]);
 
   // ------------------------------------------------------------------
   // Toda a matemática de previsão — idêntica à versão anterior, só que
   // alimentada pelo cache em vez da resposta do CardápioWeb
   // ------------------------------------------------------------------
-  const calcularFaturamento = React.useCallback((linhas) => {
-    if (!linhas || linhas.length === 0) { setFaturamento(null); return; }
+  const calcularFaturamento = React.useCallback((diasCache) => {
+    if (!diasCache || diasCache.length === 0) { setFaturamento(null); return; }
     const hoje = new Date();
     const porDia = {};
-    linhas.forEach((l) => { porDia[l.dia] = Number(l.faturamento_bruto) || 0; });
+    diasCache.forEach((l) => { porDia[l.dia] = Number(l.faturamento_bruto) || 0; });
 
     // médias de dia útil e fim de semana, últimos 30 dias
     let somaUtil = 0, nUtil = 0, somaFds = 0, nFds = 0;
@@ -223,9 +316,9 @@ export default function Dashboard() {
   const atualizar = async () => {
     setRecalculando(true);
     setErro("");
-    const linhas = await buscarCache();
-    calcularFaturamento(linhas);
-    await buscarCustos();
+    const dias = await buscarCache();
+    calcularFaturamento(dias);
+    await Promise.all([buscarCustos(), buscarProdutos(periodo)]);
     setRecalculando(false);
   };
 
@@ -239,8 +332,8 @@ export default function Dashboard() {
 
     const dias = listaDaJanela();
     // relê o cache na hora, pra não trabalhar em cima de estado velho
-    const linhas = await buscarCache();
-    const presentes = new Set((linhas || []).map((l) => l.dia));
+    const diasCache = await buscarCache();
+    const presentes = new Set((diasCache || []).map((l) => l.dia));
 
     // fatias de dias corridos; pula inteira a fatia que já está toda no cache
     const fatias = [];
@@ -307,13 +400,41 @@ export default function Dashboard() {
   React.useEffect(() => {
     (async () => {
       setCarregando(true);
-      const [linhas] = await Promise.all([buscarCache(), buscarCustos()]);
-      calcularFaturamento(linhas);
+      const [dias] = await Promise.all([buscarCache(), buscarCustos()]);
+      calcularFaturamento(dias);
       setCarregando(false);
     })();
   }, [buscarCache, buscarCustos, calcularFaturamento]);
 
+  // troca de período recarrega só a parte de produtos
+  React.useEffect(() => { buscarProdutos(periodo); }, [buscarProdutos, periodo]);
+
   const lucroPrevisto = faturamento && custos ? round2(faturamento.totalMes - custos.totalPrevisto) : null;
+
+  // Rankings de produto. Tudo derivado da mesma lista que veio do banco,
+  // então os números do topo e das variações nunca discordam entre si.
+  const ranking = React.useMemo(() => {
+    if (!produtos || produtos.length === 0) return null;
+    const total = produtos.reduce((s, p) => s + p.valor_atual, 0);
+    const vendidos = produtos.filter((p) => p.valor_atual > 0);
+    const maiores = [...vendidos].sort((a, b) => b.valor_atual - a.valor_atual).slice(0, QUANTOS_NO_RANKING);
+    // só entra na variação o produto acima do piso de preço E que tenha
+    // vendido no período anterior — sem base anterior não existe % de
+    // variação, só entrada nova (que tem quadro próprio logo abaixo)
+    const comparaveis = produtos
+      .filter((p) => p.preco_medio > PISO_PRECO && p.valor_ant > 0)
+      .map((p) => ({ ...p, pct: variacao(p.valor_atual, p.valor_ant), delta: round2(p.valor_atual - p.valor_ant) }));
+    const crescimentos = comparaveis.filter((p) => p.pct > 0).sort((a, b) => b.pct - a.pct).slice(0, QUANTOS_NO_RANKING);
+    const quedas = comparaveis.filter((p) => p.pct < 0).sort((a, b) => a.pct - b.pct).slice(0, QUANTOS_NO_RANKING);
+    const novos = produtos
+      .filter((p) => p.valor_ant === 0 && p.valor_atual > 0 && p.preco_medio > PISO_PRECO)
+      .sort((a, b) => b.valor_atual - a.valor_atual);
+    return { total, maiores, crescimentos, quedas, novos, vendidos };
+  }, [produtos]);
+
+  const janela = janelas(periodo);
+  const semLinha = cobertura && Number(cobertura.pct_com_linha) < 70;
+  const semPedidos = cobertura && Number(cobertura.dias_com_pedido) === 0;
   const faltando = cache?.faltando?.length || 0;
   const cacheVazio = !cache || cache.total === 0;
   const cacheParcial = !cacheVazio && faltando > 0;
@@ -424,6 +545,165 @@ export default function Dashboard() {
                   </div>
                 </>
               )}
+              {/* ---------------------------------------------------------
+                  Desempenho por linha e por produto
+                  --------------------------------------------------------- */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+                <div style={{ ...sectionLabel, marginBottom: 0 }}>Desempenho por produto</div>
+                <select value={periodo} onChange={(e) => { setPeriodo(e.target.value); setVerTodos(false); }} style={selectPeriodo}>
+                  <option value="mes">Mês atual</option>
+                  <option value="30">Últimos 30 dias</option>
+                  <option value="7">Últimos 7 dias</option>
+                </select>
+              </div>
+              <div style={{ fontSize: 10, color: "#8A8778", marginBottom: 10 }}>
+                {janela.titulo} contra {janela.comparado}.
+              </div>
+
+              {erroProdutos && (
+                <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erroProdutos}</div></div>
+              )}
+
+              {!erroProdutos && semPedidos && (
+                <div style={avisoStyle}>
+                  <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div style={{ fontSize: 13 }}>
+                    O detalhe dos pedidos desse período ainda não foi baixado. O faturamento total acima vem do resumo diário, que não sabe qual item foi vendido — por isso essa parte fica vazia.
+                  </div>
+                </div>
+              )}
+
+              {!erroProdutos && !semPedidos && semLinha && (
+                <div style={avisoStyle}>
+                  <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div style={{ fontSize: 13 }}>
+                    Só {cobertura.pct_com_linha}% do faturamento tem linha de produto definida. Preencha a linha em Fichas Técnicas pra esse quadro parar de cair quase tudo em "Sem linha definida".
+                  </div>
+                </div>
+              )}
+
+              {!erroProdutos && ranking && (
+                <>
+                  {/* por linha de produto */}
+                  {linhas && linhas.length > 0 && (
+                    <div style={{ ...blocoStyle, marginBottom: 14 }}>
+                      <div style={blocoTitulo}><Layers size={13} /> Por linha de produto</div>
+                      {linhas.map((l, idx) => {
+                        const share = ranking.total > 0 ? (l.valor_atual / ranking.total) * 100 : 0;
+                        const pct = variacao(l.valor_atual, l.valor_ant);
+                        return (
+                          <div key={l.linha} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, color: "#22231F" }}>
+                              <span style={nomeStyle}>{l.linha}</span>
+                              <span style={{ fontWeight: 700, flexShrink: 0 }}>{brl(l.valor_atual)}</span>
+                            </div>
+                            <div style={barraShare}><div style={{ ...barraShareFill, width: `${Math.min(100, share)}%` }} /></div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, color: "#8A8778" }}>
+                              <span>{share.toFixed(1)}% do total · {l.produtos} {l.produtos === 1 ? "produto" : "produtos"}</span>
+                              {pct != null
+                                ? <span style={{ color: pct >= 0 ? "#0F6E56" : "#A32D2D", fontWeight: 700 }}>{pct >= 0 ? "+" : ""}{pct.toFixed(1)}%</span>
+                                : <span>sem base anterior</span>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* 5 maiores faturamentos */}
+                  <div style={{ ...blocoStyle, marginBottom: 14 }}>
+                    <div style={blocoTitulo}><Trophy size={13} /> 5 maiores faturamentos</div>
+                    {ranking.maiores.map((p, idx) => (
+                      <div key={p.produto} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                        <span style={posicaoStyle}>{idx + 1}</span>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 13, color: "#22231F", ...nomeStyle }}>{p.produto}</div>
+                          <div style={{ fontSize: 10, color: "#8A8778" }}>
+                            {p.qtd_atual.toLocaleString("pt-BR")} un · {ranking.total > 0 ? ((p.valor_atual / ranking.total) * 100).toFixed(1) : "0"}% do total
+                          </div>
+                        </div>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: "#22231F", flexShrink: 0 }}>{brl(p.valor_atual)}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* crescimentos */}
+                  <div style={{ ...blocoStyle, marginBottom: 14 }}>
+                    <div style={{ ...blocoTitulo, color: "#0F6E56" }}><TrendingUp size={13} /> 5 maiores crescimentos</div>
+                    {ranking.crescimentos.length === 0 && <div style={vazioStyle}>Nenhum produto com base de comparação cresceu nesse período.</div>}
+                    {ranking.crescimentos.map((p, idx) => (
+                      <div key={p.produto} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, color: "#22231F" }}>
+                          <span style={nomeStyle}>{p.produto}</span>
+                          <span style={{ fontWeight: 800, color: "#0F6E56", flexShrink: 0 }}>+{p.pct.toFixed(0)}%</span>
+                        </div>
+                        <div style={{ fontSize: 10, color: "#8A8778" }}>{brl(p.valor_ant)} → {brl(p.valor_atual)} · {p.delta >= 0 ? "+" : ""}{brl(p.delta)} · {brl(p.preco_medio)} a un.</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* quedas */}
+                  <div style={{ ...blocoStyle, marginBottom: 14 }}>
+                    <div style={{ ...blocoTitulo, color: "#A32D2D" }}><TrendingDown size={13} /> 5 maiores quedas</div>
+                    {ranking.quedas.length === 0 && <div style={vazioStyle}>Nenhum produto com base de comparação caiu nesse período.</div>}
+                    {ranking.quedas.map((p, idx) => (
+                      <div key={p.produto} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, color: "#22231F" }}>
+                          <span style={nomeStyle}>{p.produto}</span>
+                          <span style={{ fontWeight: 800, color: "#A32D2D", flexShrink: 0 }}>{p.pct.toFixed(0)}%</span>
+                        </div>
+                        <div style={{ fontSize: 10, color: "#8A8778" }}>
+                          {brl(p.valor_ant)} → {brl(p.valor_atual)} · {brl(p.delta)} · {brl(p.preco_medio)} a un.{p.valor_atual === 0 ? " · parou de vender" : ""}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{ fontSize: 10, color: "#8A8778", marginTop: -6, marginBottom: 14, padding: "0 2px" }}>
+                    Crescimento e queda só consideram produtos acima de {brl(PISO_PRECO)}. Bala, bombom e refrigerante variam muito em percentual sem mover o caixa — entrariam no lugar do que interessa.
+                  </div>
+
+                  {ranking.novos.length > 0 && (
+                    <div style={{ ...blocoStyle, marginBottom: 14 }}>
+                      <div style={blocoTitulo}>Entraram no período</div>
+                      {ranking.novos.slice(0, QUANTOS_NO_RANKING).map((p, idx) => (
+                        <div key={p.produto} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "9px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12 }}>
+                          <span style={{ ...nomeStyle, color: "#22231F" }}>{p.produto}</span>
+                          <span style={{ color: "#22231F", flexShrink: 0 }}>{brl(p.valor_atual)}</span>
+                        </div>
+                      ))}
+                      <div style={{ fontSize: 10, color: "#8A8778", padding: "0 14px 10px" }}>Não venderam nada no período anterior, então não entram no ranking de crescimento.</div>
+                    </div>
+                  )}
+
+                  <button onClick={() => setVerTodos((v) => !v)} style={{ ...btnGhost, width: "100%", marginBottom: verTodos ? 8 : 16 }}>
+                    {verTodos ? "Esconder a lista completa" : `Ver todos os ${ranking.vendidos.length} produtos`}
+                  </button>
+
+                  {verTodos && (
+                    <div style={{ ...blocoStyle, marginBottom: 16 }}>
+                      {ranking.vendidos.map((p, idx) => {
+                        const pct = variacao(p.valor_atual, p.valor_ant);
+                        return (
+                          <div key={p.produto} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div style={{ fontSize: 12, color: "#22231F", ...nomeStyle }}>{p.produto}</div>
+                              <div style={{ fontSize: 10, color: p.no_cadastro ? "#8A8778" : "#A32D2D" }}>
+                                {p.no_cadastro ? p.linha : "fora do cadastro de pratos"} · {p.qtd_atual.toLocaleString("pt-BR")} un
+                              </div>
+                            </div>
+                            <div style={{ textAlign: "right", flexShrink: 0 }}>
+                              <div style={{ fontSize: 12, color: "#22231F" }}>{brl(p.valor_atual)}</div>
+                              {pct != null && <div style={{ fontSize: 10, fontWeight: 700, color: pct >= 0 ? "#0F6E56" : "#A32D2D" }}>{pct >= 0 ? "+" : ""}{pct.toFixed(0)}%</div>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+
               <div style={sectionLabel}>Custos por centro de custo</div>
               <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
                 {Object.entries(custos.porCentroCusto).sort((a, b) => b[1] - a[1]).map(([centro, valor], idx) => (
@@ -459,3 +739,11 @@ const statusStyle = { display: "flex", alignItems: "center", gap: 6, fontSize: 1
 const dotStyle = { width: 6, height: 6, borderRadius: "50%", flex: "none" };
 const barraStyle = { height: 7, borderRadius: 99, background: "#E3DDCB", overflow: "hidden", margin: "10px 0 7px" };
 const barraFillStyle = { height: "100%", background: "#22231F", borderRadius: 99, transition: "width .3s" };
+const blocoStyle = { border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" };
+const blocoTitulo = { display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 800, letterSpacing: 0.3, textTransform: "uppercase", color: "#55534A", padding: "10px 14px", background: "#F6F1E7", borderBottom: "1px solid #E8E2D2" };
+const nomeStyle = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const posicaoStyle = { width: 20, height: 20, borderRadius: 999, background: "#F6F1E7", color: "#55534A", fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
+const barraShare = { height: 5, borderRadius: 99, background: "#F0EBDD", overflow: "hidden", margin: "6px 0 5px" };
+const barraShareFill = { height: "100%", background: "#22231F", borderRadius: 99 };
+const vazioStyle = { padding: "12px 14px", fontSize: 12, color: "#8A8778" };
+const selectPeriodo = { padding: "6px 8px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF", color: "#22231F", flexShrink: 0 };
