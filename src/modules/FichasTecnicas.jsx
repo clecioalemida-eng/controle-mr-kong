@@ -1,531 +1,228 @@
-import React, { useState, useEffect, useCallback } from "react";
-import {
-  Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, Search, ArrowLeftRight,
-} from "lucide-react";
-import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+-- =====================================================================
+-- 082_ficha_e_margem.sql
+-- Painel Mr. Kong — ficha tecnica, margem pretendida e troca de insumo
+--
+-- Tres assuntos que andam juntos na mesma tela:
+--
+--   1. REVENDA x COMPOSICAO. Heineken se compra pronta e se vende
+--      pronta; omelete e receita. Por baixo nao muda nada: revenda
+--      grava UM insumo com quantidade 1, entao CMV, baixa de estoque e
+--      DRE continuam iguais. O flag so diz o que a tela pede.
+--
+--   2. MARGEM PRETENDIDA em tres niveis: geral (65%), por linha de
+--      produto, por prato. O mais especifico ganha. O preco sugerido e
+--      custo / (1 - margem) — margem sobre o PRECO DE VENDA, nao markup
+--      sobre o custo. Com 12,69 e 65%: 12,69 / 0,35 = R$ 36,26.
+--      Usa o preco CHEIO, sem descontar Simples nem taxa de cartao.
+--
+--   3. SUBSTITUIR INSUMO nas fichas. Hoje a lixeira do insumo avisa
+--      "esta em 1 ficha" e para por ai. A funcao troca em todas as
+--      fichas de uma vez, somando quando o insumo novo ja esta no mesmo
+--      prato (a chave e (prato_id, insumo_id): duas linhas iguais nao
+--      cabem).
+--
+-- IDEMPOTENTE. Rodar depois da 052.
+-- =====================================================================
 
-const UNIDADES = ["un", "g", "kg", "ml", "l"];
-const LINHAS_PRODUTO = [
-  "Hambúrguer Gourmet", "Hambúrguer Tradicional", "Bebidas", "Bombons e Balas",
-  "Milkshake e Sorvetes", "Cremes", "Petiscos", "Chapa", "Combos", "Batatas Fritas", "Açaí",
-];
 
-function brl(v) {
-  return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-function hoje() { return new Date().toISOString().slice(0, 10); }
-function diasAtras(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
-}
+-- ---------------------------------------------------------------------
+-- 1. Revenda x composicao
+-- ---------------------------------------------------------------------
+alter table public.pratos
+  add column if not exists revenda boolean not null default false;
 
-// Componente embutível — sem cabeçalho/moldura própria, pensado para viver
-// dentro de uma aba do módulo Financeiro (que já fornece o app-shell e o
-// título da tela). Mantém sua própria navegação interna (lista <-> editor).
-// Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
-// collation do banco e às vezes joga nome acentuado ou em maiúscula pro
-// fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
-// "Água" junto de "Agua" e "ALFACE" junto de "Alface".
-function porNome(a, b) {
-  return String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR", { sensitivity: "base" });
-}
+comment on column public.pratos.revenda is
+  'true = comprado pronto e revendido (Heineken). false = receita com varios insumos.';
 
-export default function FichasTecnicas() {
-  const [tela, setTela] = useState("lista"); // lista | editor
-  const [pratos, setPratos] = useState([]);
-  const [carregandoLista, setCarregandoLista] = useState(true);
-  const [importando, setImportando] = useState(false);
-  const [erro, setErro] = useState("");
-  const [pratoAtual, setPratoAtual] = useState(null);
-  const [busca, setBusca] = useState("");
 
-  const carregarPratos = useCallback(async () => {
-    setCarregandoLista(true);
-    setErro("");
-    const [{ data: pratosData, error: e1 }, { data: itensData, error: e2 }] = await Promise.all([
-      supabase.from("pratos").select("*").order("nome"),
-      supabase.from("prato_insumos").select("prato_id, quantidade, insumo:insumos(custo_medio_atual)"),
-    ]);
-    if (e1 || e2) {
-      setErro((e1 || e2).message);
-      setCarregandoLista(false);
-      return;
-    }
-    const custoPorPrato = {};
-    (itensData || []).forEach((li) => {
-      const custo = (li.quantidade || 0) * (li.insumo?.custo_medio_atual || 0);
-      custoPorPrato[li.prato_id] = (custoPorPrato[li.prato_id] || 0) + custo;
-      custoPorPrato[li.prato_id + ":n"] = (custoPorPrato[li.prato_id + ":n"] || 0) + 1;
-    });
-    const combinados = (pratosData || []).map((p) => {
-      const temFicha = (custoPorPrato[p.id + ":n"] || 0) > 0;
-      const custoTotal = custoPorPrato[p.id] || 0;
-      const custoZerado = temFicha && custoTotal === 0; // tem insumo(s) na ficha, mas nenhum com preço ainda
-      const margem = p.preco_venda - custoTotal;
-      const margemPct = p.preco_venda > 0 ? (margem / p.preco_venda) * 100 : 0;
-      return { ...p, temFicha, custoTotal, custoZerado, margem, margemPct };
-    });
-    setPratos([...combinados].sort(porNome));
-    setCarregandoLista(false);
-  }, []);
+-- ---------------------------------------------------------------------
+-- 2. Margem pretendida — os tres niveis
+-- ---------------------------------------------------------------------
+insert into public.dre_config (chave, valor, descricao) values
+  ('margem_pretendida', 65,
+   'Margem de contribuicao alvo, em % do preco de venda. Preco sugerido = custo / (1 - margem).')
+on conflict (chave) do nothing;
 
-  useEffect(() => { carregarPratos(); }, [carregarPratos]);
+alter table public.pratos
+  add column if not exists margem_pretendida numeric
+    check (margem_pretendida is null or (margem_pretendida >= 0 and margem_pretendida < 100));
 
-  const importarPratos = async () => {
-    setImportando(true);
-    setErro("");
-    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
-      body: { acao: "importar_pratos", data_inicio: `${diasAtras(90)}T00:00:00-03:00`, data_fim: `${hoje()}T23:59:59-03:00` },
-    });
-    setImportando(false);
-    if (error) { setErro(await extrairErroFuncao(error)); return; }
-    if (data?.error) { setErro(data.error); return; }
-    carregarPratos();
-  };
+comment on column public.pratos.margem_pretendida is
+  'Margem so deste prato, em %. NULO = herda a linha; a linha herda a geral.';
 
-  if (tela === "editor" && pratoAtual) {
-    return (
-      <EditorFicha
-        prato={pratoAtual}
-        onVoltar={() => { setTela("lista"); setPratoAtual(null); carregarPratos(); }}
-      />
-    );
-  }
+create table if not exists public.linhas_margem (
+  linha     text primary key,
+  margem    numeric not null check (margem >= 0 and margem < 100),
+  criado_em timestamptz not null default now()
+);
 
-  return (
-    <div>
-      <div style={{ ...cardStyle, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-        <div style={{ fontSize: 13, color: "#8A8778" }}>
-          {pratos.filter((p) => p.temFicha).length} de {pratos.length} pratos com ficha cadastrada
-        </div>
-        <button onClick={importarPratos} disabled={importando} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
-          {importando ? <Loader2 size={14} /> : <RefreshCw size={14} />}
-          Importar pratos
-        </button>
-      </div>
+comment on table public.linhas_margem is
+  'Margem pretendida por linha de produto. Linha sem registro herda a margem geral.';
 
-      {erro && (
-        <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>
-      )}
+alter table public.linhas_margem enable row level security;
 
-      {pratos.length > 0 && (
-        <div style={{ position: "relative", marginBottom: 14 }}>
-          <Search size={15} color="#8A8778" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
-          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar prato…"
-            style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
-        </div>
-      )}
+drop policy if exists "linhas_margem_select" on public.linhas_margem;
+create policy "linhas_margem_select" on public.linhas_margem
+  for select to authenticated using (public.esta_aprovado());
 
-      {carregandoLista ? (
-        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
-      ) : pratos.length === 0 ? (
-        <div style={{ ...cardStyle, textAlign: "center", color: "#8A8778", fontSize: 13 }}>
-          Nenhum prato encontrado ainda. Clique em "Importar pratos" para buscar os itens vendidos nos últimos 90 dias.
-        </div>
-      ) : (
-        <div className="list-grid">
-          {pratos.filter((p) => p.nome.toLowerCase().includes(busca.toLowerCase())).map((p) => (
-            <div key={p.id} style={{ ...itemRow, flexDirection: "column", alignItems: "stretch", gap: 6, border: (p.temFicha && !p.custoZerado) ? "1px solid #E8E2D2" : "1px solid #F0D8CE" }}>
-              <button onClick={() => { setPratoAtual(p); setTela("editor"); }}
-                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", width: "100%" }}>
-                <div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{p.nome}</div>
-                  <div style={{ fontSize: 12, color: "#8A8778" }}>{brl(p.preco_venda)}</div>
-                </div>
-                {p.custoZerado ? (
-                  <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Custo pendente</span>
-                ) : p.temFicha ? (
-                  <span style={{ ...pill, background: p.margemPct >= 50 ? "#2F8F5B22" : p.margemPct >= 30 ? "#FAC77555" : "#F0999522", color: p.margemPct >= 50 ? "#0F6E56" : p.margemPct >= 30 ? "#854F0B" : "#A32D2D" }}>
-                    Margem {p.margemPct.toFixed(1)}%
-                  </span>
-                ) : (
-                  <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Sem ficha</span>
-                )}
-              </button>
-              <select value={p.linha_produto || ""} onClick={(e) => e.stopPropagation()}
-                onChange={async (e) => {
-                  const linha = e.target.value || null;
-                  await supabase.from("pratos").update({ linha_produto: linha }).eq("id", p.id);
-                  setPratos((prev) => prev.map((x) => x.id === p.id ? { ...x, linha_produto: linha } : x));
-                }}
-                style={{ fontSize: 11, padding: "3px 6px", borderRadius: 6, border: "1px solid #E8E2D2", background: p.linha_produto ? "#FFFFFF" : "#FBF3D9", color: p.linha_produto ? "#22231F" : "#7A6A1E" }}>
-                <option value="">— linha de produto pendente —</option>
-                {LINHAS_PRODUTO.map((l) => <option key={l} value={l}>{l}</option>)}
-              </select>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+drop policy if exists "linhas_margem_admin" on public.linhas_margem;
+create policy "linhas_margem_admin" on public.linhas_margem
+  for all to authenticated using (public.is_admin()) with check (public.is_admin());
 
-// ---------------------------------------------------------------------------
-// Editor de uma ficha técnica (um prato)
-// ---------------------------------------------------------------------------
-function EditorFicha({ prato, onVoltar }) {
-  const [carregando, setCarregando] = useState(true);
-  const [linhas, setLinhas] = useState([]);
-  const [insumos, setInsumos] = useState([]);
-  const [selecaoNova, setSelecaoNova] = useState("");
-  const [editandoInsumoId, setEditandoInsumoId] = useState(null);
-  const [trocandoIdx, setTrocandoIdx] = useState(null);
-  const [novoInsumoTroca, setNovoInsumoTroca] = useState("");
-  const [formEdicao, setFormEdicao] = useState({ nome: "", unidade: "un", custo: 0, composto: false, rendimento: "" });
-  const [composicaoEdicao, setComposicaoEdicao] = useState([]); // sub-insumos de um insumo composto
-  const [subInsumoSel, setSubInsumoSel] = useState("");
-  const [novoInsumoAberto, setNovoInsumoAberto] = useState(false);
-  const [novoInsumoForm, setNovoInsumoForm] = useState({ nome: "", unidade: "un", custo: 0 });
-  const [salvando, setSalvando] = useState(false);
-  const [erro, setErro] = useState("");
-  const [mensagem, setMensagem] = useState("");
 
-  const carregarTudo = useCallback(async () => {
-    setCarregando(true);
-    const [{ data: itens }, { data: todosInsumos }] = await Promise.all([
-      supabase.from("prato_insumos").select("insumo_id, quantidade, insumo:insumos(id, nome, unidade, custo_medio_atual, composto)").eq("prato_id", prato.id),
-      supabase.from("insumos").select("*").order("nome"),
-    ]);
-    setLinhas((itens || []).map((it) => ({
-      insumo_id: it.insumo_id,
-      nome: it.insumo?.nome,
-      unidade: it.insumo?.unidade,
-      custo_medio_atual: it.insumo?.custo_medio_atual || 0,
-      composto: it.insumo?.composto || false,
-      quantidade: it.quantidade,
-    })));
-    setInsumos([...(todosInsumos || [])].sort(porNome));
-    setCarregando(false);
-  }, [prato.id]);
+-- ---------------------------------------------------------------------
+-- 3. Onde um insumo esta sendo usado
+--
+--    A tela mostra ANTES de perguntar qualquer coisa. Hoje o aviso diz
+--    "1 ficha" e a pessoa abre prato por prato pra descobrir qual.
+-- ---------------------------------------------------------------------
+create or replace function public.fichas_do_insumo(p_insumo uuid)
+returns table (
+  prato_id   uuid,
+  prato      text,
+  quantidade numeric,
+  unidade    text,
+  custo      numeric
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select pr.id, pr.nome, pi.quantidade, i.unidade,
+         round(pi.quantidade * coalesce(i.custo_medio_atual, 0), 4)
+  from public.prato_insumos pi
+  join public.pratos  pr on pr.id = pi.prato_id
+  join public.insumos i  on i.id  = pi.insumo_id
+  where pi.insumo_id = p_insumo
+  order by pr.nome;
+$$;
 
-  useEffect(() => { carregarTudo(); }, [carregarTudo]);
+grant execute on function public.fichas_do_insumo(uuid) to authenticated;
 
-  const insumosDisponiveis = insumos.filter((i) => !linhas.some((l) => l.insumo_id === i.id)).sort(porNome);
-  const insumosSimples = insumos.filter((i) => !i.composto); // composto só pode ser feito de insumos simples
 
-  const adicionarInsumo = () => {
-    if (!selecaoNova) return;
-    const insumo = insumos.find((i) => i.id === selecaoNova);
-    if (!insumo) return;
-    setLinhas((prev) => [...prev, { insumo_id: insumo.id, nome: insumo.nome, unidade: insumo.unidade, custo_medio_atual: insumo.custo_medio_atual, composto: insumo.composto, quantidade: 1 }]);
-    setSelecaoNova("");
-  };
+-- ---------------------------------------------------------------------
+-- 4. Substituir o insumo em todas as fichas
+--
+--    p_quantidade:
+--      NULO  = mantem a quantidade que ja estava (usar quando as duas
+--              unidades sao iguais)
+--      valor = grava esta quantidade em todas as fichas (usar quando a
+--              unidade muda: 0,1 kg nao vira 0,1 un)
+--
+--    Se o insumo novo JA estiver no mesmo prato, as duas linhas viram
+--    uma e as quantidades somam.
+-- ---------------------------------------------------------------------
+create or replace function public.substituir_insumo_nas_fichas(
+  p_de         uuid,
+  p_para       uuid,
+  p_quantidade numeric default null
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_fichas integer := 0;
+  v_nome_de   text;
+  v_nome_para text;
+begin
+  if not public.pode_editar('supply.fichas') and not public.is_admin() then
+    raise exception 'Você não tem permissão para mexer nas fichas técnicas.';
+  end if;
 
-  const alterarQuantidade = (idx, valor) => {
-    setLinhas((prev) => prev.map((l, i) => i === idx ? { ...l, quantidade: parseFloat(valor) || 0 } : l));
-  };
+  if p_de = p_para then
+    raise exception 'O insumo de origem e o de destino são o mesmo.';
+  end if;
 
-  const removerLinha = (idx) => setLinhas((prev) => prev.filter((_, i) => i !== idx));
+  select nome into v_nome_de   from public.insumos where id = p_de;
+  select nome into v_nome_para from public.insumos where id = p_para;
+  if v_nome_de is null or v_nome_para is null then
+    raise exception 'Insumo não encontrado.';
+  end if;
 
-  const trocarInsumoDaLinha = (idx) => {
-    if (!novoInsumoTroca) return;
-    const novo = insumos.find((i) => i.id === novoInsumoTroca);
-    if (!novo) return;
-    setLinhas((prev) => prev.map((l, i) => i === idx
-      ? { ...l, insumo_id: novo.id, nome: novo.nome, unidade: novo.unidade, custo_medio_atual: novo.custo_medio_atual, composto: novo.composto }
-      : l));
-    setTrocandoIdx(null);
-    setNovoInsumoTroca("");
-  };
+  select count(*) into v_fichas
+    from public.prato_insumos where insumo_id = p_de;
 
-  const abrirEdicaoInsumo = async (linha) => {
-    setEditandoInsumoId(linha.insumo_id);
-    setErro("");
-    const insumo = insumos.find((i) => i.id === linha.insumo_id);
-    setFormEdicao({
-      nome: linha.nome,
-      unidade: linha.unidade,
-      custo: linha.custo_medio_atual,
-      composto: insumo?.composto || false,
-      rendimento: insumo?.rendimento ?? "",
-    });
-    if (insumo?.composto) {
-      const { data } = await supabase
-        .from("insumo_composicao")
-        .select("insumo_filho_id, quantidade, filho:insumos(id, nome, unidade, custo_medio_atual)")
-        .eq("insumo_pai_id", linha.insumo_id);
-      setComposicaoEdicao((data || []).map((c) => ({
-        insumo_id: c.insumo_filho_id, nome: c.filho?.nome, unidade: c.filho?.unidade,
-        custo_medio_atual: c.filho?.custo_medio_atual || 0, quantidade: c.quantidade,
-      })));
-    } else {
-      setComposicaoEdicao([]);
-    }
-  };
+  if v_fichas = 0 then
+    return 0;
+  end if;
 
-  const adicionarSubInsumo = () => {
-    if (!subInsumoSel) return;
-    const insumo = insumosSimples.find((i) => i.id === subInsumoSel);
-    if (!insumo || composicaoEdicao.some((c) => c.insumo_id === insumo.id)) return;
-    setComposicaoEdicao((prev) => [...prev, { insumo_id: insumo.id, nome: insumo.nome, unidade: insumo.unidade, custo_medio_atual: insumo.custo_medio_atual, quantidade: 0 }]);
-    setSubInsumoSel("");
-  };
-  const alterarQtdSubInsumo = (idx, valor) => {
-    setComposicaoEdicao((prev) => prev.map((c, i) => i === idx ? { ...c, quantidade: parseFloat(valor) || 0 } : c));
-  };
-  const removerSubInsumo = (idx) => setComposicaoEdicao((prev) => prev.filter((_, i) => i !== idx));
+  -- 1) pratos que JA tem o insumo novo: soma na linha que existe e
+  --    apaga a antiga. Feito primeiro pra nao esbarrar na chave.
+  update public.prato_insumos novo
+     set quantidade = novo.quantidade
+                    + coalesce(p_quantidade, velho.quantidade)
+    from public.prato_insumos velho
+   where velho.insumo_id = p_de
+     and novo.insumo_id  = p_para
+     and novo.prato_id   = velho.prato_id;
 
-  const custoCompostoPreview = composicaoEdicao.reduce((s, c) => s + c.quantidade * c.custo_medio_atual, 0);
-  const rendimentoNum = parseFloat(formEdicao.rendimento) || 0;
-  const custoPorUnidadePreview = rendimentoNum > 0 ? custoCompostoPreview / rendimentoNum : 0;
+  delete from public.prato_insumos velho
+   where velho.insumo_id = p_de
+     and exists (
+       select 1 from public.prato_insumos novo
+        where novo.insumo_id = p_para
+          and novo.prato_id  = velho.prato_id
+     );
 
-  const salvarEdicaoInsumo = async () => {
-    setErro("");
-    const patch = {
-      nome: formEdicao.nome,
-      unidade: formEdicao.unidade,
-      composto: formEdicao.composto,
-      rendimento: formEdicao.composto ? (parseFloat(formEdicao.rendimento) || null) : null,
-      atualizado_em: new Date().toISOString(),
-    };
-    if (!formEdicao.composto) {
-      patch.custo_medio_atual = parseFloat(formEdicao.custo) || 0;
-    }
-    const { error: errUpd } = await supabase.from("insumos").update(patch).eq("id", editandoInsumoId);
-    if (errUpd) { setErro(errUpd.message); return; }
+  -- 2) o resto: so troca o apontamento
+  update public.prato_insumos
+     set insumo_id  = p_para,
+         quantidade = coalesce(p_quantidade, quantidade)
+   where insumo_id = p_de;
 
-    if (formEdicao.composto) {
-      await supabase.from("insumo_composicao").delete().eq("insumo_pai_id", editandoInsumoId);
-      if (composicaoEdicao.length > 0) {
-        const { error: errComp } = await supabase.from("insumo_composicao").insert(
-          composicaoEdicao.map((c) => ({ insumo_pai_id: editandoInsumoId, insumo_filho_id: c.insumo_id, quantidade: c.quantidade }))
-        );
-        if (errComp) { setErro(errComp.message); return; }
-      }
-    }
+  return v_fichas;
+end;
+$$;
 
-    // Recarrega o insumo pra pegar o custo_medio_atual já recalculado (se composto, quem calcula é o gatilho no banco)
-    const { data: insumoAtualizado } = await supabase.from("insumos").select("*").eq("id", editandoInsumoId).single();
-    const custoFinal = insumoAtualizado?.custo_medio_atual ?? (parseFloat(formEdicao.custo) || 0);
+comment on function public.substituir_insumo_nas_fichas(uuid, uuid, numeric) is
+  'Troca um insumo por outro em todas as fichas tecnicas, somando quando o destino ja esta no mesmo prato.';
 
-    setLinhas((prev) => prev.map((l) => l.insumo_id === editandoInsumoId
-      ? { ...l, nome: formEdicao.nome, unidade: formEdicao.unidade, custo_medio_atual: custoFinal, composto: formEdicao.composto }
-      : l));
-    setInsumos((prev) => prev.map((i) => i.id === editandoInsumoId ? { ...i, ...insumoAtualizado } : i));
-    setEditandoInsumoId(null);
-  };
+grant execute on function public.substituir_insumo_nas_fichas(uuid, uuid, numeric) to authenticated;
 
-  const criarInsumo = async () => {
-    if (!novoInsumoForm.nome.trim()) return;
-    const { data, error } = await supabase.from("insumos").insert({
-      nome: novoInsumoForm.nome.trim(),
-      unidade: novoInsumoForm.unidade,
-      custo_medio_atual: parseFloat(novoInsumoForm.custo) || 0,
-    }).select().single();
-    if (error) { setErro(error.message); return; }
-    setInsumos((prev) => [...prev, data].sort(porNome));
-    setLinhas((prev) => [...prev, { insumo_id: data.id, nome: data.nome, unidade: data.unidade, custo_medio_atual: data.custo_medio_atual, composto: false, quantidade: 1 }]);
-    setNovoInsumoForm({ nome: "", unidade: "un", custo: 0 });
-    setNovoInsumoAberto(false);
-  };
 
-  const custoTotal = linhas.reduce((s, l) => s + l.quantidade * l.custo_medio_atual, 0);
-  const margem = prato.preco_venda - custoTotal;
-  const margemPct = prato.preco_venda > 0 ? (margem / prato.preco_venda) * 100 : 0;
+-- ---------------------------------------------------------------------
+-- 5. Por que um insumo nao pode ser excluido
+--
+--    A tela chama isso depois da troca. Nota fiscal e movimentacao de
+--    estoque sao HISTORIA: o que foi comprado naquele dia foi aquilo
+--    mesmo. Reescrever mudaria o custo medio e o estoque passado — por
+--    isso a substituicao nao toca nesses, e o insumo pode continuar
+--    preso. Melhor dizer o motivo do que falhar calado.
+-- ---------------------------------------------------------------------
+create or replace function public.insumo_em_uso(p_insumo uuid)
+returns table (
+  fichas         integer,
+  notas          integer,
+  movimentacoes  integer,
+  contagens      integer
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    (select count(*) from public.prato_insumos         where insumo_id = p_insumo)::integer,
+    (select count(*) from public.itens_documento_compra where insumo_id = p_insumo)::integer,
+    (select count(*) from public.movimentacoes_estoque  where insumo_id = p_insumo)::integer,
+    (select count(*) from public.contagens_itens        where insumo_id = p_insumo)::integer;
+$$;
 
-  const salvarFicha = async () => {
-    setSalvando(true);
-    setErro("");
-    setMensagem("");
-    await supabase.from("prato_insumos").delete().eq("prato_id", prato.id);
-    if (linhas.length > 0) {
-      const { error } = await supabase.from("prato_insumos").insert(
-        linhas.map((l) => ({ prato_id: prato.id, insumo_id: l.insumo_id, quantidade: l.quantidade }))
-      );
-      if (error) { setErro(error.message); setSalvando(false); return; }
-    }
-    setSalvando(false);
-    onVoltar();
-  };
+grant execute on function public.insumo_em_uso(uuid) to authenticated;
 
-  return (
-    <div>
-      <button onClick={onVoltar} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, marginBottom: 14 }}>
-        <ChevronLeft size={14} /> Voltar à lista de pratos
-      </button>
 
-      <div style={{ ...cardStyle, marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F" }}>{prato.nome}</div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 11, color: "#8A8778" }}>Preço de venda</div>
-          <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F" }}>{brl(prato.preco_venda)}</div>
-        </div>
-      </div>
+-- ---------------------------------------------------------------------
+-- 6. Verificacao
+-- ---------------------------------------------------------------------
+select 'margem geral' as bloco, valor from public.dre_config where chave = 'margem_pretendida';
 
-      <div style={sectionLabel}>Insumos</div>
+select 'colunas novas' as bloco,
+       count(*) filter (where column_name = 'revenda')           as tem_revenda,
+       count(*) filter (where column_name = 'margem_pretendida') as tem_margem
+from information_schema.columns
+where table_schema = 'public' and table_name = 'pratos';
 
-      {carregando ? (
-        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
-      ) : (
-        <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
-          {linhas.map((l, idx) => {
-            const semCusto = l.custo_medio_atual === 0;
-            return (
-            <div key={l.insumo_id} style={{ ...cardStyle, border: semCusto ? "1px solid #E24B4A" : "1px solid #E8E2D2" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ flex: 1, fontSize: 13, color: "#22231F" }}>
-                  {l.nome}
-                  {l.composto && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#8A6A0F", background: "#FBF3D9", padding: "1px 6px", borderRadius: 999 }}>composto</span>}
-                  {semCusto && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#791F1F", background: "#FCEBEB", padding: "1px 6px", borderRadius: 999 }}>sem custo</span>}
-                </div>
-                <input type="number" value={l.quantidade} onChange={(e) => alterarQuantidade(idx, e.target.value)}
-                  style={{ width: 60, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
-                <span style={{ fontSize: 12, color: "#8A8778", width: 20 }}>{l.unidade}</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: semCusto ? "#C4432B" : "#22231F", width: 74, textAlign: "right" }}>
-                  {brl(l.quantidade * l.custo_medio_atual)}
-                </span>
-                <button onClick={() => { setTrocandoIdx(trocandoIdx === idx ? null : idx); setNovoInsumoTroca(""); }} style={ghostIconBtn} aria-label="Trocar por outro insumo"><ArrowLeftRight size={15} /></button>
-                <button onClick={() => abrirEdicaoInsumo(l)} style={ghostIconBtn} aria-label="Editar insumo"><Pencil size={15} /></button>
-                <button onClick={() => removerLinha(idx)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Remover insumo"><Trash2 size={15} /></button>
-              </div>
-              {trocandoIdx === idx && (
-                <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px dashed #E8E2D2" }}>
-                  <select value={novoInsumoTroca} onChange={(e) => setNovoInsumoTroca(e.target.value)}
-                    style={{ flex: 1, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
-                    <option value="">Trocar "{l.nome}" por…</option>
-                    {insumos.filter((i) => i.id !== l.insumo_id && !linhas.some((li) => li.insumo_id === i.id)).map((i) => (
-                      <option key={i.id} value={i.id}>{i.nome}</option>
-                    ))}
-                  </select>
-                  <button onClick={() => trocarInsumoDaLinha(idx)} disabled={!novoInsumoTroca} style={{ ...btnSecondary, padding: "5px 12px", fontSize: 12 }}>Trocar</button>
-                </div>
-              )}
-              {editandoInsumoId === l.insumo_id && (
-                <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-                    <input value={formEdicao.nome} onChange={(e) => setFormEdicao((f) => ({ ...f, nome: e.target.value }))}
-                      placeholder="Nome do insumo" style={{ flex: 1, minWidth: 120, padding: "4px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
-                    <select value={formEdicao.unidade} onChange={(e) => setFormEdicao((f) => ({ ...f, unidade: e.target.value }))}
-                      style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }}>
-                      {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
-                    </select>
-                  </div>
-
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#8A8778", marginBottom: 10 }}>
-                    <input type="checkbox" checked={formEdicao.composto} onChange={(e) => setFormEdicao((f) => ({ ...f, composto: e.target.checked }))} />
-                    Insumo composto (custo calculado a partir de outros insumos)
-                  </label>
-
-                  {!formEdicao.composto ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 12, color: "#8A8778" }}>Custo unitário (valor da última compra)</span>
-                      <input type="number" step="0.01" value={formEdicao.custo} onChange={(e) => setFormEdicao((f) => ({ ...f, custo: e.target.value }))}
-                        style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
-                      <button onClick={salvarEdicaoInsumo} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
-                    </div>
-                  ) : (
-                    <div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                        <span style={{ fontSize: 12, color: "#8A8778" }}>Rendimento (em {formEdicao.unidade}) — quanto essa receita produz</span>
-                        <input type="number" step="0.01" value={formEdicao.rendimento} onChange={(e) => setFormEdicao((f) => ({ ...f, rendimento: e.target.value }))}
-                          style={{ width: 80, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
-                      </div>
-
-                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "#8A8778", marginBottom: 6 }}>Composição</div>
-                      <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
-                        {composicaoEdicao.map((c, cidx) => (
-                          <div key={c.insumo_id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#F6F1E7", borderRadius: 6, padding: "6px 8px" }}>
-                            <span style={{ flex: 1, fontSize: 12, color: "#22231F" }}>{c.nome}</span>
-                            <input type="number" value={c.quantidade} onChange={(e) => alterarQtdSubInsumo(cidx, e.target.value)}
-                              style={{ width: 56, padding: "3px 5px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                            <span style={{ fontSize: 11, color: "#8A8778", width: 18 }}>{c.unidade}</span>
-                            <button onClick={() => removerSubInsumo(cidx)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Remover sub-insumo"><Trash2 size={13} /></button>
-                          </div>
-                        ))}
-                        {composicaoEdicao.length === 0 && <div style={{ fontSize: 12, color: "#8A8778" }}>Nenhum insumo na composição ainda.</div>}
-                      </div>
-
-                      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                        <select value={subInsumoSel} onChange={(e) => setSubInsumoSel(e.target.value)}
-                          style={{ flex: 1, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, background: "#FFFFFF" }}>
-                          <option value="">Adicionar insumo simples…</option>
-                          {insumosSimples.filter((i) => !composicaoEdicao.some((c) => c.insumo_id === i.id)).map((i) => (
-                            <option key={i.id} value={i.id}>{i.nome}</option>
-                          ))}
-                        </select>
-                        <button onClick={adicionarSubInsumo} style={{ ...btnSecondary, padding: "5px 10px", fontSize: 12 }}>+</button>
-                      </div>
-
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FBF3D9", border: "1px solid #E8D48A", borderRadius: 8, padding: "8px 10px" }}>
-                        <span style={{ fontSize: 12, color: "#7A6A1E" }}>Custo calculado por {formEdicao.unidade}</span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: "#7A6A1E" }}>{brl(custoPorUnidadePreview)}</span>
-                      </div>
-                      <button onClick={salvarEdicaoInsumo} style={{ ...btnSecondary, width: "100%", marginTop: 10, display: "flex", justifyContent: "center", gap: 6 }}>
-                        <Check size={14} /> Confirmar
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );})}
-          {linhas.length === 0 && (
-            <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum insumo adicionado ainda.</div>
-          )}
-        </div>
-      )}
-
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-        <select value={selecaoNova} onChange={(e) => setSelecaoNova(e.target.value)}
-          style={{ flex: 1, padding: "9px 10px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }}>
-          <option value="">Escolher insumo cadastrado…</option>
-          {insumosDisponiveis.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}
-        </select>
-        <button onClick={adicionarInsumo} disabled={!selecaoNova} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 4 }}>
-          <Plus size={14} /> Adicionar
-        </button>
-      </div>
-
-      {!novoInsumoAberto ? (
-        <button onClick={() => setNovoInsumoAberto(true)} style={{ ...linkBtn, marginBottom: 18 }}>+ Criar novo insumo</button>
-      ) : (
-        <div style={{ ...cardStyle, marginBottom: 18, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <input value={novoInsumoForm.nome} onChange={(e) => setNovoInsumoForm((f) => ({ ...f, nome: e.target.value }))}
-            placeholder="Nome (ex.: Mozzarela)" style={{ flex: 1, minWidth: 140, padding: "8px 10px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13 }} />
-          <select value={novoInsumoForm.unidade} onChange={(e) => setNovoInsumoForm((f) => ({ ...f, unidade: e.target.value }))}
-            style={{ padding: "8px 6px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13 }}>
-            {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
-          </select>
-          <input type="number" step="0.01" value={novoInsumoForm.custo} onChange={(e) => setNovoInsumoForm((f) => ({ ...f, custo: e.target.value }))}
-            placeholder="Custo unit." style={{ width: 90, padding: "8px 10px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13 }} />
-          <button onClick={criarInsumo} style={btnSecondary}>Criar</button>
-          <button onClick={() => setNovoInsumoAberto(false)} style={linkBtn}>Cancelar</button>
-        </div>
-      )}
-
-      <div style={cardStyle}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#8A8778", marginBottom: 6 }}>
-          <span>Custo total</span><span style={{ color: "#22231F", fontWeight: 700 }}>{brl(custoTotal)}</span>
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#8A8778" }}>
-          <span>Margem de contribuição</span>
-          <span>
-            <span style={{ color: "#22231F", fontWeight: 700 }}>{brl(margem)}</span>
-            <span style={{ ...pill, marginLeft: 6, background: margemPct >= 50 ? "#2F8F5B22" : margemPct >= 30 ? "#FAC77555" : "#F0999522", color: margemPct >= 50 ? "#0F6E56" : margemPct >= 30 ? "#854F0B" : "#A32D2D" }}>
-              {margemPct.toFixed(1)}%
-            </span>
-          </span>
-        </div>
-      </div>
-
-      {erro && <div style={{ color: "#C4432B", fontSize: 13, marginTop: 12 }}>{erro}</div>}
-      {mensagem && <div style={{ color: "#2F8F5B", fontSize: 13, marginTop: 12 }}>{mensagem}</div>}
-
-      <button onClick={salvarFicha} disabled={salvando} style={{ ...btnPrimary, width: "100%", marginTop: 16 }}>
-        {salvando ? <Loader2 size={16} /> : <Check size={16} />}
-        Salvar ficha técnica
-      </button>
-    </div>
-  );
-}
-
-const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
-const itemRow = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "#FFFFFF", borderRadius: 10, padding: "12px 14px" };
-const ghostIconBtn = { border: "none", background: "none", color: "#8A8778", cursor: "pointer", padding: 2, display: "flex" };
-const btnPrimary = { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
-const btnSecondary = { background: "#F6F1E7", border: "1px solid #E8E2D2", color: "#22231F", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" };
-const linkBtn = { background: "none", border: "none", color: "#8A6A0F", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0, textAlign: "left" };
-const sectionLabel = { fontSize: 12, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#8A8778", marginBottom: 8 };
-const pill = { fontSize: 12, fontWeight: 700, padding: "3px 9px", borderRadius: 999 };
-const avisoStyle = { display: "flex", gap: 8, background: "#FBF3D9", border: "1px solid #E8D48A", color: "#7A6A1E", borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 14 };
+select 'linhas com margem propria' as bloco, count(*) from public.linhas_margem;
