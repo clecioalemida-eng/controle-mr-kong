@@ -93,6 +93,7 @@ export default function Insumos({ permissoes }) {
   const [setores, setSetores] = useState({});   // insumo_id -> ["bar", ...]
   const [listaSetores, setListaSetores] = useState(SETORES_PADRAO);
   const [editandoSetor, setEditandoSetor] = useState(null);
+  const [substituindo, setSubstituindo] = useState(null); // insumo que a lixeira quer excluir
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -175,16 +176,27 @@ export default function Insumos({ permissoes }) {
     setEditandoSetor(null);
   };
 
+  // Antes isto era um beco sem saída: avisava "está em 1 ficha" e parava
+  // por aí, deixando a pessoa abrir prato por prato pra descobrir qual.
+  // Agora abre o painel de substituição, que mostra ONDE está e troca em
+  // todas as fichas de uma vez.
   const remover = async (insumo) => {
     setErro("");
-    if (usos[insumo.id]) {
-      setErro(`"${insumo.nome}" está em ${usos[insumo.id]} ficha(s) técnica(s). Tire das fichas antes de excluir.`);
-      return;
-    }
+    if (usos[insumo.id]) { setSubstituindo(insumo); return; }
     const { error } = await supabase.from("insumos").delete().eq("id", insumo.id);
-    if (error) { setErro(error.message); return; }
+    if (error) { setErro(traduzirBloqueio(error.message, insumo.nome)); return; }
     setInsumos((atual) => atual.filter((i) => i.id !== insumo.id));
   };
+
+  // O Postgres devolve "violates foreign key constraint ..." — ilegível.
+  // Nota fiscal e movimentação são história e a substituição não mexe
+  // nelas de propósito, então esse bloqueio é esperado e merece explicação.
+  function traduzirBloqueio(mensagem, nome) {
+    if (/foreign key|violates|23503/i.test(mensagem || "")) {
+      return `"${nome}" já apareceu em nota fiscal, movimentação de estoque ou contagem. Esse histórico não é reescrito — o que você comprou naquele dia foi esse insumo mesmo. Ele sai das fichas, mas continua cadastrado.`;
+    }
+    return mensagem;
+  }
 
   return (
     <div>
@@ -346,6 +358,20 @@ export default function Insumos({ permissoes }) {
                   <button onClick={() => remover(i)} style={iconBtnPeq} title="Excluir insumo">
                     <Trash2 size={13} />
                   </button>
+                )}
+
+                {substituindo?.id === i.id && (
+                  <SubstituirInsumo
+                    insumo={i}
+                    insumos={insumos}
+                    onFechar={() => setSubstituindo(null)}
+                    onPronto={(apagou) => {
+                      setSubstituindo(null);
+                      if (apagou) setInsumos((atual) => atual.filter((x) => x.id !== i.id));
+                      carregar();
+                    }}
+                    onErro={(m) => setErro(traduzirBloqueio(m, i.nome))}
+                  />
                 )}
 
                 {editandoSetor === i.id && (
@@ -949,6 +975,166 @@ function ImportarLista({ insumos, aberto, setAberto, aoTerminar }) {
 // =====================================================================
 // Estilos — mesmos tokens do resto do painel
 // =====================================================================
+
+// ---------------------------------------------------------------------
+// Substituir um insumo em todas as fichas
+//
+// Três cuidados que a função do banco impõe e a tela precisa explicar:
+//
+//   1. UNIDADE DIFERENTE. Se o velho é kg e o novo é un, 0,1 kg não vira
+//      0,1 un — seria inventar custo. Nesse caso a tela exige a
+//      quantidade nova.
+//   2. DESTINO JÁ NA MESMA FICHA. As duas linhas viram uma e as
+//      quantidades somam. Sem isso o banco recusaria: a chave é
+//      (prato_id, insumo_id), duas linhas iguais não cabem.
+//   3. HISTÓRICO NÃO SE REESCREVE. Nota fiscal, movimentação e contagem
+//      continuam apontando pro insumo velho. O que foi comprado naquele
+//      dia foi aquilo mesmo.
+// ---------------------------------------------------------------------
+function semAcentoIns(t) {
+  return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+function SubstituirInsumo({ insumo, insumos, onFechar, onPronto, onErro }) {
+  const [fichas, setFichas] = useState(null);
+  const [busca, setBusca] = useState("");
+  const [aberto, setAberto] = useState(false);
+  const [destino, setDestino] = useState(null);
+  const [qtdNova, setQtdNova] = useState("1");
+  const [trabalhando, setTrabalhando] = useState(false);
+  const [erroLocal, setErroLocal] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const { data, error } = await supabase.rpc("fichas_do_insumo", { p_insumo: insumo.id });
+      if (error) {
+        setErroLocal(/does not exist|schema cache/i.test(error.message)
+          ? "A substituição ainda não foi instalada no banco — falta rodar a migração 082."
+          : error.message);
+        setFichas([]);
+        return;
+      }
+      setFichas(data || []);
+    })();
+  }, [insumo.id]);
+
+  const candidatos = useMemo(() => {
+    const termos = semAcentoIns(busca).split(/\s+/).filter(Boolean);
+    return insumos
+      .filter((i) => i.id !== insumo.id)
+      .filter((i) => termos.every((t) => semAcentoIns(i.nome).includes(t)))
+      .slice(0, 40);
+  }, [insumos, busca, insumo.id]);
+
+  const unidadeMuda = destino && destino.unidade !== insumo.unidade;
+
+  const executar = async (tambemExcluir) => {
+    if (!destino) return;
+    setTrabalhando(true);
+    setErroLocal("");
+    const { error } = await supabase.rpc("substituir_insumo_nas_fichas", {
+      p_de: insumo.id,
+      p_para: destino.id,
+      p_quantidade: unidadeMuda ? (parseFloat(String(qtdNova).replace(",", ".")) || 0) : null,
+    });
+    if (error) { setTrabalhando(false); setErroLocal(error.message); return; }
+
+    if (!tambemExcluir) { setTrabalhando(false); onPronto(false); return; }
+
+    const { error: e2 } = await supabase.from("insumos").delete().eq("id", insumo.id);
+    setTrabalhando(false);
+    if (e2) { onErro(e2.message); onPronto(false); return; }
+    onPronto(true);
+  };
+
+  return (
+    <div style={{ width: "100%", background: "#FFFFFF", border: "1px solid #C98F87", borderRadius: 11, padding: 13, marginTop: 8 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 9 }}>Excluir "{insumo.nome}"</div>
+
+      {fichas === null ? (
+        <div style={{ fontSize: 12.5, color: "#8A8778" }}>Vendo onde ele está…</div>
+      ) : (
+        <div style={{ background: "#FCFAF3", border: "1px solid #F0EBDD", borderRadius: 8, padding: "9px 11px", marginBottom: 11 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.3, textTransform: "uppercase", color: "#8A8778", marginBottom: 5 }}>
+            Está sendo usado em
+          </div>
+          {fichas.map((f) => (
+            <div key={f.prato_id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, padding: "2px 0" }}>
+              <span>{f.prato}</span>
+              <span style={{ color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>
+                {Number(f.quantidade)} {f.unidade}
+                {Number(f.custo) > 0 ? ` · R$ ${Number(f.custo).toFixed(2).replace(".", ",")}` : ""}
+              </span>
+            </div>
+          ))}
+          {fichas.length === 0 && <div style={{ fontSize: 12.5, color: "#8A8778" }}>Em nenhuma ficha técnica.</div>}
+        </div>
+      )}
+
+      <div style={{ fontSize: 12.5, color: "#8A8778", marginBottom: 6 }}>Substituir por qual insumo?</div>
+      <div style={{ position: "relative", marginBottom: 10 }}>
+        <input value={busca} placeholder="Digite o insumo certo…" autoComplete="off"
+          onChange={(e) => { setBusca(e.target.value); setDestino(null); setAberto(true); }}
+          onFocus={() => setAberto(true)}
+          onBlur={() => setTimeout(() => setAberto(false), 130)}
+          style={{ width: "100%", boxSizing: "border-box", padding: "9px 11px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13.5, fontFamily: "inherit" }} />
+        {aberto && (
+          <div onMouseDown={(e) => e.preventDefault()}
+            style={{ position: "absolute", left: 0, right: 0, top: "calc(100% + 4px)", zIndex: 40, background: "#FFFFFF", border: "1px solid #DDD5BF", borderRadius: 8, boxShadow: "0 8px 22px rgba(34,35,31,.14)", maxHeight: 190, overflowY: "auto" }}>
+            {candidatos.map((i) => (
+              <div key={i.id} onClick={() => { setDestino(i); setBusca(i.nome); setAberto(false); }}
+                style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "8px 10px", fontSize: 12.5, cursor: "pointer" }}>
+                <span>{i.nome}</span>
+                <span style={{ fontSize: 10.5, color: "#8A8778" }}>
+                  {Number(i.custo_medio_atual) > 0 ? `R$ ${Number(i.custo_medio_atual).toFixed(2).replace(".", ",")} /${i.unidade}` : `sem custo · ${i.unidade}`}
+                </span>
+              </div>
+            ))}
+            {candidatos.length === 0 && <div style={{ padding: "8px 10px", fontSize: 12.5, color: "#8A8778" }}>Nenhum insumo com esse nome.</div>}
+          </div>
+        )}
+      </div>
+
+      {unidadeMuda && (
+        <div style={{ background: "#FBF3D9", border: "1px solid #E8D48A", color: "#7A6A1E", borderRadius: 8, padding: "10px 11px", fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
+          <strong>Unidades diferentes.</strong> "{insumo.nome}" é <strong>{insumo.unidade}</strong> e "{destino.nome}" é <strong>{destino.unidade}</strong> —
+          a quantidade de uma não vira a da outra. Quanto entra em cada ficha?
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 6 }}>
+            <input value={qtdNova} onChange={(e) => setQtdNova(e.target.value)}
+              style={{ width: 74, padding: "5px 7px", borderRadius: 6, border: "1px solid #C9B98A", fontSize: 12.5, textAlign: "right", fontFamily: "inherit" }} />
+            <strong>{destino.unidade}</strong>
+          </span>
+        </div>
+      )}
+
+      {destino && !unidadeMuda && (
+        <div style={{ background: "#EAF1F7", border: "1px solid #BBD3E4", color: "#2F5772", borderRadius: 8, padding: "10px 11px", fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
+          As quantidades continuam as mesmas ({insumo.unidade} → {destino.unidade}). Se "{destino.nome}" já estiver
+          em alguma dessas fichas, as duas linhas viram uma e as quantidades somam.
+        </div>
+      )}
+
+      {erroLocal && <div style={{ fontSize: 12, color: "#A32D2D", marginBottom: 9 }}>{erroLocal}</div>}
+
+      <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+        <button onClick={() => executar(true)} disabled={!destino || trabalhando}
+          style={{ ...btnSecondary, background: destino ? "#7A2020" : "#F6F1E7", color: destino ? "#FFFFFF" : "#B3AC96", borderColor: destino ? "#7A2020" : "#E8E2D2" }}>
+          {trabalhando ? "Trabalhando…" : "Substituir e excluir"}
+        </button>
+        <button onClick={() => executar(false)} disabled={!destino || trabalhando}
+          style={{ ...btnSecondary, background: destino ? "#22231F" : "#F6F1E7", color: destino ? "#F3EFE3" : "#B3AC96", borderColor: destino ? "#22231F" : "#E8E2D2" }}>
+          Só substituir
+        </button>
+        <button onClick={onFechar} style={btnSecondary}>Cancelar</button>
+      </div>
+      <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 8, lineHeight: 1.5 }}>
+        A troca vale só para as fichas técnicas. Notas fiscais, movimentações de estoque e contagens
+        continuam apontando para "{insumo.nome}" — isso é histórico e não se reescreve.
+      </div>
+    </div>
+  );
+}
+
 const cardStyle = {
   background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14,
 };
