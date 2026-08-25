@@ -1,16 +1,30 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
-  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, EyeOff, Search, X, ExternalLink, RotateCcw,
+  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search, X, ExternalLink, RotateCcw,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
-const FORMAS_PAGAMENTO_COMPRA = [
+// Padrão, usado só se a migração 080 ainda não rodou ou se a consulta
+// falhar. A lista de verdade fica em `listas_opcoes` e é editada em
+// DRE → Listas.
+const FORMAS_PADRAO = [
   { valor: "pix", rotulo: "Pix" },
   { valor: "debito", rotulo: "Débito" },
   { valor: "credito", rotulo: "Cartão de crédito" },
   { valor: "boleto", rotulo: "Boleto" },
 ];
+
+async function buscarFormasPagamento() {
+  const { data, error } = await supabase
+    .from("listas_opcoes")
+    .select("valor, rotulo, ordem")
+    .eq("lista", "forma_pagamento")
+    .eq("ativo", true)
+    .order("ordem");
+  if (error || !data || data.length === 0) return FORMAS_PADRAO;
+  return data;
+}
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
 function fmtData(d) { if (!d) return ""; return new Date(d).toLocaleDateString("pt-BR"); }
@@ -210,10 +224,24 @@ function detectarEmbalagem(nome) {
   if (m) return { pacotes: 1, porPacote: Number(m[1]) };
   return null;
 }
+// Abre o arquivo da nota numa aba nova.
+//
+// A aba é aberta ANTES do await, ainda dentro do clique. O Safari (e o
+// Chrome) bloqueiam window.open que acontece depois de uma espera: pra
+// eles, quem abriu foi o código, não a pessoa. Como o link assinado do
+// Supabase leva um instante pra sair, abrimos a aba vazia na hora e só
+// depois mandamos ela pro endereço.
 async function abrirPreview(caminho) {
-  const { data, error } = await supabase.storage.from("notas-fiscais").createSignedUrl(caminho, 300);
-  if (error || !data?.signedUrl) { alert("Não consegui abrir o arquivo: " + (error?.message || "")); return; }
-  window.open(data.signedUrl, "_blank");
+  const aba = window.open("", "_blank");
+  const { data, error } = await supabase.storage.from("notas-fiscais").createSignedUrl(caminho, 3600);
+  if (error || !data?.signedUrl) {
+    if (aba) aba.close();
+    alert("Não consegui abrir o arquivo: " + (error?.message || ""));
+    return;
+  }
+  if (aba) { aba.location.href = data.signedUrl; return; }
+  // bloqueador de pop-up derrubou a aba — vai na mesma janela
+  window.location.href = data.signedUrl;
 }
 const STATUS_LABEL = {
   processando: "Lendo com IA",
@@ -468,27 +496,16 @@ export default function NotasFiscais() {
 // Tela de conferência: revisar/editar os itens lidos antes de confirmar
 // ---------------------------------------------------------------------------
 function Conferencia({ documento, onVoltar }) {
-  // Nota original aberta ao lado dos itens. Conferir item a item com a
-  // nota noutra aba obriga a ficar trocando de janela e perdendo a linha
-  // — por isso ela abre aqui, fixa, e a lista continua rolando ao lado.
-  const [original, setOriginal] = useState(null);
+  // A nota original abre em ABA NOVA, não mais num painel embutido. O
+  // painel empurrava a lista de itens pra baixo e, numa nota de 18
+  // itens, sobrava pouca tela pra cada linha. Na aba separada dá pra
+  // botar as duas janelas lado a lado.
   const [abrindoOriginal, setAbrindoOriginal] = useState(false);
 
   const abrirOriginal = async () => {
-    if (original) { setOriginal(null); return; }
     setAbrindoOriginal(true);
-    const { data, error } = await supabase.storage
-      .from("notas-fiscais")
-      .createSignedUrl(documento.arquivo_path, 3600);
+    await abrirPreview(documento.arquivo_path);
     setAbrindoOriginal(false);
-    if (error || !data?.signedUrl) {
-      alert("Não consegui abrir o arquivo: " + (error?.message || ""));
-      return;
-    }
-    setOriginal({
-      url: data.signedUrl,
-      ehPdf: /\.pdf(\?|$)/i.test(documento.arquivo_path),
-    });
   };
 
   const [itens, setItens] = useState([]);
@@ -496,6 +513,7 @@ function Conferencia({ documento, onVoltar }) {
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
   const [formaPagamento, setFormaPagamento] = useState("pix");
+  const [formasPagamento, setFormasPagamento] = useState(FORMAS_PADRAO);
   const [prazoBoleto, setPrazoBoleto] = useState("28");
   const [erro, setErro] = useState("");
   const [editandoId, setEditandoId] = useState(null);
@@ -703,6 +721,15 @@ function Conferencia({ documento, onVoltar }) {
     carregar();
     setEditandoId(null);
   };
+  useEffect(() => {
+    buscarFormasPagamento().then((formas) => {
+      setFormasPagamento(formas);
+      // Se o Pix (ou o que estivesse selecionado) tiver sido apagado da
+      // lista, o select ficaria mostrando um valor que não existe mais.
+      setFormaPagamento((atual) => (formas.some((f) => f.valor === atual) ? atual : (formas[0]?.valor || "")));
+    });
+  }, []);
+
   const vincularInsumo = async (itemId, insumoId) => {
     await supabase.from("itens_documento_compra").update({ insumo_id: insumoId }).eq("id", itemId);
     carregar();
@@ -862,42 +889,14 @@ function Conferencia({ documento, onVoltar }) {
           <div style={{ fontSize: 12, color: "#8A8778" }}>{fmtData(documento.data_documento || documento.criado_em)} · {itens.length} itens lidos pela IA</div>
         </div>
         <button onClick={abrirOriginal} disabled={abrindoOriginal}
-          style={{
-            ...btnSecondary, display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
-            ...(original ? { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" } : {}),
-          }}>
-          {abrindoOriginal ? <Loader2 size={14} /> : original ? <EyeOff size={14} /> : <Eye size={14} />}
-          {original ? "Fechar original" : "Ver original"}
+          title="Abre a nota escaneada numa aba nova"
+          style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          {abrindoOriginal ? <Loader2 size={14} /> : <Eye size={14} />}
+          Ver original
+          <ExternalLink size={12} style={{ opacity: 0.55 }} />
         </button>
       </div>
 
-      {original && (
-        <div style={painelOriginal}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, color: "#8A8778", flex: 1 }}>
-              Nota original
-            </span>
-            <button onClick={() => window.open(original.url, "_blank")} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
-              <ExternalLink size={12} /> abrir em outra aba
-            </button>
-          </div>
-          {original.ehPdf ? (
-            <>
-              <iframe src={original.url} title="Nota original"
-                style={{ width: "100%", height: "58vh", border: "1px solid #E8E2D2", borderRadius: 8, background: "#FFFFFF" }} />
-              {/* Safari no iPhone costuma não renderizar PDF em iframe —
-                  se o quadro vier vazio, o link acima resolve. */}
-            </>
-          ) : (
-            <img src={original.url} alt="Nota original"
-              style={{ width: "100%", maxHeight: "58vh", objectFit: "contain", display: "block", borderRadius: 8, background: "#FFFFFF" }} />
-          )}
-          <div style={{ fontSize: 11, color: "#8A8778", marginTop: 6 }}>
-            Role a lista abaixo conferindo item a item. O painel fica aberto
-            até você clicar em "Fechar original".
-          </div>
-        </div>
-      )}
       {fornecedorAtual.id && historicoFornecedor.length > 0 && (
         <div style={{ ...cardStyle, marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Histórico com {fornecedorAtual.nome}</div>
@@ -1215,7 +1214,7 @@ function Conferencia({ documento, onVoltar }) {
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Forma de pagamento</label>
         <select value={formaPagamento} onChange={(e) => setFormaPagamento(e.target.value)}
           style={{ width: "100%", boxSizing: "border-box", padding: "7px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }}>
-          {FORMAS_PAGAMENTO_COMPRA.map((f) => <option key={f.valor} value={f.valor}>{f.rotulo}</option>)}
+          {formasPagamento.map((f) => <option key={f.valor} value={f.valor}>{f.rotulo}</option>)}
         </select>
         {formaPagamento === "boleto" && (
           <div style={{ marginTop: 6 }}>
@@ -1391,12 +1390,6 @@ const itemRow = { display: "flex", alignItems: "center", justifyContent: "space-
 const iconBox = { width: 36, height: 44, borderRadius: 6, background: "#F6F1E7", border: "1px solid #E8E2D2", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
 const ghostIconBtn = { border: "none", background: "none", color: "#8A8778", cursor: "pointer", padding: 2, display: "flex" };
 const iconBtnWrap = { border: "none", background: "none", padding: 0, cursor: "pointer", flexShrink: 0, display: "flex" };
-const painelOriginal = {
-  background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12,
-  padding: 12, marginBottom: 14,
-  position: "sticky", top: 8, zIndex: 5,
-  boxShadow: "0 6px 18px rgba(34,35,31,.08)",
-};
 const overlayStyle = { position: "fixed", inset: 0, background: "rgba(34,35,31,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 50 };
 const modalStyle = { background: "#F3EFE3", border: "1px solid #E8E2D2", borderRadius: 14, width: "min(680px, 94vw)", maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 12px 34px rgba(0,0,0,0.28)" };
 const modalBarra = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", borderBottom: "1px solid #E8E2D2", background: "#F6F1E7" };
