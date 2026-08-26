@@ -1,3 +1,4 @@
+// ===== Dashboard.jsx =====
 import React, { useState, useRef } from "react";
 import { AlertTriangle, Loader2, RefreshCw, TrendingUp, TrendingDown, Trophy, Layers } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
@@ -105,6 +106,7 @@ export default function Dashboard() {
   const [erroProdutos, setErroProdutos] = useState("");
   const [verTodos, setVerTodos] = useState(false);
   const [centroLabel, setCentroLabel] = useState(CENTRO_CUSTO_PADRAO);
+  const [cmv, setCmv] = useState(null); // { cmv, receita_com_ficha, receita_sem_ficha }
 
   // Os nomes dos centros de custo agora são editáveis (DRE → Listas).
   // Se um centro novo aparecer aqui sem rótulo, cai no próprio código —
@@ -166,6 +168,17 @@ export default function Dashboard() {
       if (!(centro in porCentroCusto)) totalPrevisto += media;
     });
     setCustos({ totalJaLancado, totalPrevisto, porCentroCusto, mediaPorCentro });
+  }, []);
+
+  // Custo dos ingredientes do mês até hoje, pela ficha técnica de cada
+  // prato vendido. É a mesma função que o DRE usa — não inventei conta
+  // nova, pra os dois números nunca discordarem.
+  const buscarCmv = React.useCallback(async () => {
+    const hoje = new Date();
+    const ini = `${ymd(hoje).slice(0, 7)}-01`;
+    const { data, error } = await supabase.rpc("dre_cmv_periodo", { p_inicio: ini, p_fim: ymd(hoje) });
+    if (error || !data?.[0]) { setCmv(null); return; }
+    setCmv(data[0]);
   }, []);
 
   // ------------------------------------------------------------------
@@ -336,7 +349,7 @@ export default function Dashboard() {
     setErro("");
     const dias = await buscarCache();
     calcularFaturamento(dias);
-    await Promise.all([buscarCustos(), buscarProdutos(periodo)]);
+    await Promise.all([buscarCustos(), buscarProdutos(periodo), buscarCmv()]);
     setRecalculando(false);
   };
 
@@ -418,16 +431,43 @@ export default function Dashboard() {
   React.useEffect(() => {
     (async () => {
       setCarregando(true);
-      const [dias] = await Promise.all([buscarCache(), buscarCustos()]);
+      const [dias] = await Promise.all([buscarCache(), buscarCustos(), buscarCmv()]);
       calcularFaturamento(dias);
       setCarregando(false);
     })();
-  }, [buscarCache, buscarCustos, calcularFaturamento]);
+  }, [buscarCache, buscarCustos, buscarCmv, calcularFaturamento]);
 
   // troca de período recarrega só a parte de produtos
   React.useEffect(() => { buscarProdutos(periodo); }, [buscarProdutos, periodo]);
 
   const lucroPrevisto = faturamento && custos ? round2(faturamento.totalMes - custos.totalPrevisto) : null;
+
+  // Margem de contribuição projetada = faturamento previsto menos o que
+  // esse faturamento vai consumir de ingrediente.
+  //
+  // A taxa vem do mix REAL do mês — o que você de fato vendeu —, não da
+  // média das margens do cardápio. Um mês puxado por hambúrguer tem uma
+  // taxa diferente de um puxado por bebida, e assim o número acompanha.
+  //
+  // Divide por `receita_com_ficha`, não pela receita toda: prato sem
+  // ficha entra com custo zero e derrubaria a taxa artificialmente.
+  const projecao = React.useMemo(() => {
+    if (!faturamento || !cmv) return null;
+    const comFicha = Number(cmv.receita_com_ficha) || 0;
+    const semFicha = Number(cmv.receita_sem_ficha) || 0;
+    const receita = comFicha + semFicha;
+    if (comFicha <= 0) return null;
+    const taxa = (Number(cmv.cmv) || 0) / comFicha;
+    const cmvPrevisto = round2(faturamento.totalMes * taxa);
+    return {
+      taxa: taxa * 100,
+      cmvPrevisto,
+      margem: round2(faturamento.totalMes - cmvPrevisto),
+      margemPct: faturamento.totalMes > 0 ? ((faturamento.totalMes - cmvPrevisto) / faturamento.totalMes) * 100 : 0,
+      cobertura: receita > 0 ? (comFicha / receita) * 100 : 0,
+      semFicha,
+    };
+  }, [faturamento, cmv]);
 
   // Rankings de produto. Tudo derivado da mesma lista que veio do banco,
   // então os números do topo e das variações nunca discordam entre si.
@@ -539,6 +579,39 @@ export default function Dashboard() {
                 <div style={labelStyle}>Lucro previsto do mês</div>
                 <div style={{ fontSize: 24, fontWeight: 800, color: lucroPrevisto >= 0 ? "#0F6E56" : "#A32D2D" }}>{brl(lucroPrevisto)}</div>
               </div>
+              {projecao && (
+                <div style={{ ...cardStyle, marginBottom: 16 }}>
+                  <div style={labelStyle}>Margem de contribuição projetada</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778", padding: "3px 0" }}>
+                    <span>Faturamento previsto</span>
+                    <span style={{ color: "#22231F" }}>{brl(faturamento.totalMes)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778", padding: "3px 0" }}>
+                    <span>(–) Custo dos ingredientes</span>
+                    <span style={{ color: "#A32D2D" }}>{brl(projecao.cmvPrevisto)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "8px 0 2px", borderTop: "1px solid #F0EBDD", marginTop: 5 }}>
+                    <span style={{ fontSize: 14, fontWeight: 800, color: "#22231F" }}>Sobra pra pagar o resto</span>
+                    <span style={{ fontSize: 17, fontWeight: 800, color: "#0F6E56" }}>
+                      {brl(projecao.margem)}
+                      <span style={{ fontSize: 12, marginLeft: 6 }}>{projecao.margemPct.toFixed(1)}%</span>
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10, color: "#8A8778", marginTop: 6, lineHeight: 1.6 }}>
+                    Os ingredientes comem <strong>{projecao.taxa.toFixed(1)}%</strong> da venda, pelo que suas fichas técnicas
+                    dizem sobre o que você realmente vendeu esse mês — não pela média do cardápio.
+                    Isso é <strong>margem de contribuição, não lucro</strong>: pessoal, aluguel, energia e imposto
+                    ainda saem daí, e estão no DRE.
+                  </div>
+                  {projecao.cobertura < 90 && (
+                    <div style={{ fontSize: 10.5, color: "#7A6A1E", background: "#FBF3D9", border: "1px solid #E8D48A", borderRadius: 8, padding: "8px 10px", marginTop: 8, lineHeight: 1.5 }}>
+                      Só {projecao.cobertura.toFixed(0)}% da venda do mês veio de prato com ficha cadastrada.
+                      Os {brl(projecao.semFicha)} restantes entram com custo zero, então a margem real é menor que essa.
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div style={{ ...cardStyle, marginBottom: 16 }}>
                 <div style={labelStyle}>Previsão pro mês seguinte</div>
                 <div style={{ fontSize: 18, fontWeight: 700, color: "#22231F" }}>{brl(faturamento.previstoProxMes)}</div>
