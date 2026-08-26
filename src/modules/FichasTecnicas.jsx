@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import {
   Loader2, Plus, Trash2, Check, RefreshCw, AlertTriangle, ChevronLeft, Search,
-  Package, List as ListIcon,
+  Package, List as ListIcon, EyeOff, RotateCcw,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
@@ -61,6 +61,36 @@ function semAcento(t) {
   return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 function iguais(a, b) { return semAcento(a).trim() === semAcento(b).trim(); }
+// Chave de comparação com o cardápio: só letra e número, sem acento, sem
+// espaço, sem pontuação. É o que faz "5star" achar "5 star" e
+// "Água sem gás 500ml" achar "Agua sem gas 500 ml".
+function chaveNome(t) { return semAcento(t).replace(/[^a-z0-9]/g, ""); }
+// Quando o catálogo foi conferido pela última vez. Fica no navegador, não
+// no banco: é só pra decidir se vale gastar uma consulta ao abrir a tela.
+// Navegador diferente confere de novo — o que custa uma consulta, não um
+// erro de número.
+const CHAVE_CONFERIDO = "mrkong:precos_cardapio_conferidos_em";
+const HORAS_ATE_RECONFERIR = 12;
+function lidoEmSalvo() {
+  try { return localStorage.getItem(CHAVE_CONFERIDO) || null; } catch { return null; }
+}
+function guardarLidoEm(iso) {
+  try { localStorage.setItem(CHAVE_CONFERIDO, iso); } catch { /* modo privado */ }
+}
+function horasDesde(iso) {
+  if (!iso) return Infinity;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return Infinity;
+  return (Date.now() - t) / 3600000;
+}
+function horaCurta(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const hoje = new Date();
+  const mesmoDia = d.toDateString() === hoje.toDateString();
+  const hora = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  return mesmoDia ? `hoje às ${hora}` : `${d.toLocaleDateString("pt-BR")} às ${hora}`;
+}
 
 // ---------------------------------------------------------------------------
 // Busca de insumo — o mesmo campo das notas fiscais. Substitui a lista
@@ -289,6 +319,17 @@ export default function FichasTecnicas() {
   const [margemGeral, setMargemGeral] = useState(65);
   const [margensLinha, setMargensLinha] = useState({});
   const [abrirMargens, setAbrirMargens] = useState(false);
+  const [verEscondidos, setVerEscondidos] = useState(false);
+  const [excluindo, setExcluindo] = useState(null); // prato que a lixeira abriu
+  // Conferência de preços contra o catálogo do CardápioWeb.
+  // `resultado` guarda o que a comparação achou; nada vai pro banco antes
+  // de clicar em aplicar.
+  const [conferindo, setConferindo] = useState(false);
+  const [aplicando, setAplicando] = useState(false);
+  const [lidoEm, setLidoEm] = useState(lidoEmSalvo());
+  const [resultado, setResultado] = useState(null);
+  const [avisoPreco, setAvisoPreco] = useState("");
+  const jaConferiuNestaTela = React.useRef(false);
 
   // Margem pretendida em três níveis: prato manda na linha, linha manda
   // na geral. O card sempre diz de onde veio, pra ninguém ficar
@@ -329,7 +370,9 @@ export default function FichasTecnicas() {
       const custoZerado = temFicha && custoTotal === 0;
       const margem = p.preco_venda - custoTotal;
       const margemPct = p.preco_venda > 0 ? (margem / p.preco_venda) * 100 : 0;
-      return { ...p, temFicha, custoTotal, custoZerado, margem, margemPct };
+      // `ativo` só existe depois da migração 087; sem ela, tudo aparece
+      const ativo = p.ativo !== false;
+      return { ...p, temFicha, custoTotal, custoZerado, margem, margemPct, ativo };
     });
     setPratos([...combinados].sort(porNome));
     setCarregandoLista(false);
@@ -351,6 +394,95 @@ export default function FichasTecnicas() {
     });
     if (vazio) await supabase.from("linhas_margem").delete().eq("linha", linha);
     else await supabase.from("linhas_margem").upsert({ linha, margem: paraNumero(texto) });
+  };
+
+  // Compara o preço de cada prato com o catálogo do CardápioWeb.
+  //
+  // A ordem de casamento importa: primeiro o código do CardápioWeb que o
+  // prato já guarda (nome muda, código não), depois o nome normalizado.
+  // Se dois itens do cardápio caem no mesmo nome, não escolhe nenhum —
+  // chutar aqui é trocar o preço do prato errado.
+  const conferirPrecos = useCallback(async (listaPratos) => {
+    setConferindo(true);
+    setAvisoPreco("");
+    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
+      body: { acao: "catalogo_precos" },
+    });
+    if (error) { setConferindo(false); setAvisoPreco(await extrairErroFuncao(error)); return; }
+    if (data?.error) { setConferindo(false); setAvisoPreco(data.error); return; }
+
+    const itens = data.itens || [];
+    const porId = new Map();
+    const porChave = new Map();
+    itens.forEach((it) => {
+      porId.set(it.id, it);
+      const k = chaveNome(it.nome);
+      if (!k) return;
+      if (!porChave.has(k)) porChave.set(k, []);
+      porChave.get(k).push(it);
+    });
+
+    const mudam = [];
+    const semPar = [];
+    const codigosAGravar = [];
+    let jaCertos = 0;
+    (listaPratos || []).filter((p) => p.ativo).forEach((p) => {
+      let item = p.cardapioweb_item_id != null ? porId.get(p.cardapioweb_item_id) : null;
+      let viaNome = false;
+      if (!item) {
+        const candidatos = porChave.get(chaveNome(p.nome)) || [];
+        if (candidatos.length === 1) { item = candidatos[0]; viaNome = true; }
+        else if (candidatos.length > 1) {
+          semPar.push({ prato: p, motivo: `${candidatos.length} itens do cardápio com esse mesmo nome` });
+          return;
+        }
+      }
+      if (!item) {
+        semPar.push({ prato: p, motivo: "não achei no cardápio — nome diferente ou item desativado" });
+        return;
+      }
+      if (viaNome) codigosAGravar.push({ pratoId: p.id, itemId: item.id });
+      const novo = Number(item.preco_efetivo) || 0;
+      const atual = Number(p.preco_venda) || 0;
+      if (Math.abs(novo - atual) > 0.005) mudam.push({ prato: p, item, viaNome, de: atual, para: novo });
+      else jaCertos += 1;
+    });
+
+    const agora = data.lido_em || new Date().toISOString();
+    guardarLidoEm(agora);
+    setLidoEm(agora);
+    setResultado({ mudam, semPar, jaCertos, codigosAGravar, total: itens.length });
+    setConferindo(false);
+  }, []);
+
+  // Confere sozinho ao abrir a tela quando a última conferida passou de
+  // 12 horas — na prática, uma vez por dia. O catálogo não tem o limite
+  // de 5 consultas por minuto que o histórico de pedidos tem.
+  useEffect(() => {
+    if (jaConferiuNestaTela.current) return;
+    if (carregandoLista || pratos.length === 0) return;
+    jaConferiuNestaTela.current = true;
+    if (horasDesde(lidoEmSalvo()) >= HORAS_ATE_RECONFERIR) conferirPrecos(pratos);
+  }, [carregandoLista, pratos, conferirPrecos]);
+
+  const aplicarPrecos = async () => {
+    if (!resultado) return;
+    setAplicando(true);
+    setAvisoPreco("");
+    // Grava o código de quem casou pelo nome mesmo que o preço não tenha
+    // mudado: da próxima vez esse prato já entra pelo caminho seguro.
+    for (const c of resultado.codigosAGravar) {
+      await supabase.from("pratos").update({ cardapioweb_item_id: c.itemId }).eq("id", c.pratoId);
+    }
+    for (const d of resultado.mudam) {
+      const campos = { preco_venda: d.para };
+      if (d.viaNome) campos.cardapioweb_item_id = d.item.id;
+      const { error } = await supabase.from("pratos").update(campos).eq("id", d.prato.id);
+      if (error) { setAplicando(false); setAvisoPreco(error.message); return; }
+    }
+    setAplicando(false);
+    setResultado((r) => (r ? { ...r, mudam: [], jaCertos: r.jaCertos + (r.mudam?.length || 0), codigosAGravar: [] } : r));
+    carregarPratos();
   };
 
   const importarPratos = async () => {
@@ -375,18 +507,113 @@ export default function FichasTecnicas() {
     );
   }
 
-  const visiveis = pratos.filter((p) => semAcento(p.nome).includes(semAcento(busca)));
+  const escondidos = pratos.filter((p) => !p.ativo).length;
+  const visiveis = pratos
+    .filter((p) => (verEscondidos ? true : p.ativo))
+    .filter((p) => semAcento(p.nome).includes(semAcento(busca)));
 
   return (
     <div>
       <div style={{ ...cardStyle, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
         <div style={{ fontSize: 13, color: "#8A8778" }}>
-          {pratos.filter((p) => p.temFicha).length} de {pratos.length} pratos com ficha cadastrada
+          {pratos.filter((p) => p.temFicha && p.ativo).length} de {pratos.filter((p) => p.ativo).length} pratos com ficha cadastrada
+          {escondidos > 0 && (
+            <button onClick={() => setVerEscondidos((v) => !v)} style={{ ...linkBtn, fontSize: 12, marginLeft: 8 }}>
+              {verEscondidos ? "esconder os fora do cardápio" : `ver ${escondidos} fora do cardápio`}
+            </button>
+          )}
         </div>
         <button onClick={importarPratos} disabled={importando} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
           {importando ? <Loader2 size={14} /> : <RefreshCw size={14} />}
           Importar pratos
         </button>
+      </div>
+
+      {/* preços vindos do CardápioWeb */}
+      <div style={{ ...cardStyle, marginBottom: 10, padding: "11px 14px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>Preços do CardápioWeb</div>
+            <div style={{ fontSize: 11, color: "#8A8778", marginTop: 2 }}>
+              {conferindo ? "conferindo o catálogo…"
+                : lidoEm ? `conferidos ${horaCurta(lidoEm)}${resultado ? ` · ${resultado.total} itens no cardápio` : ""}`
+                : "ainda não conferidos nesta máquina"}
+            </div>
+          </div>
+          <button onClick={() => conferirPrecos(pratos)} disabled={conferindo || aplicando}
+            style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
+            {conferindo ? <Loader2 size={14} /> : <RefreshCw size={14} />} Atualizar preços
+          </button>
+        </div>
+        {avisoPreco && (
+          <div style={{ fontSize: 12, color: "#A32D2D", marginTop: 8 }}>{avisoPreco}</div>
+        )}
+        {resultado && !conferindo && (
+          <div style={{ marginTop: 10, borderTop: "1px solid #F0EBDD", paddingTop: 10 }}>
+            {resultado.mudam.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: "#0F6E56", display: "flex", alignItems: "center", gap: 6 }}>
+                <Check size={14} /> Todos os preços batem com o cardápio
+                {resultado.semPar.length > 0 && (
+                  <span style={{ color: "#8A8778" }}>· {resultado.semPar.length} sem par</span>
+                )}
+              </div>
+            ) : (
+              <>
+                <div style={{ border: "1px solid #E8E2D2", borderRadius: 10, overflow: "hidden", background: "#FFFFFF" }}>
+                  {resultado.mudam.map((d, idx) => (
+                    <div key={d.prato.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", flexWrap: "wrap" }}>
+                      <div style={{ flex: 1, minWidth: 160 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600 }}>{d.prato.nome}</div>
+                        <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 1 }}>
+                          no CardápioWeb: <b>{d.item.nome}</b>
+                          {d.item.promocao_ativa ? ` · promoção ativa (cheio ${brl(d.item.preco)})` : ""}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>
+                        <span style={{ color: "#8A8778", textDecoration: "line-through" }}>{brl(d.de)}</span>
+                        {" → "}
+                        <strong style={{ color: "#0F6E56" }}>{brl(d.para)}</strong>
+                      </div>
+                      <span style={{ ...pill, fontSize: 9.5, background: d.viaNome ? "#FAEEDC" : "#EAF1F7", color: d.viaNome ? "#8A6220" : "#3A6684" }}>
+                        {d.viaNome ? "pelo nome" : "pelo código"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11, color: "#8A8778" }}>
+                    {resultado.mudam.length} {resultado.mudam.length === 1 ? "preço muda" : "preços mudam"}
+                    {resultado.semPar.length > 0 ? ` · ${resultado.semPar.length} sem par no cardápio` : ""}
+                    {resultado.jaCertos > 0 ? ` · ${resultado.jaCertos} já estavam certos` : ""}
+                  </span>
+                  <button onClick={aplicarPrecos} disabled={aplicando}
+                    style={{ ...btnPrimary, display: "flex", alignItems: "center", gap: 6 }}>
+                    {aplicando ? <Loader2 size={14} /> : <Check size={14} />}
+                    Aplicar {resultado.mudam.length === 1 ? "o preço" : `os ${resultado.mudam.length} preços`}
+                  </button>
+                </div>
+              </>
+            )}
+            {resultado.semPar.length > 0 && (
+              <details style={{ marginTop: 8 }}>
+                <summary style={{ fontSize: 11, color: "#8A8778", cursor: "pointer" }}>
+                  ver os {resultado.semPar.length} pratos sem par no cardápio
+                </summary>
+                <div style={{ marginTop: 6 }}>
+                  {resultado.semPar.map((sp) => (
+                    <div key={sp.prato.id} style={{ fontSize: 11, color: "#8A8778", padding: "3px 0" }}>
+                      <b style={{ color: "#22231F" }}>{sp.prato.nome}</b> — {sp.motivo} · preço mantido em {brl(sp.prato.preco_venda)}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+        <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 8, lineHeight: 1.5 }}>
+          O preço de venda mora no CardápioWeb — aqui ele só chega. O painel nunca escreve preço lá.
+          Item em promoção entra pelo preço da promoção, que é o que o cliente paga.
+        </div>
       </div>
 
       {/* margem pretendida */}
@@ -457,15 +684,19 @@ export default function FichasTecnicas() {
                       {sugerido > 0 && <> · sugerido <strong style={{ color: abaixo ? "#A32D2D" : "#22231F" }}>{brl(sugerido)}</strong></>}
                     </div>
                   </div>
-                  {p.custoZerado ? (
-                    <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Custo pendente</span>
-                  ) : p.temFicha ? (
-                    <span style={{ ...pill, background: abaixo ? "#F0999522" : "#2F8F5B22", color: abaixo ? "#A32D2D" : "#0F6E56" }}>
-                      {p.margemPct.toFixed(1)}%
-                    </span>
-                  ) : (
-                    <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Sem ficha</span>
-                  )}
+                  <span style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                    {!p.ativo ? (
+                      <span style={{ ...pill, background: "#F1EEE4", color: "#7A745E" }}>escondido</span>
+                    ) : p.custoZerado ? (
+                      <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Custo pendente</span>
+                    ) : p.temFicha ? (
+                      <span style={{ ...pill, background: abaixo ? "#F0999522" : "#2F8F5B22", color: abaixo ? "#A32D2D" : "#0F6E56" }}>
+                        {p.margemPct.toFixed(1)}%
+                      </span>
+                    ) : (
+                      <span style={{ ...pill, background: "#F0999522", color: "#A32D2D" }}>Sem ficha</span>
+                    )}
+                  </span>
                 </button>
                 <select value={p.linha_produto || ""} onClick={(e) => e.stopPropagation()}
                   onChange={async (e) => {
@@ -477,11 +708,156 @@ export default function FichasTecnicas() {
                   <option value="">— linha de produto pendente —</option>
                   {LINHAS_PRODUTO.map((l) => <option key={l} value={l}>{l}</option>)}
                 </select>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 4 }}>
+                  {!p.ativo && (
+                    <button onClick={async () => {
+                      await supabase.from("pratos").update({ ativo: true }).eq("id", p.id);
+                      carregarPratos();
+                    }} style={{ ...ghostIconBtn, color: "#0F6E56" }} title="Voltar pro cardápio">
+                      <RotateCcw size={14} />
+                    </button>
+                  )}
+                  <button onClick={() => setExcluindo(excluindo?.id === p.id ? null : p)}
+                    style={{ ...ghostIconBtn, color: "#C4432B" }} title="Excluir ou esconder">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+
+                {excluindo?.id === p.id && (
+                  <ExcluirPrato
+                    prato={p}
+                    onFechar={() => setExcluindo(null)}
+                    onPronto={() => { setExcluindo(null); carregarPratos(); }}
+                    onErro={setErro}
+                  />
+                )}
               </div>
             );
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Excluir ou esconder um prato
+//
+// Apagar prato que JÁ VENDEU não apaga as vendas — elas vêm do CardápioWeb e
+// continuam no faturamento. O que se perde é o fio que liga a venda ao
+// cadastro: aquelas vendas viram "Item não identificado" no Dashboard e na
+// Curva ABC, e o CMV perde a ficha. O lucro do mês passa a aparecer MAIOR do
+// que foi.
+//
+// Por isso a lixeira pergunta antes se vendeu, e só oferece "excluir de vez"
+// como opção secundária pra quem já vendeu.
+// ---------------------------------------------------------------------------
+function ExcluirPrato({ prato, onFechar, onPronto, onErro }) {
+  const [vendas, setVendas] = useState(null); // { vendas, valor }
+  const [ingredientes, setIngredientes] = useState(null);
+  const [trabalhando, setTrabalhando] = useState(false);
+  const [erroLocal, setErroLocal] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const [rV, rI] = await Promise.all([
+        supabase.rpc("vendas_do_prato", { p_prato: prato.id, p_dias: 90 }),
+        supabase.from("prato_insumos").select("insumo_id").eq("prato_id", prato.id),
+      ]);
+      if (rV.error) {
+        setVendas(/does not exist|schema cache/i.test(rV.error.message) ? "faltaSql" : { vendas: 0, valor: 0 });
+      } else {
+        setVendas(rV.data?.[0] || { vendas: 0, valor: 0 });
+      }
+      setIngredientes((rI.data || []).length);
+    })();
+  }, [prato.id]);
+
+  const esconder = async () => {
+    setTrabalhando(true);
+    const { error } = await supabase.from("pratos").update({ ativo: false }).eq("id", prato.id);
+    setTrabalhando(false);
+    if (error) {
+      setErroLocal(/ativo|column/i.test(error.message)
+        ? "Falta rodar a migração 087 no banco — é ela que cria o 'escondido'."
+        : error.message);
+      return;
+    }
+    onPronto();
+  };
+
+  const excluir = async () => {
+    setTrabalhando(true);
+    const { error } = await supabase.rpc("excluir_prato", { p_prato: prato.id });
+    setTrabalhando(false);
+    if (error) {
+      if (/does not exist|schema cache/i.test(error.message)) {
+        onErro("A exclusão de pratos ainda não foi instalada no banco — falta rodar a migração 087.");
+        onFechar();
+        return;
+      }
+      setErroLocal(error.message);
+      return;
+    }
+    onPronto();
+  };
+
+  if (vendas === null) {
+    return <div style={{ width: "100%", fontSize: 12, color: "#8A8778", padding: "8px 2px" }}>Vendo se esse prato já vendeu…</div>;
+  }
+
+  const faltaSql = vendas === "faltaSql";
+  const jaVendeu = !faltaSql && Number(vendas.vendas) > 0;
+
+  return (
+    <div style={{ width: "100%", background: "#FFFFFF", border: "1px solid #C98F87", borderRadius: 11, padding: 13, marginTop: 6 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 9 }}>Excluir "{prato.nome}"?</div>
+
+      <div style={{ background: "#FCFAF3", border: "1px solid #F0EBDD", borderRadius: 9, padding: "10px 12px", marginBottom: 11, fontSize: 12.5, lineHeight: 1.6 }}>
+        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.3, textTransform: "uppercase", color: "#8A8778", marginBottom: 6 }}>
+          O que esse prato tem hoje
+        </div>
+        {ingredientes > 0
+          ? <>Ficha técnica com <strong>{ingredientes} ingrediente{ingredientes > 1 ? "s" : ""}</strong>.<br /></>
+          : <>Sem ficha técnica.<br /></>}
+        {faltaSql
+          ? <span style={{ color: "#7A6A1E" }}>Não consegui checar as vendas — falta rodar a migração 087.</span>
+          : jaVendeu
+            ? <><strong>{Number(vendas.vendas).toLocaleString("pt-BR")} venda{Number(vendas.vendas) > 1 ? "s" : ""}</strong> nos últimos 90 dias, somando <strong>{brl(vendas.valor)}</strong>.</>
+            : <><strong>Nenhuma venda</strong> nos últimos 90 dias.</>}
+      </div>
+
+      {jaVendeu && (
+        <div style={{ background: "#FCEBEB", border: "1px solid #E5B9B3", color: "#7A2020", borderRadius: 9, padding: "10px 12px", fontSize: 12.5, lineHeight: 1.55, marginBottom: 11 }}>
+          <strong style={{ color: "#5E1616" }}>Excluir apaga o nome, não as vendas.</strong> Aquelas vendas continuam
+          no faturamento, mas passam a aparecer como <strong>"Item não identificado"</strong> no Dashboard e na
+          Curva ABC. E o CMV do DRE perde a ficha desse prato — os ingredientes que ele consumiu deixam de ser contados,
+          e o lucro do mês aparece maior do que foi.
+        </div>
+      )}
+
+      {erroLocal && <div style={{ fontSize: 12, color: "#A32D2D", marginBottom: 9 }}>{erroLocal}</div>}
+
+      <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+        {jaVendeu && (
+          <button onClick={esconder} disabled={trabalhando}
+            style={{ ...btnSecondary, background: "#22231F", color: "#F3EFE3", borderColor: "#22231F", display: "flex", alignItems: "center", gap: 6 }}>
+            <EyeOff size={14} /> Esconder da lista
+          </button>
+        )}
+        <button onClick={excluir} disabled={trabalhando}
+          style={{ ...btnSecondary, background: "#7A2020", color: "#FFFFFF", borderColor: "#7A2020" }}>
+          {trabalhando ? "…" : jaVendeu ? "Excluir mesmo assim" : "Excluir de vez"}
+        </button>
+        <button onClick={onFechar} style={btnSecondary}>Cancelar</button>
+      </div>
+
+      <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 8, lineHeight: 1.5 }}>
+        {jaVendeu
+          ? <><strong>Esconder</strong> tira da lista mas mantém o vínculo com as vendas e a ficha para o CMV — é o que serve pra produto que saiu do cardápio. Importar pratos não traz um escondido de volta.</>
+          : <>Como nunca vendeu, nada em relatório nenhum aponta pra ele. Se o produto ainda existe no CardápioWeb, ele volta na próxima importação.</>}
+      </div>
     </div>
   );
 }
