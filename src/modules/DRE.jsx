@@ -1,7 +1,8 @@
+// ===== DRE.jsx =====
 import React, { useState, useEffect, useCallback } from "react";
 import {
   Loader2, AlertTriangle, RefreshCw, Plus, Trash2, Check,
-  Calculator, Package, Tag, Settings, List, Lock, Pencil, Power,
+  Calculator, Package, Tag, Settings, List, Lock, Pencil, Power, Eye,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { podeEditar } from "../lib/permissoes";
@@ -24,6 +25,24 @@ import { podeEditar } from "../lib/permissoes";
 //   3. Taxa de serviço é repasse do garçom, não receita da casa —
 //      sai como dedução (conta 2.5).
 // ---------------------------------------------------------------------
+
+// Abre a nota original em outra aba.
+//
+// A aba precisa nascer ANTES do await: o Safari só deixa window.open
+// passar se ele acontecer no mesmo instante do clique. Depois que o
+// link assinado chega, a gente só troca o endereço da aba que já existe.
+async function abrirNota(caminho) {
+  const aba = window.open("", "_blank");
+  const { data, error } = await supabase.storage
+    .from("notas-fiscais").createSignedUrl(caminho, 3600);
+  if (error || !data?.signedUrl) {
+    if (aba) aba.close();
+    alert("Não consegui abrir a nota: " + (error?.message || ""));
+    return;
+  }
+  if (aba) { aba.location.href = data.signedUrl; return; }
+  window.location.href = data.signedUrl;
+}
 
 const ABAS = [
   { chave: "dre",         label: "Demonstrativo", icone: Calculator },
@@ -274,7 +293,25 @@ function Classificar({ editar }) {
         .like("codigo", "%.%")
         .order("ordem"),
     ]);
-    setContas(cs || []);
+    const lista = cs || [];
+
+    // O documento_compra_id sozinho não diz se existe arquivo pra abrir:
+    // compra digitada à mão também gera documento, só que sem nota. Por
+    // isso a segunda consulta — o olho só aparece quando tem arquivo.
+    const ids = [...new Set(lista.map((c) => c.documento_compra_id).filter(Boolean))];
+    let arquivos = {};
+    if (ids.length > 0) {
+      const { data: docs } = await supabase
+        .from("documentos_compra")
+        .select("id, arquivo_path, origem")
+        .in("id", ids);
+      (docs || []).forEach((d) => { arquivos[d.id] = d; });
+    }
+
+    setContas(lista.map((c) => {
+      const doc = c.documento_compra_id ? arquivos[c.documento_compra_id] : null;
+      return { ...c, arquivo_path: doc?.arquivo_path || null, manual: !!doc && !doc.arquivo_path };
+    }));
     setPlano(pl || []);
     setCarregando(false);
   }, []);
@@ -312,6 +349,26 @@ function Classificar({ editar }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {contas.map((c) => (
             <div key={c.id} style={{ ...itemRow, flexWrap: "wrap" }}>
+              {c.arquivo_path ? (
+                <button
+                  onClick={() => abrirNota(c.arquivo_path)}
+                  style={olhoBtn}
+                  title="Abrir a nota em outra aba"
+                  aria-label="Abrir a nota em outra aba"
+                >
+                  <Eye size={17} color="#3A6684" />
+                </button>
+              ) : c.manual ? (
+                <div style={{ ...olhoVazio, border: "1px dashed #E0DACA", gap: 1 }}
+                  title="Compra digitada à mão, sem nota">
+                  <Plus size={13} color="#3A6684" />
+                  <span style={{ fontSize: 7, fontWeight: 800, color: "#3A6684", letterSpacing: 0.2 }}>MANUAL</span>
+                </div>
+              ) : (
+                // Lançamento avulso (Stone, gás, diária): não veio de nota
+                // nenhuma. O espaço fica reservado só pra lista não dançar.
+                <div style={olhoVazio} />
+              )}
               <div style={{ flex: 1, minWidth: 180 }}>
                 <div style={{ fontWeight: 600, fontSize: 13, color: "#22231F" }}>
                   {c.descricao || c.fornecedor_nome || "Sem descrição"}
@@ -1366,6 +1423,16 @@ const sectionLabel = {
 const itemRow = {
   display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
   background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10, padding: "10px 12px",
+};
+const olhoBtn = {
+  width: 34, height: 34, flex: "0 0 auto", borderRadius: 8,
+  border: "1px solid #E8E2D2", background: "#FBF8F1", cursor: "pointer",
+  display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+};
+const olhoVazio = {
+  width: 34, height: 34, flex: "0 0 auto", borderRadius: 8,
+  border: "1px solid #EFEADF", background: "transparent",
+  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
 };
 const vazio = {
   display: "flex", alignItems: "center", gap: 8,
