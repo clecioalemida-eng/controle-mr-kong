@@ -1,5 +1,6 @@
+// ===== Financeiro.jsx =====
 import React, { useState, useCallback } from "react";
-import { ChevronLeft, Loader2, AlertTriangle, RefreshCw, DollarSign } from "lucide-react";
+import { ChevronLeft, Loader2, AlertTriangle, RefreshCw, DollarSign, ArrowDownRight, ArrowUpRight } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import { podeVer } from "../lib/permissoes";
 import ConferenciaCaixa from "./ConferenciaCaixa";
@@ -21,6 +22,7 @@ const ABAS = [
   { chave: "fechamento", label: "Fechamento" },
   { chave: "conferencia", label: "Conferência de caixa" },
   { chave: "contaspagar", label: "Contas a pagar" },
+  { chave: "fluxo", label: "Entrou e saiu" },
   { chave: "dre", label: "DRE" },
   { chave: "fiado", label: "Fiado" },
 ];
@@ -106,6 +108,8 @@ export default function Financeiro({ onVoltar, abaInicial, permissoes }) {
               <ConferenciaCaixa />
             ) : aba === "contaspagar" ? (
               <ContasPagar />
+            ) : aba === "fluxo" ? (
+              <EntrouSaiu />
             ) : aba === "dre" ? (
               <DRE permissoes={permissoes} />
             ) : aba === "fiado" ? (
@@ -273,6 +277,193 @@ const tabBtn = {
   background: "#FFFFFF", color: "#8A8778", fontSize: 13, fontWeight: 600, cursor: "pointer",
 };
 const tabBtnAtivo = { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" };
+// ---------------------------------------------------------------------------
+// Entrou e saiu
+//
+// ENTRADA é a venda no dia em que aconteceu, pelo valor cheio. Não é o
+// dinheiro caindo na conta: o cartão ainda leva dias e vem com taxa
+// descontada. Foi escolha deliberada — mais simples e com os dados que já
+// existem. Se um dia precisar do caixa de verdade, é outra conta.
+//
+// SAÍDA é a conta no dia em que foi PAGA, não no vencimento. Conta lançada e
+// ainda não paga não aparece aqui — pra essa existe o Contas a pagar.
+// ---------------------------------------------------------------------------
+const PERIODOS_FLUXO = [
+  { valor: "7", label: "Últimos 7 dias" },
+  { valor: "30", label: "Últimos 30 dias" },
+  { valor: "mes", label: "Este mês" },
+  { valor: "anterior", label: "Mês passado" },
+];
+
+function ymdLocalFin(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function janelaFluxo(modo) {
+  const hoje = new Date();
+  if (modo === "mes") {
+    return { ini: new Date(hoje.getFullYear(), hoje.getMonth(), 1), fim: hoje };
+  }
+  if (modo === "anterior") {
+    return {
+      ini: new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1),
+      fim: new Date(hoje.getFullYear(), hoje.getMonth(), 0),
+    };
+  }
+  const n = Number(modo) || 30;
+  const ini = new Date(hoje);
+  ini.setDate(ini.getDate() - n);
+  return { ini, fim: hoje };
+}
+const SEMANA_FIN = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
+function diaLongo(iso) {
+  const [a, m, d] = iso.split("-").map(Number);
+  const data = new Date(a, m - 1, d);
+  return `${SEMANA_FIN[data.getDay()]}, ${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}`;
+}
+
+function EntrouSaiu() {
+  const [periodo, setPeriodo] = useState("30");
+  const [filtro, setFiltro] = useState("tudo"); // tudo | entrada | saida
+  const [linhas, setLinhas] = useState(null);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    setErro("");
+    const j = janelaFluxo(periodo);
+    const { data, error } = await supabase.rpc("fluxo_periodo", {
+      p_inicio: ymdLocalFin(j.ini),
+      p_fim: ymdLocalFin(j.fim),
+    });
+    setCarregando(false);
+    if (error) {
+      setErro(/does not exist|schema cache/i.test(error.message)
+        ? "Essa tela ainda não foi instalada no banco — falta rodar a migração 088."
+        : error.message);
+      setLinhas([]);
+      return;
+    }
+    setLinhas(data || []);
+  }, [periodo]);
+
+  React.useEffect(() => { carregar(); }, [carregar]);
+
+  const visiveis = (linhas || []).filter((l) => filtro === "tudo" || l.tipo === filtro);
+  const entrou = (linhas || []).filter((l) => l.tipo === "entrada").reduce((s, l) => s + Number(l.valor), 0);
+  const saiu = (linhas || []).filter((l) => l.tipo === "saida").reduce((s, l) => s + Number(l.valor), 0);
+  const qtdSaidas = (linhas || []).filter((l) => l.tipo === "saida").length;
+  const diasComVenda = (linhas || []).filter((l) => l.tipo === "entrada").length;
+
+  // Agrupa por dia mantendo a ordem que veio do banco (mais recente primeiro)
+  const porDia = [];
+  visiveis.forEach((l) => {
+    const ultimo = porDia[porDia.length - 1];
+    if (ultimo && ultimo.dia === l.dia) ultimo.itens.push(l);
+    else porDia.push({ dia: l.dia, itens: [l] });
+  });
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 12 }}>
+        <select value={periodo} onChange={(e) => setPeriodo(e.target.value)} style={inputStyle}>
+          {PERIODOS_FLUXO.map((p) => <option key={p.valor} value={p.valor}>{p.label}</option>)}
+        </select>
+        <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={inputStyle}>
+          <option value="tudo">Tudo</option>
+          <option value="entrada">Só entradas</option>
+          <option value="saida">Só saídas</option>
+        </select>
+      </div>
+
+      {erro && (
+        <div style={{ display: "flex", gap: 8, background: "#FBF3D9", border: "1px solid #E8D48A", color: "#7A6A1E", borderRadius: 10, padding: "12px 14px", fontSize: 13, marginBottom: 12 }}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div>{erro}</div>
+        </div>
+      )}
+
+      {carregando ? (
+        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 14 }}>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 10, color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 5 }}>Entrou</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#0F6E56", fontVariantNumeric: "tabular-nums" }}>{formatBRL(entrou)}</div>
+              <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 3 }}>{diasComVenda} dia(s) de venda</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 10, color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 5 }}>Saiu</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#A32D2D", fontVariantNumeric: "tabular-nums" }}>{formatBRL(saiu)}</div>
+              <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 3 }}>{qtdSaidas} conta(s) paga(s)</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 10, color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 5 }}>Sobrou</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: entrou - saiu >= 0 ? "#22231F" : "#A32D2D", fontVariantNumeric: "tabular-nums" }}>{formatBRL(entrou - saiu)}</div>
+              <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 3 }}>entrou menos saiu</div>
+            </div>
+          </div>
+
+          {porDia.length === 0 ? (
+            <div style={{ ...cardStyle, textAlign: "center", color: "#8A8778", fontSize: 13 }}>
+              Nada nesse período.
+            </div>
+          ) : (
+            <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, background: "#FFFFFF", overflow: "hidden", marginBottom: 8 }}>
+              {porDia.map((g, gi) => {
+                const saldoDia = g.itens.reduce((s, l) => s + (l.tipo === "entrada" ? 1 : -1) * Number(l.valor), 0);
+                return (
+                  <React.Fragment key={g.dia}>
+                    <div style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+                      padding: "9px 13px", background: "#F6F1E7", fontSize: 12,
+                      borderBottom: "1px solid #E8E2D2",
+                      borderTop: gi > 0 ? "1px solid #E8E2D2" : "none",
+                    }}>
+                      <span style={{ fontWeight: 800 }}>{diaLongo(g.dia)}</span>
+                      {filtro === "tudo" && (
+                        <span style={{ fontWeight: 800, fontVariantNumeric: "tabular-nums", color: saldoDia >= 0 ? "#0F6E56" : "#A32D2D" }}>
+                          {saldoDia >= 0 ? "+ " : "− "}{formatBRL(Math.abs(saldoDia))}
+                        </span>
+                      )}
+                    </div>
+                    {g.itens.map((l, li) => {
+                      const entrada = l.tipo === "entrada";
+                      const zerado = Number(l.valor) === 0;
+                      return (
+                        <div key={`${g.dia}-${li}`} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 13px", borderTop: li > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12.5 }}>
+                          <span style={{ width: 18, textAlign: "center", flexShrink: 0, color: entrada ? "#0F6E56" : "#A32D2D" }}>
+                            {entrada ? <ArrowDownRight size={15} /> : <ArrowUpRight size={15} />}
+                          </span>
+                          <span style={{ flex: 1, minWidth: 0 }}>
+                            <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.descricao}</span>
+                            {l.detalhe && <span style={{ fontSize: 10.5, color: "#8A8778" }}>{l.detalhe}</span>}
+                          </span>
+                          <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", color: zerado ? "#8A8778" : entrada ? "#0F6E56" : "#A32D2D" }}>
+                            {formatBRL(l.valor)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ fontSize: 10.5, color: "#8A8778", lineHeight: 1.55, padding: "0 2px" }}>
+            <strong>Entrou</strong> é a venda no dia em que aconteceu, pelo valor cheio — o dinheiro do cartão
+            ainda vai levar dias pra cair e vem com a taxa descontada.
+            <strong> Saiu</strong> é a conta no dia em que foi paga, não no vencimento.
+            Conta lançada e ainda não paga não aparece aqui: pra essa existe o <strong>Contas a pagar</strong>.
+            Dia sem venda aparece com R$ 0,00, pra você distinguir "fechou" de "não baixou o histórico".
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 const btnSecondary = {
   background: "#F6F1E7", border: "1px solid #E8E2D2", color: "#22231F",
   borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer",
