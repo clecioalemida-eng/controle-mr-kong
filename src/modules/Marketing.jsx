@@ -7,6 +7,7 @@ import { supabase } from "../lib/supabaseClient";
 import RadarConcorrentes from "./RadarConcorrentes";
 import DiagnosticoSocial from "./DiagnosticoSocial";
 import PistaMarketing from "./PistaMarketing";
+import MetaAds from "./MetaAds";
 
 // ---------------------------------------------------------------------------
 // Módulo Marketing — Fase 0: Diagnóstico
@@ -51,10 +52,15 @@ const NOMES_TIPO = {
   indoor: "Salão",
 };
 
+// A aba Meta é marcada soAdmin porque as tabelas meta_* só liberam
+// leitura pra administrador (migração 039) — mostrar o botão pra quem
+// não pode entrar só produziria uma tela de erro. O operador de
+// marketing continua com Radar, Diagnóstico e Pista.
 const ABAS = [
   { chave: "radar", label: "Radar" },
   { chave: "leitura", label: "Diagnóstico" },
   { chave: "pista", label: "Pista" },
+  { chave: "meta", label: "Meta", soAdmin: true },
   { chave: "diagnostico", label: "CardápioWeb" },
 ];
 
@@ -112,7 +118,7 @@ export default function Marketing({ onVoltar, perfil }) {
         </div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-          {ABAS.map((a) => (
+          {ABAS.filter((a) => !a.soAdmin || perfil?.is_admin).map((a) => (
             <button key={a.chave} onClick={() => setAba(a.chave)}
               style={{ ...tabBtn, ...(aba === a.chave ? tabBtnAtivo : {}) }}>
               {a.label}
@@ -122,7 +128,8 @@ export default function Marketing({ onVoltar, perfil }) {
 
         {aba === "radar" ? <RadarConcorrentes /> :
          aba === "leitura" ? <DiagnosticoSocial /> :
-         aba === "pista" ? <PistaMarketing perfil={perfil} /> : (
+         aba === "pista" ? <PistaMarketing perfil={perfil} /> :
+         aba === "meta" ? <MetaAds perfil={perfil} /> : (
         <>
         <div style={{ ...cardStyle, marginBottom: 16 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F", marginBottom: 6 }}>
