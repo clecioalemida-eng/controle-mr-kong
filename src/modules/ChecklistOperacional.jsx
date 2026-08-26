@@ -1,3 +1,4 @@
+// ===== ChecklistOperacional.jsx =====
 import React, { useState, useEffect, useCallback } from "react";
 import {
   CheckCircle2, XCircle, Clock, AlertTriangle, ChevronLeft,
@@ -610,6 +611,13 @@ function Shell({ titulo, subtitulo, children, onBack, onDashboard, onCompras }) 
 // pela qual existe. O que dá ponto é FAZER E RELATAR.
 //
 // E não existe ponto negativo: quem ficou pra trás alcança, não afunda.
+//
+// A GERÊNCIA NÃO CORRE. Ela preenche o checklist como todo mundo — e
+// cobra quem ainda não preencheu. Disputar a corrida que ela mesma
+// apita não convence ninguém no salão. Quem fica de fora é marcado no
+// cadastro do setor (setores_estoque.fora_da_corrida), não aqui no
+// código: o placar já vem sem ela, e o dia a dia continua trazendo ela
+// pra montar o painel de cobrança.
 // ---------------------------------------------------------------------------
 const CORES_DEP = {
   caixa: "#C9A227", bar: "#2F8F5B", chapa: "#C4432B",
@@ -665,6 +673,102 @@ function FaixaCorrida({ aoAbrir }) {
   );
 }
 
+// Painel da gerência: quem ainda não preencheu hoje.
+//
+// A corrida mede o mês; isto aqui mede a noite que está começando. É a
+// lista que a gerência olha antes de subir pro salão — e por isso mostra
+// a linha dela também: quem cobra sem ter feito a própria parte perde a
+// autoridade na primeira resposta atravessada.
+//
+// O dia operacional vai das 17h às 17h, então o fechamento de hoje só
+// vence de madrugada. Enquanto a noite não acabou, "não fez" o fechamento
+// não é falha — é a noite acontecendo. Por isso ele aparece como
+// "falta a noite", e não em vermelho.
+const ETIQUETA_ETAPA = {
+  "no prazo":  { texto: "no prazo", fundo: "#DDF0E6", cor: "#0F6E56" },
+  "atrasado":  { texto: "atrasado", fundo: "#FBF0D5", cor: "#8A6A0F" },
+  "nao fez":   { texto: "não fez",  fundo: "#FBE4E4", cor: "#A32D2D" },
+};
+const ETIQUETA_NOITE = { texto: "falta a noite", fundo: "#F3EFE4", cor: "#8A8778" };
+
+function EtiquetaEtapa({ estado, ehFechamentoDeHoje }) {
+  const e = (ehFechamentoDeHoje && estado === "nao fez") ? ETIQUETA_NOITE : ETIQUETA_ETAPA[estado];
+  if (!e) return <span style={{ fontSize: 11, color: "#B4AF9E" }}>—</span>;
+  return (
+    <span style={{
+      fontSize: 9.5, fontWeight: 800, letterSpacing: 0.3, textTransform: "uppercase",
+      padding: "3px 8px", borderRadius: 999, whiteSpace: "nowrap",
+      background: e.fundo, color: e.cor,
+    }}>{e.texto}</span>
+  );
+}
+
+function PainelGerencia({ dias }) {
+  const hoje = new Date().toISOString().slice(0, 10);
+  const doDia = (dias || []).filter((d) => String(d.dia) === hoje);
+  if (doDia.length === 0) return null;
+
+  // A gerência primeiro: é o painel dela, e a linha dela é a primeira
+  // coisa que ela precisa ver.
+  const ordenado = [...doDia].sort((a, b) => (b.fora_da_corrida ? 1 : 0) - (a.fora_da_corrida ? 1 : 0));
+  const faltamAbrir = doDia.filter((d) => d.abertura === "nao fez");
+
+  return (
+    <div style={{ ...cardStyle, marginBottom: 14, background: "#FBFAFE", borderColor: "#C9BEE8" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 15 }}>{"\uD83D\uDEE1\uFE0F"}</span>
+        <span style={{ fontSize: 14, fontWeight: 800 }}>Gerência</span>
+        <span style={{
+          fontSize: 9.5, fontWeight: 800, letterSpacing: 0.3, textTransform: "uppercase",
+          padding: "3px 9px", borderRadius: 999, background: "#EAE4F7", color: "#4C3E77",
+        }}>fora da corrida</span>
+      </div>
+      <div style={{ fontSize: 11.5, color: "#8A8778", margin: "3px 0 12px" }}>
+        Ela preenche igual a todo mundo e cobra quem não preencheu. Por isso não pontua.
+      </div>
+
+      <div style={{ border: "1px solid #E8E2D2", borderRadius: 10, overflow: "hidden", background: "#FFFFFF" }}>
+        <div style={{
+          display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, padding: "7px 10px",
+          background: "#F6F1E7", fontSize: 9.5, fontWeight: 800, textTransform: "uppercase",
+          letterSpacing: 0.4, color: "#8A8778",
+        }}>
+          <span>Hoje, {hoje.slice(8, 10)}/{hoje.slice(5, 7)}</span>
+          <span style={{ textAlign: "right" }}>Abertura</span>
+          <span style={{ textAlign: "right" }}>Fechamento</span>
+        </div>
+        {ordenado.map((d, idx) => (
+          <div key={d.departamento} style={{
+            display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, alignItems: "center",
+            padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none",
+            fontSize: 12.5, fontWeight: d.fora_da_corrida ? 700 : 400,
+          }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+              <span>{EMOJI_DEP[d.departamento] || "\u2022"}</span>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+            </span>
+            <span style={{ textAlign: "right" }}><EtiquetaEtapa estado={d.abertura} /></span>
+            <span style={{ textAlign: "right" }}>
+              <EtiquetaEtapa estado={d.fechamento} ehFechamentoDeHoje />
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ fontSize: 12, color: faltamAbrir.length > 0 ? "#A32D2D" : "#0F6E56", marginTop: 10, lineHeight: 1.6 }}>
+        {faltamAbrir.length > 0 ? (
+          <>
+            <b>{faltamAbrir.length} {faltamAbrir.length === 1 ? "setor ainda não abriu" : "setores ainda não abriram"} hoje</b>
+            {" — "}{faltamAbrir.map((d) => d.label).join(", ")}.
+          </>
+        ) : (
+          <b>Todo mundo já fez a abertura hoje.</b>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Corrida({ onVoltar, isAdmin }) {
   const [placar, setPlacar] = useState([]);
   const [dias, setDias] = useState([]);
@@ -678,6 +782,8 @@ function Corrida({ onVoltar, isAdmin }) {
       supabase.rpc("corrida_placar"),
       supabase.rpc("corrida_dia_a_dia", { p_dias: 14 }),
     ]);
+    // O placar já vem sem quem está fora da corrida. O dia a dia vem com
+    // todo mundo — é dele que sai o painel da gerência.
     if (e1) setErro(e1.message);
     if (e2) setErro(e2.message);
     setPlacar(p || []);
@@ -722,6 +828,18 @@ function Corrida({ onVoltar, isAdmin }) {
   const meta = Number(placar[0].meta) || 200;
   const inicio = placar[0].inicio;
   const diasUnicos = [...new Set(dias.map((d) => d.dia))].sort().slice(-7);
+  // A tabela do dia a dia mostra TODO MUNDO que preenche, inclusive quem
+  // está fora da corrida — senão a gerência preencheria todo dia e não
+  // apareceria em lugar nenhum. Sequência e bônus ficam em branco pra ela,
+  // porque não valem nada.
+  const vistos = new Set(placar.map((p) => p.departamento));
+  const forasDaCorrida = [];
+  dias.forEach((d) => {
+    if (!d.fora_da_corrida || vistos.has(d.departamento)) return;
+    vistos.add(d.departamento);
+    forasDaCorrida.push({ departamento: d.departamento, label: d.label, fora_da_corrida: true });
+  });
+  const linhasDiaADia = [...placar, ...forasDaCorrida];
 
   return (
     <Shell titulo="Corrida do checklist"
@@ -814,6 +932,9 @@ function Corrida({ onVoltar, isAdmin }) {
         </div>
       </div>
 
+      {/* painel da gerência — quem ainda não preencheu hoje */}
+      <PainelGerencia dias={dias} />
+
       {/* dia a dia */}
       <div style={{ ...cardStyle, marginBottom: 14, overflowX: "auto" }}>
         <div style={{ fontSize: 11, fontWeight: 800, color: "#8A8778", textTransform: "uppercase",
@@ -833,9 +954,17 @@ function Corrida({ onVoltar, isAdmin }) {
             </tr>
           </thead>
           <tbody>
-            {placar.map((p) => (
+            {linhasDiaADia.map((p) => (
               <tr key={p.departamento}>
-                <td style={{ padding: "8px 6px", borderTop: "1px solid #F4EEE3", fontWeight: 600 }}>{p.label}</td>
+                <td style={{ padding: "8px 6px", borderTop: "1px solid #F4EEE3", fontWeight: 600 }}>
+                  {p.label}
+                  {p.fora_da_corrida && (
+                    <span style={{ fontSize: 9.5, fontWeight: 800, color: "#4C3E77", background: "#EAE4F7",
+                                   borderRadius: 999, padding: "2px 7px", marginLeft: 6, whiteSpace: "nowrap" }}>
+                      fora
+                    </span>
+                  )}
+                </td>
                 {diasUnicos.map((d) => {
                   const r = dias.find((x) => x.dia === d && x.departamento === p.departamento);
                   const v = Number(r?.pontos || 0);
@@ -851,7 +980,9 @@ function Corrida({ onVoltar, isAdmin }) {
                 })}
                 <td style={{ padding: "8px 6px", borderTop: "1px solid #F4EEE3", textAlign: "right",
                              fontVariantNumeric: "tabular-nums" }}>
-                  {p.sequencia_dias}d{Number(p.bonus) > 0 ? ` +${p.bonus}` : ""}
+                  {p.fora_da_corrida
+                    ? "—"
+                    : `${p.sequencia_dias}d${Number(p.bonus) > 0 ? ` +${p.bonus}` : ""}`}
                 </td>
               </tr>
             ))}
