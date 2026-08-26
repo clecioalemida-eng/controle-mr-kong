@@ -1,3 +1,4 @@
+// ===== Equipe.jsx =====
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload, Lock, Receipt, X, Download } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
@@ -34,6 +35,19 @@ function categoriaComissao(papel) {
   if (papel === "gerente") return null;
   return papel === "garcom" ? "garcom" : "interno";
 }
+// A gerente é paga por percentual do faturamento BRUTO DO DIA (2%, na
+// matriz de cargos) mais a diária base do cargo — nunca por rateio da
+// taxa de serviço.
+//
+// O percentual é do DIA, não do mês: noite em que ela não foi escalada
+// não gera nada pra ela. São duas gerentes e nunca as duas na mesma
+// noite; se um dia aparecerem as duas, a tela avisa, porque quase
+// sempre é escala marcada errada.
+//
+// Diarista recebe na noite. Registrada não recebe na noite — o
+// percentual de cada noite trabalhada acumula e sai no fechamento do
+// mês, somado ao salário base, igual aos outros registrados.
+const PERCENTUAL_GERENTE_PADRAO = 2;
 // Peso não é mais digitado à parte — é calculado a partir das horas
 // trabalhadas, considerando um turno padrão de 8h (6h trabalhadas =
 // peso 0,75, por exemplo). Simplifica pra só uma pergunta em vez de duas
@@ -251,10 +265,13 @@ function MatrizCargos() {
     const { data, error } = await supabase.from("matriz_cargos").select("*");
     if (error) setErro(error.message);
     const mapa = Object.fromEntries((data || []).map((d) => [d.papel, d]));
-    setLinhas(PAPEIS.map((p) => ({
+    setLinhas(PAPEIS_COM_GERENTE.map((p) => ({
       papel: p,
       diaria_base: String(mapa[p]?.diaria_base ?? 0),
       valor_hora: String(mapa[p]?.valor_hora ?? 0),
+      percentual_faturamento: String(
+        mapa[p]?.percentual_faturamento ?? (p === "gerente" ? PERCENTUAL_GERENTE_PADRAO : 0)
+      ),
     })));
     setCarregando(false);
   }, []);
@@ -270,6 +287,7 @@ function MatrizCargos() {
         papel: l.papel,
         diaria_base: parseFloat(l.diaria_base) || 0,
         valor_hora: parseFloat(l.valor_hora) || 0,
+        percentual_faturamento: parseFloat(l.percentual_faturamento) || 0,
       }, { onConflict: "papel" });
       if (error) { setErro(error.message); setSalvando(false); return; }
     }
@@ -280,7 +298,9 @@ function MatrizCargos() {
     <div>
       <ComoDivideComissao />
       <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
-        Único lugar de editar esses dois valores por cargo. Diária base é somada à taxa de serviço rateada (método "por taxa de serviço" do diarista); valor da hora é usado no método "por hora". A Escala do dia só mostra esses valores, não edita mais aqui.
+        Único lugar de editar esses valores por cargo. Diária base é somada à taxa de serviço rateada (método "por taxa de serviço" do diarista); valor da hora é usado no método "por hora". A Escala do dia só mostra esses valores, não edita mais aqui.
+        <br />
+        A <b>gerente</b> segue outra regra: não entra no rateio da taxa de serviço, e ganha a diária base mais o percentual do faturamento bruto da noite em que trabalhou. Valor hora não se aplica a ela — a gerente não entra na comparação "vale o maior".
       </div>
       {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
@@ -288,19 +308,31 @@ function MatrizCargos() {
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
       ) : (
         <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", marginBottom: 16, background: "#FFFFFF" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr 0.9fr 0.9fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
-            <span>Cargo</span><span>Bolo da comissão</span><span style={{ textAlign: "right" }}>Diária base</span><span style={{ textAlign: "right" }}>Valor hora</span>
+          <div style={{ display: "grid", gridTemplateColumns: gradeMatriz, gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+            <span>Cargo</span><span>Bolo da comissão</span><span style={{ textAlign: "right" }}>Diária base</span><span style={{ textAlign: "right" }}>% faturamento</span><span style={{ textAlign: "right" }}>Valor hora</span>
           </div>
           {linhas.map((l, idx) => (
-            <div key={l.papel} style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr 0.9fr 0.9fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center" }}>
-              <span style={{ fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[l.papel]}</span>
-              <span style={l.papel === "gerente" ? seloFora : categoriaComissao(l.papel) === "garcom" ? seloGarcom : seloInterna}>
-                {l.papel === "gerente" ? "não entra" : categoriaComissao(l.papel) === "garcom" ? "garçons · 50%" : "equipe interna · 50%"}
+            <div key={l.papel} style={{ display: "grid", gridTemplateColumns: gradeMatriz, gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center", background: l.papel === "gerente" ? "#FBFAFE" : "transparent" }}>
+              <span style={{ fontSize: 13, color: "#22231F", fontWeight: l.papel === "gerente" ? 700 : 400 }}>{PAPEL_LABEL[l.papel]}</span>
+              <span style={l.papel === "gerente" ? seloGerencia : categoriaComissao(l.papel) === "garcom" ? seloGarcom : seloInterna}>
+                {l.papel === "gerente"
+                  ? `${l.percentual_faturamento || 0}% do faturamento do dia`
+                  : categoriaComissao(l.papel) === "garcom" ? "garçons · 50%" : "equipe interna · 50%"}
               </span>
               <input type="number" step="0.01" value={l.diaria_base} onChange={(e) => alterar(l.papel, "diaria_base", e.target.value)}
-                style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
-              <input type="number" step="0.01" value={l.valor_hora} onChange={(e) => alterar(l.papel, "valor_hora", e.target.value)}
-                style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
+                style={celulaMatriz} />
+              {l.papel === "gerente" ? (
+                <input type="number" step="0.01" value={l.percentual_faturamento} onChange={(e) => alterar(l.papel, "percentual_faturamento", e.target.value)}
+                  style={celulaMatriz} />
+              ) : (
+                <span style={celulaVazia}>—</span>
+              )}
+              {l.papel === "gerente" ? (
+                <span style={{ ...celulaVazia, fontSize: 11 }}>não se aplica</span>
+              ) : (
+                <input type="number" step="0.01" value={l.valor_hora} onChange={(e) => alterar(l.papel, "valor_hora", e.target.value)}
+                  style={celulaMatriz} />
+              )}
             </div>
           ))}
         </div>
@@ -912,9 +944,14 @@ function PainelSemDono({ fiado, pessoas }) {
 
 // Pagamento das diarias da noite.
 //
-// So diarista entra: registrado e gerente recebem no fechamento do mes,
-// mesmo tendo comissao calculada todo dia. Misturar os dois pagaria o
-// registrado duas vezes.
+// So diarista entra: registrado recebe no fechamento do mes, mesmo tendo
+// comissao calculada todo dia. Misturar os dois pagaria o registrado
+// duas vezes.
+//
+// A gerente DIARISTA entra aqui desde 26/08/2026: ela recebe na noite,
+// igual aos outros diaristas (diaria base + percentual do faturamento do
+// dia). A gerente REGISTRADA continua fora — o percentual das noites
+// dela acumula pro fechamento do mes.
 //
 // Um lancamento por noite, na conta 4.2 (Diarias), ja quitado — porque o
 // diarista e pago na saida, nao vira conta a pagar. E dai que o DRE passa
@@ -923,9 +960,7 @@ function PagamentoDasDiarias({ dia, linhasSalvas, fiado, pagamento, aoMudar, set
   const [gravando, setGravando] = useState(false);
   const [desfazendo, setDesfazendo] = useState(false);
 
-  const diaristas = linhasSalvas.filter(
-    (l) => l.pessoa?.tipo_contrato === "diarista" && l.pessoa?.papel !== "gerente"
-  );
+  const diaristas = linhasSalvas.filter((l) => l.pessoa?.tipo_contrato === "diarista");
   const bruto = diaristas.reduce((s2, l) => s2 + (Number(l.total_dia) || 0), 0);
   const fiadoAberto = fiado.buscou
     ? diaristas.reduce((s2, l) => s2 + fiado.saldoDe(l.pessoa_id), 0)
@@ -1048,8 +1083,8 @@ function PagamentoDasDiarias({ dia, linhasSalvas, fiado, pagamento, aoMudar, set
       <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 6, lineHeight: 1.6 }}>
         Custo de pessoal <b>não passa por nota fiscal</b> — entra direto como
         despesa já quitada na conta <b>4.2 Diárias</b>, com a data de hoje.
-        Aparece na hora em Contas a pagar (como paga) e no DRE. Registrado e
-        gerente não entram aqui — recebem no Fechamento mensal.
+        Aparece na hora em Contas a pagar (como paga) e no DRE. Registrado não
+        entra aqui — recebe no Fechamento mensal. Gerente entra se for diarista.
       </div>
     </div>
   );
@@ -1122,7 +1157,8 @@ function FolhaEscala({ dia, linhas, participacao, taxa, emitidoPor }) {
                 <td style={td}>{part.entrada && part.saida ? `${part.entrada}–${part.saida}` : "—"}</td>
                 <td style={n}>{(part.horas || 0).toLocaleString("pt-BR")}</td>
                 <td style={n}>
-                  {l.metodo_usado === "gerente_previa" ? "2% do mês"
+                  {l.metodo_usado === "gerente" ? "% do faturamento do dia"
+                    : l.metodo_usado === "gerente_previa" ? "2% do mês (regra antiga)"
                     : l.metodo_usado === "hora" ? "por hora"
                     : l.metodo_usado === "comissao" ? "taxa + diária"
                     : "comissão"}
@@ -1470,7 +1506,7 @@ function PremiacaoDoDia({ isAdmin }) {
   const [taxaServico, setTaxaServico] = useState("");
   const [buscandoTaxa, setBuscandoTaxa] = useState(false);
   const [taxaAutomatica, setTaxaAutomatica] = useState(null); // null | true | false
-  const [faturamentoBrutoDia, setFaturamentoBrutoDia] = useState(0); // pra prévia do 2% da gerente
+  const [faturamentoBrutoDia, setFaturamentoBrutoDia] = useState(0); // base do percentual da gerente naquela noite
   const [matriz, setMatriz] = useState({}); // papel -> { valor_hora }
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
@@ -1582,7 +1618,9 @@ function PremiacaoDoDia({ isAdmin }) {
   const buscarTaxaAutomatica = async () => {
     setBuscandoTaxa(true);
     setErro("");
-    const temGerente = pessoas.some((p) => p.papel === "gerente" && participacao[p.id]?.incluido);
+    const temGerente = pessoas.some(
+      (p) => participacao[p.id]?.incluido && (participacao[p.id]?.papel || p.papel) === "gerente"
+    );
     const { data: cacheTaxa } = await supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle();
     if (cacheTaxa && (!temGerente || cacheTaxa.faturamento_bruto > 0)) {
       setBuscandoTaxa(false);
@@ -1597,8 +1635,8 @@ function PremiacaoDoDia({ isAdmin }) {
     if (data?.error) { setBuscandoTaxa(false); setErro(data.error); return; }
     setTaxaServico(String(data.taxa_servico));
     setTaxaAutomatica(data.encontrado_automaticamente);
-    // Só busca o faturamento bruto (pra prévia da gerente) se ela estiver
-    // marcada como presente hoje — evita gastar consulta à toa.
+    // Só busca o faturamento bruto (base do percentual da gerente) se ela
+    // estiver na escala de hoje — evita gastar consulta à toa.
     let faturamentoBruto = cacheTaxa?.faturamento_bruto || 0;
     if (temGerente) {
       const diaSeguinte = new Date(`${dia}T12:00:00-03:00`);
@@ -1684,6 +1722,10 @@ function PremiacaoDoDia({ isAdmin }) {
   const selecionados = pessoas.filter((p) => participacao[p.id]?.incluido);
   const garcons = selecionados.filter((p) => categoriaComissao(papelDe(p)) === "garcom");
   const internos = selecionados.filter((p) => categoriaComissao(papelDe(p)) === "interno");
+  // Nunca tem duas gerentes na mesma noite — mas se aparecerem, cada uma
+  // levaria o percentual cheio e a casa pagaria o dobro. Quase sempre é
+  // escala marcada errada, então a tela avisa antes de salvar.
+  const gerentesDoDia = selecionados.filter((p) => papelDe(p) === "gerente");
   const taxaNum = parseFloat(taxaServico) || 0;
   const poolGarcons = taxaNum * 0.5;
   const poolInternos = taxaNum * 0.5;
@@ -1708,8 +1750,18 @@ function PremiacaoDoDia({ isAdmin }) {
     const horas = participacao[p.id]?.horas || 0;
     const papelDia = papelDe(p);
     if (papelDia === "gerente") {
-      const total = round2(faturamentoBrutoDia * 0.02);
-      return { pessoa: p, peso: 0, horas, comissao: 0, baseCategoriaValor: 0, metodoUsado: "gerente_previa", valorMetodoComissao: total, valorMetodoHora: null, total };
+      // Percentual do faturamento bruto DA NOITE + diária base do cargo.
+      // Registrada não leva a diária: o fixo dela é o salário mensal, e
+      // o percentual de cada noite acumula pro fechamento do mês.
+      const pct = Number(matriz.gerente?.percentual_faturamento ?? PERCENTUAL_GERENTE_PADRAO) || 0;
+      const comissao = round2(faturamentoBrutoDia * pct / 100);
+      const base = p.tipo_contrato === "diarista" ? (parseFloat(baseCategoria.gerente) || 0) : 0;
+      const total = round2(comissao + base);
+      return {
+        pessoa: p, peso: 0, horas, comissao, baseCategoriaValor: base,
+        metodoUsado: "gerente", valorMetodoComissao: total, valorMetodoHora: null,
+        total, pctGerente: pct, faturamentoDia: faturamentoBrutoDia,
+      };
     }
     const peso = pesoDe(p.id); // guardado na presença como informação; não rateia mais
     const comissao = categoriaComissao(papelDia) === "garcom" ? comissaoPorGarcom : comissaoPorInterno;
@@ -1765,6 +1817,14 @@ function PremiacaoDoDia({ isAdmin }) {
   const salvarPremiacao = async () => {
     if (selecionados.length === 0) { setErro("Marque quem trabalhou hoje."); return; }
     if (isAdmin && taxaNum <= 0) { setErro("Informe a taxa de serviço do dia."); return; }
+    // A gerente é paga por percentual do faturamento da noite. Salvar sem
+    // esse número grava zero pra ela em silêncio — foi exatamente o que
+    // aconteceu no dia 25/08, quando a função do dia era Gerente e o
+    // faturamento nunca tinha sido buscado.
+    if (isAdmin && gerentesDoDia.length > 0 && !(faturamentoBrutoDia > 0)) {
+      setErro("A gerente está na escala mas o faturamento do dia ainda não foi buscado — clique em Buscar taxa de serviço antes de salvar, senão o percentual dela fecha em zero.");
+      return;
+    }
     setSalvando(true);
     setErro("");
 
@@ -1819,7 +1879,8 @@ function PremiacaoDoDia({ isAdmin }) {
           papel_no_dia: participacao[l.pessoa.id]?.papel || null,
           metodo_usado: l.metodoUsado,
           valor_metodo_comissao: l.metodoUsado ? round2(l.valorMetodoComissao) : null,
-          valor_metodo_hora: l.metodoUsado ? round2(l.valorMetodoHora) : null,
+          valor_metodo_hora: l.metodoUsado === "gerente" ? null : (l.metodoUsado ? round2(l.valorMetodoHora) : null),
+          faturamento_dia: l.metodoUsado === "gerente" ? round2(l.faturamentoDia || 0) : null,
         }, { onConflict: "pessoa_id,dia" });
         if (error) { setErro(error.message); setSalvando(false); return; }
       }
@@ -1874,12 +1935,28 @@ function PremiacaoDoDia({ isAdmin }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <div style={{ fontSize: 13, color: "#22231F" }}>{l.pessoa.nome}</div>
-                  <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[l.pessoa.papel]}{l.pessoa.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[l.pessoa_id])}</div>
+                  <div style={{ fontSize: 11, color: "#8A8778" }}>
+                    {PAPEL_LABEL[l.papel_no_dia || l.pessoa.papel]}
+                    {l.papel_no_dia && l.papel_no_dia !== l.pessoa.papel ? ` (cadastro: ${PAPEL_LABEL[l.pessoa.papel]})` : ""}
+                    {l.pessoa.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[l.pessoa_id])}
+                  </div>
                   {isAdmin && <LinhaPix pessoa={l.pessoa} />}
                 </div>
                 {isAdmin && <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{brl(l.total_dia)}</div>}
               </div>
-              {isAdmin && l.metodo_usado && (
+              {isAdmin && l.metodo_usado === "gerente" && (
+                <div style={{ fontSize: 10, color: "#0F6E56", marginTop: 4 }}>
+                  ✓ Gerência: {brl(l.comissao)} do faturamento do dia ({brl(l.faturamento_dia)})
+                  {Number(l.base_categoria) > 0 ? ` + diária base ${brl(l.base_categoria)}` : ""}
+                </div>
+              )}
+              {isAdmin && l.metodo_usado === "gerente_previa" && (
+                <div style={{ fontSize: 10, color: "#A32D2D", marginTop: 4 }}>
+                  Dia calculado pela regra antiga da gerência (prévia informativa). Pra recalcular pela regra
+                  nova, um administrador reabre o dia e salva de novo.
+                </div>
+              )}
+              {isAdmin && l.metodo_usado && l.metodo_usado !== "gerente" && l.metodo_usado !== "gerente_previa" && (
                 <div style={{ fontSize: 10, color: "#0F6E56", marginTop: 4 }}>
                   ✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}
                 </div>
@@ -2099,6 +2176,15 @@ function PremiacaoDoDia({ isAdmin }) {
           <div style={{ fontSize: 11, color: "#8A8778", marginTop: -10, marginBottom: 16 }}>
             A divisão da comissão usa as horas como peso (turno padrão de {HORAS_PADRAO_TURNO}h = peso 1). Preenchendo entrada e saída, as horas saem da conta sozinhas.
           </div>
+          {isAdmin && gerentesDoDia.length > 1 && (
+            <div style={{ ...avisoStyle, marginBottom: 12 }}>
+              <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+              <div style={{ fontSize: 13 }}>
+                Tem <b>{gerentesDoDia.length} gerentes</b> nesta noite ({gerentesDoDia.map((g) => g.nome).join(", ")}).
+                Cada uma vai levar o percentual cheio do faturamento. Se foi engano, corrija a escala antes de salvar.
+              </div>
+            </div>
+          )}
           {isAdmin && selecionados.length > 0 && (
             <>
               <div style={sectionLabel}>Valores por cargo</div>
@@ -2110,7 +2196,14 @@ function PremiacaoDoDia({ isAdmin }) {
                   <div key={papel} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ flex: 1, fontSize: 13, color: "#22231F" }}>{PAPEL_LABEL[papel]}</span>
                     <span style={{ fontSize: 11, color: "#8A8778" }}>Diária base <strong style={{ color: "#22231F" }}>{brl(parseFloat(baseCategoria[papel]) || 0)}</strong></span>
-                    <span style={{ fontSize: 11, color: "#8A8778" }}>Hora <strong style={{ color: "#22231F" }}>{brl(parseFloat(valorHora[papel]) || 0)}</strong></span>
+                    {papel === "gerente" ? (
+                      <span style={{ fontSize: 11, color: "#8A8778" }}>
+                        {Number(matriz.gerente?.percentual_faturamento ?? PERCENTUAL_GERENTE_PADRAO) || 0}% do faturamento{" "}
+                        <strong style={{ color: "#22231F" }}>{brl(faturamentoBrutoDia)}</strong>
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "#8A8778" }}>Hora <strong style={{ color: "#22231F" }}>{brl(parseFloat(valorHora[papel]) || 0)}</strong></span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -2133,7 +2226,10 @@ function PremiacaoDoDia({ isAdmin }) {
                         {l.baseCategoriaValor > 0 && <span style={{ fontSize: 10, color: "#185FA5" }}> + diária base</span>}
                       </span>
                       <span style={{ textAlign: "right", color: "#8A8778", fontSize: 11 }}>
-                        {l.metodoUsado === "hora" ? "por hora" : l.metodoUsado === "comissao" ? "taxa de serviço" : l.metodoUsado === "gerente_previa" ? "prévia 2%" : "—"}
+                        {l.metodoUsado === "hora" ? "por hora"
+                          : l.metodoUsado === "comissao" ? "taxa de serviço"
+                          : l.metodoUsado === "gerente" ? `${l.pctGerente}% do dia`
+                          : "—"}
                       </span>
                       <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(l.total)}</span>
                     </div>
@@ -2148,9 +2244,17 @@ function PremiacaoDoDia({ isAdmin }) {
                         </span>
                       </div>
                     )}
-                    {l.metodoUsado === "gerente_previa" && (
+                    {l.metodoUsado === "gerente" && (
                       <div style={{ fontSize: 10, color: "#8A8778", marginTop: 4 }}>
-                        2% de {brl(faturamentoBrutoDia)} (faturamento bruto do dia) — prévia informativa, o valor oficial fecha por mês
+                        {l.pctGerente}% de {brl(l.faturamentoDia)} (faturamento bruto do dia) = <b>{brl(l.comissao)}</b>
+                        {l.baseCategoriaValor > 0
+                          ? <> + diária base <b>{brl(l.baseCategoriaValor)}</b></>
+                          : " · registrada: acumula pro fechamento do mês"}
+                      </div>
+                    )}
+                    {l.metodoUsado === "gerente" && !(l.faturamentoDia > 0) && (
+                      <div style={{ fontSize: 10, color: "#A32D2D", marginTop: 4 }}>
+                        Faturamento do dia ainda não foi buscado — sem ele o percentual da gerente fica em zero.
                       </div>
                     )}
                     {(l.metodoUsado === "hora" || l.metodoUsado === "comissao") && (
@@ -2249,7 +2353,7 @@ function FolhaFechamento({ mesRef, linhas, gerentes, vales, fiado, emitidoPor })
             <tr key={g.nome}>
               <td style={td}>{g.nome}</td>
               <td style={td}>Gerente</td>
-              <td style={n}>—</td>
+              <td style={n}>{g.dias}</td>
               <td style={n}>{brl(g.salarioBase)}</td>
               <td style={n}>{brl(g.doisPorcento)}</td>
               <td style={n}>—</td>
@@ -2274,8 +2378,9 @@ function FolhaFechamento({ mesRef, linhas, gerentes, vales, fiado, emitidoPor })
         Comissão é a soma das fatias diárias da taxa de serviço nos dias em que a
         pessoa trabalhou. <b>Vale</b> é o adiantamento pago no dia 20 — ele já saiu
         do caixa e por isso desce do líquido. <b>Fiado</b> é o consumo da própria
-        pessoa, descontado no acerto. Gerente recebe salário mais 2% do
-        faturamento bruto do mês.
+        pessoa, descontado no acerto. Gerente recebe salário mais o percentual do
+        faturamento bruto das noites em que esteve na escala; gerente diarista não
+        aparece aqui porque já recebeu em cada noite.
       </div>
 
       <div className="nao-quebrar" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 26, marginTop: 40 }}>
@@ -2307,9 +2412,11 @@ function ValesDoMes({ mesRef, pessoas, vales, aoMudar, setErro }) {
   const [valores, setValores] = useState({});
   const [lancando, setLancando] = useState(null);
 
-  // Quem recebe por mes: registrado e gerente. Diarista e pago na noite.
+  // Quem recebe por mes: registrado — gerente registrada inclusa. Diarista
+  // e pago na noite e por isso nao tem vale: vale e adiantamento de
+  // salario mensal, e quem nao tem salario mensal nao tem o que adiantar.
   const mensalistas = pessoas.filter(
-    (p) => p.ativo !== false && (p.tipo_contrato === "registrado" || p.papel === "gerente")
+    (p) => p.ativo !== false && p.tipo_contrato === "registrado"
   );
   const jaLancados = mensalistas.filter((p) => vales[p.id]);
   const totalVales = jaLancados.reduce((s, p) => s + Number(vales[p.id].valor || 0), 0);
@@ -2519,15 +2626,25 @@ function FechamentoMensal() {
     setErro("");
     const { inicio, fim } = limitesDoMes();
     const [{ data: premiacoes }, { data: pessoasData }, { data: faturamentoData }] = await Promise.all([
-      supabase.from("premiacoes_diarias").select("pessoa_id, dia, total_dia, pessoa:pessoas(nome, papel, tipo_contrato)").gte("dia", inicio).lte("dia", fim),
+      supabase.from("premiacoes_diarias").select("pessoa_id, dia, total_dia, comissao, metodo_usado, faturamento_dia, papel_no_dia, pessoa:pessoas(nome, papel, tipo_contrato)").gte("dia", inicio).lte("dia", fim),
       supabase.from("pessoas").select("*").eq("ativo", true),
       supabase.from("faturamento_mensal").select("*").eq("mes_referencia", mesRef).maybeSingle(),
     ]);
     setFaturamentoMes(faturamentoData || null);
     const mapaSalario = Object.fromEntries((pessoasData || []).map((p) => [p.id, p]));
     const porPessoa = {};
+    // Noites da gerente REGISTRADA: o percentual de cada dia trabalhado.
+    // A diarista não entra — ela já recebeu na saída daquela noite.
+    const porGerente = {};
     (premiacoes || []).forEach((pr) => {
-      if (pr.pessoa?.tipo_contrato !== "registrado" || pr.pessoa?.papel === "gerente") return; // diarista já recebeu por dia; gerente é calculada à parte
+      if (pr.pessoa?.tipo_contrato !== "registrado") return; // diarista já recebeu por dia
+      if (pr.pessoa?.papel === "gerente") {
+        if (!porGerente[pr.pessoa_id]) porGerente[pr.pessoa_id] = { dias: 0, comissao: 0, faturamento: 0 };
+        porGerente[pr.pessoa_id].dias += 1;
+        porGerente[pr.pessoa_id].comissao += Number(pr.total_dia) || 0;
+        porGerente[pr.pessoa_id].faturamento += Number(pr.faturamento_dia) || 0;
+        return;
+      }
       if (!porPessoa[pr.pessoa_id]) porPessoa[pr.pessoa_id] = { nome: pr.pessoa.nome, papel: pr.pessoa.papel, dias: 0, comissao: 0 };
       porPessoa[pr.pessoa_id].dias += 1;
       porPessoa[pr.pessoa_id].comissao += pr.total_dia;
@@ -2538,12 +2655,25 @@ function FechamentoMensal() {
       return { ...v, pessoaId, salarioBase, total: v.comissao + salarioBase };
     });
     setLinhas(listaRegistrados.sort((a, b) => a.nome.localeCompare(b.nome)));
-    const listaGerentes = (pessoasData || []).filter((p) => p.papel === "gerente").map((p) => {
-      const faturamentoBruto = faturamentoData?.faturamento_bruto || 0;
-      const doisPorcento = faturamentoBruto * 0.02;
-      const salarioBase = p.salario_base || 0;
-      return { pessoaId: p.id, nome: p.nome, salarioBase, faturamentoBruto, doisPorcento, total: salarioBase + doisPorcento };
-    });
+    // Gerente diarista NÃO aparece no mensal: recebeu noite a noite,
+    // como qualquer outro diarista. Da registrada, o percentual sai da
+    // soma das noites em que ela realmente trabalhou — não de 2% do mês
+    // inteiro, que era o que valia até 26/08/2026 e pagava também as
+    // noites em que ela não foi escalada. Com duas gerentes isso pagaria
+    // o percentual duas vezes sobre o mesmo faturamento.
+    const listaGerentes = (pessoasData || [])
+      .filter((p) => p.papel === "gerente" && p.tipo_contrato !== "diarista")
+      .map((p) => {
+        const noites = porGerente[p.id] || { dias: 0, comissao: 0, faturamento: 0 };
+        const salarioBase = p.salario_base || 0;
+        return {
+          pessoaId: p.id, nome: p.nome, salarioBase,
+          dias: noites.dias,
+          faturamentoBruto: noites.faturamento,
+          doisPorcento: noites.comissao,
+          total: salarioBase + noites.comissao,
+        };
+      });
     setGerentes(listaGerentes);
     const { data: usuarioAtual } = await supabase.auth.getUser();
     if (usuarioAtual?.user?.id) {
@@ -2753,6 +2883,10 @@ function FechamentoMensal() {
               <div>
                 <div style={{ fontSize: 12, color: "#8A8778" }}>Faturamento bruto do mês</div>
                 <div style={{ fontSize: 15, fontWeight: 700, color: "#22231F" }}>{faturamentoMes ? brl(faturamentoMes.faturamento_bruto) : "—"}</div>
+                <div style={{ fontSize: 10, color: "#8A8778", marginTop: 3, maxWidth: 320, lineHeight: 1.5 }}>
+                  Número de acompanhamento. O percentual da gerência não sai daqui: sai noite a noite,
+                  só das noites em que ela esteve na escala.
+                </div>
               </div>
               <button onClick={buscarFaturamento} disabled={buscandoFaturamento} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
                 {buscandoFaturamento ? <Loader2 size={14} /> : <RefreshCw size={14} />} Buscar
@@ -2772,7 +2906,11 @@ function FechamentoMensal() {
                       <span>Salário base</span><span>{brl(g.salarioBase)}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8A8778" }}>
-                      <span>2% de {brl(g.faturamentoBruto)} (faturamento bruto)</span><span>{brl(g.doisPorcento)}</span>
+                      <span>
+                        Percentual de {g.dias} noite{g.dias === 1 ? "" : "s"} na escala
+                        {g.faturamentoBruto > 0 ? ` (faturamento ${brl(g.faturamentoBruto)})` : ""}
+                      </span>
+                      <span>{brl(g.doisPorcento)}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, color: "#22231F", marginTop: 4, paddingTop: 4, borderTop: "1px solid #F0EBDD" }}>
                       <span>Total do mês</span><span>{brl(g.total)}</span>
@@ -2832,6 +2970,14 @@ const seloBase = {
 const seloGarcom = { ...seloBase, background: "#37A0E522", color: "#185FA5", border: "1px solid #37A0E555" };
 const seloInterna = { ...seloBase, background: "#FAC77540", color: "#854F0B", border: "1px solid #FAC77599" };
 const seloFora = { ...seloBase, background: "#F6F1E7", color: "#8A8778", border: "1px solid #E8E2D2" };
+const seloGerencia = { ...seloBase, background: "#EAE4F7", color: "#4C3E77", border: "1px solid #C9BEE8" };
+// Cinco colunas na matriz: cargo, bolo, diária, percentual, valor hora.
+const gradeMatriz = "1fr 1.3fr 0.85fr 0.85fr 0.85fr";
+const celulaMatriz = {
+  padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2",
+  fontSize: 12, textAlign: "right", width: "100%", boxSizing: "border-box",
+};
+const celulaVazia = { fontSize: 12, textAlign: "right", color: "#B8B2A2", padding: "5px 6px" };
 const pillFiado = {
   fontSize: 11.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999, whiteSpace: "nowrap",
 };
