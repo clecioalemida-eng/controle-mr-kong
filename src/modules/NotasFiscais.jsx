@@ -1,7 +1,8 @@
+// ===== NotasFiscais.jsx =====
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
-  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search, X, ExternalLink, RotateCcw,
+  ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search, X, ExternalLink, RotateCcw, Plus,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
@@ -278,32 +279,11 @@ export default function NotasFiscais() {
   const [erro, setErro] = useState("");
   const [documentoAtual, setDocumentoAtual] = useState(null);
   const [busca, setBusca] = useState("");
-  // Documento aberto na miniatura sobre a página (null = fechada)
-  const [preview, setPreview] = useState(null);
   const [revertendo, setRevertendo] = useState(null); // id da nota sendo revertida
+  const [notaConfirmada, setNotaConfirmada] = useState(null); // nota já com entrada, aberta pra ver/editar
   const isAdmin = useIsAdmin();
   const inputRef = useRef(null);
 
-  // Abre a miniatura dentro da própria página. Usa a mesma URL assinada
-  // de 5 minutos que o "abrir em outra aba" — o bucket é privado, então
-  // não dá pra apontar direto pro arquivo.
-  const abrirMiniatura = async (d) => {
-    const { data, error } = await supabase.storage.from("notas-fiscais").createSignedUrl(d.arquivo_path, 300);
-    if (error || !data?.signedUrl) { setErro("Não consegui abrir o arquivo: " + (error?.message || "")); return; }
-    setPreview({
-      url: data.signedUrl,
-      nome: d.fornecedor || "Fornecedor não identificado",
-      ehPdf: /\.pdf(\?|$)/i.test(d.arquivo_path),
-    });
-  };
-
-  // Esc fecha a miniatura
-  useEffect(() => {
-    if (!preview) return;
-    const aoTeclar = (e) => { if (e.key === "Escape") setPreview(null); };
-    window.addEventListener("keydown", aoTeclar);
-    return () => window.removeEventListener("keydown", aoTeclar);
-  }, [preview]);
   const carregar = useCallback(async () => {
     setCarregando(true);
     const { data, error } = await supabase.from("documentos_compra").select("*").order("criado_em", { ascending: false }).limit(30);
@@ -369,6 +349,14 @@ export default function NotasFiscais() {
   if (tela === "regras") {
     return <RegrasProduto onVoltar={() => setTela("lista")} />;
   }
+  if (tela === "manual") {
+    return (
+      <CompraManual
+        onVoltar={() => { setTela("lista"); carregar(); }}
+        onCriada={(doc) => { setDocumentoAtual(doc); setTela("conferencia"); }}
+      />
+    );
+  }
   if (tela === "conferencia" && documentoAtual) {
     return (
       <Conferencia
@@ -390,12 +378,34 @@ export default function NotasFiscais() {
       */}
       <input ref={inputRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }}
         onChange={(e) => enviarArquivo(e.target.files?.[0])} />
-      <button onClick={() => inputRef.current?.click()} disabled={enviando}
-        style={{ ...btnPrimary, width: "100%", marginBottom: 16 }}>
-        {enviando ? <Loader2 size={16} /> : <Upload size={17} />}
-        {enviando ? "Enviando…" : "Enviar nota fiscal ou recibo"}
-      </button>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        <button onClick={() => inputRef.current?.click()} disabled={enviando}
+          style={{ ...btnPrimary, flex: 1, minWidth: 230 }}>
+          {enviando ? <Loader2 size={16} /> : <Upload size={17} />}
+          {enviando ? "Enviando…" : "Enviar nota fiscal ou recibo"}
+        </button>
+        <button onClick={() => setTela("manual")}
+          style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 7, padding: "12px 18px", fontSize: 14, fontWeight: 700 }}>
+          <Plus size={16} /> Compra manual
+        </button>
+      </div>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+      {notaConfirmada && (
+        <NotaJaConferida
+          documento={notaConfirmada}
+          isAdmin={isAdmin}
+          onFechar={() => setNotaConfirmada(null)}
+          aoDesfazer={async () => {
+            const d = notaConfirmada;
+            const { data, error } = await supabase.rpc("reverter_conferencia_nota", { p_documento: d.id });
+            if (error) { setNotaConfirmada(null); setErro(error.message); return; }
+            if (data) window.alert(data);
+            setNotaConfirmada(null);
+            setDocumentoAtual({ ...d, status: "aguardando_confirmacao" });
+            setTela("conferencia");
+          }}
+        />
+      )}
       {documentos.length > 0 && (
         <div style={{ position: "relative", marginBottom: 14 }}>
           <Search size={15} color="#8A8778" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
@@ -413,13 +423,28 @@ export default function NotasFiscais() {
         <div className="list-grid">
           {documentos.filter((d) => (d.fornecedor || "Fornecedor não identificado").toLowerCase().includes(busca.toLowerCase())).map((d) => (
             <div key={d.id} style={itemRow}>
-              <button onClick={() => abrirPreview(d.arquivo_path)} style={iconBtnWrap}
-                aria-label="Abrir documento em outra aba" title="Abrir em outra aba">
-                <div style={iconBox}><FileText size={16} color="#8A8778" /></div>
-              </button>
+              {d.arquivo_path ? (
+                <button onClick={() => abrirPreview(d.arquivo_path)} style={iconBtnWrap}
+                  aria-label="Abrir documento em outra aba" title="Abrir em outra aba">
+                  <div style={iconBox}><FileText size={16} color="#8A8778" /></div>
+                </button>
+              ) : (
+                // Compra manual não tem arquivo pra abrir — o selo diz que
+                // esses números foram digitados, não lidos pela IA.
+                <div style={{ ...iconBox, flexDirection: "column", gap: 1 }} title="Compra digitada à mão, sem nota">
+                  <Plus size={13} color="#3A6684" />
+                  <span style={{ fontSize: 7, fontWeight: 800, color: "#3A6684", letterSpacing: 0.2 }}>MANUAL</span>
+                </div>
+              )}
               <button
-                onClick={() => { if (d.status === "aguardando_confirmacao") { setDocumentoAtual(d); setTela("conferencia"); } }}
-                style={{ display: "flex", alignItems: "center", minWidth: 0, flex: 1, background: "none", border: "none", padding: 0, cursor: d.status === "aguardando_confirmacao" ? "pointer" : "default", textAlign: "left" }}>
+                onClick={() => {
+                  if (d.status === "aguardando_confirmacao") { setDocumentoAtual(d); setTela("conferencia"); }
+                  // Nota que já teve entrada abre no mesmo lugar, só que
+                  // travada: primeiro se vê o que foi lançado, e o botão
+                  // vermelho desfaz a entrada e devolve ela pra edição.
+                  else if (d.status === "confirmado") setNotaConfirmada(d);
+                }}
+                style={{ display: "flex", alignItems: "center", minWidth: 0, flex: 1, background: "none", border: "none", padding: 0, cursor: (d.status === "aguardando_confirmacao" || d.status === "confirmado") ? "pointer" : "default", textAlign: "left" }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {d.fornecedor || "Fornecedor não identificado"}
@@ -429,10 +454,12 @@ export default function NotasFiscais() {
                   </div>
                 </div>
               </button>
-              <button onClick={() => abrirMiniatura(d)} style={ghostIconBtn}
-                aria-label="Ver documento aqui na página" title="Ver aqui na página">
-                <Eye size={16} />
-              </button>
+              {d.arquivo_path && (
+                <button onClick={() => abrirPreview(d.arquivo_path)} style={ghostIconBtn}
+                  aria-label="Abrir a nota em outra aba" title="Abrir a nota em outra aba">
+                  <Eye size={16} />
+                </button>
+              )}
               {d.status !== "confirmado" && (
                 <button onClick={() => excluirDocumento(d)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Excluir documento">
                   <Trash2 size={16} />
@@ -452,43 +479,132 @@ export default function NotasFiscais() {
         </div>
       )}
 
-      {/* Miniatura do documento, sobre a página. Clicar fora ou Esc fecha. */}
-      {preview && (
-        <div onClick={() => setPreview(null)} style={overlayStyle}>
-          <div onClick={(e) => e.stopPropagation()} style={modalStyle}>
-            <div style={modalBarra}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {preview.nome}
-              </span>
-              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button onClick={() => window.open(preview.url, "_blank")} style={ghostIconBtn}
-                  aria-label="Abrir em outra aba" title="Abrir em outra aba">
-                  <ExternalLink size={16} />
-                </button>
-                <button onClick={() => setPreview(null)} style={ghostIconBtn} aria-label="Fechar" title="Fechar">
-                  <X size={18} />
-                </button>
-              </div>
-            </div>
-            <div style={modalCorpo}>
-              {preview.ehPdf ? (
-                <>
-                  <iframe src={preview.url} title="Documento" style={{ width: "100%", height: "70vh", border: "none", background: "#FFFFFF" }} />
-                  {/* O Safari do iPhone costuma não renderizar PDF dentro de
-                      iframe. Se o quadro acima vier vazio, o botão abaixo
-                      resolve — por isso ele existe mesmo com o da barra. */}
-                  <button onClick={() => window.open(preview.url, "_blank")}
-                    style={{ ...btnSecondary, width: "100%", marginTop: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                    <ExternalLink size={14} /> Não apareceu? Abrir em outra aba
-                  </button>
-                </>
-              ) : (
-                <img src={preview.url} alt="Documento" style={{ maxWidth: "100%", maxHeight: "70vh", display: "block", margin: "0 auto", objectFit: "contain" }} />
-              )}
-            </div>
+    </div>
+  );
+}
+// ---------------------------------------------------------------------------
+// Nota que JÁ teve entrada — ver e, se precisar, voltar a editar
+//
+// Fica no mesmo lugar da conferência de propósito: é ali que a pessoa
+// procura quando percebe que digitou um preço errado ontem.
+//
+// Por que travada, e não editável direto: os números dessa nota já
+// viraram entrada de estoque, custo médio de insumo e conta no Plano de
+// Contas. Deixar editar por cima faria a tela discordar do estoque sem
+// ninguém perceber. Então o caminho é explícito — desfaz a entrada,
+// e aí sim edita.
+//
+// Só administrador desfaz. Quem não é vê a nota e o aviso.
+// ---------------------------------------------------------------------------
+function NotaJaConferida({ documento, isAdmin, onFechar, aoDesfazer }) {
+  const [itens, setItens] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [desfazendo, setDesfazendo] = useState(false);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const { data } = await supabase
+        .from("itens_documento_compra")
+        .select("*")
+        .eq("documento_id", documento.id)
+        .order("criado_em");
+      if (vivo) { setItens(data || []); setCarregando(false); }
+    })();
+    return () => { vivo = false; };
+  }, [documento.id]);
+
+  const somaItens = itens.reduce(
+    (s2, i) => s2 + (Number(i.quantidade) || 0) * (Number(i.preco_unitario) || 0), 0
+  );
+
+  const desfazer = async () => {
+    if (!window.confirm(
+      `Desfazer a entrada da nota de "${documento.fornecedor || "fornecedor não identificado"}" para editar?\n\n` +
+      "Isso apaga a entrada no estoque e a conta gerada no Plano de Contas, " +
+      "e devolve a nota para conferência com os itens preservados.\n\n" +
+      "O custo médio dos insumos NÃO volta ao valor anterior."
+    )) return;
+    setDesfazendo(true);
+    await aoDesfazer();
+    setDesfazendo(false);
+  };
+
+  return (
+    <div onClick={onFechar} style={overlayStyle}>
+      <div onClick={(e) => e.stopPropagation()} style={modalStyle}>
+        <div style={modalBarra}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {documento.fornecedor || "Fornecedor não identificado"} · nota já conferida
+          </span>
+          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+            {documento.arquivo_path && (
+              <button onClick={() => abrirPreview(documento.arquivo_path)} style={ghostIconBtn}
+                aria-label="Abrir a nota em outra aba" title="Abrir a nota em outra aba">
+                <ExternalLink size={16} />
+              </button>
+            )}
+            <button onClick={onFechar} style={ghostIconBtn} aria-label="Fechar" title="Fechar">
+              <X size={18} />
+            </button>
           </div>
         </div>
-      )}
+        <div style={modalCorpo}>
+          <div style={{ fontSize: 11.5, color: "#8A8778", marginBottom: 10 }}>
+            {fmtData(documento.data_documento || documento.criado_em)}
+            {documento.valor_total ? ` · total lançado ${brl(documento.valor_total)}` : ""}
+            {documento.origem === "manual" ? " · compra digitada à mão" : ""}
+          </div>
+          {carregando ? (
+            <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando os itens…</div>
+          ) : (
+            <div style={{ border: "1px solid #E8E2D2", borderRadius: 10, overflow: "hidden", background: "#FFFFFF" }}>
+              {itens.map((i, idx) => (
+                <div key={i.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 11px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {i.nome_lido}
+                    </div>
+                    <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 1 }}>
+                      {i.quantidade} {i.unidade} × {brl(i.preco_unitario)}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap" }}>
+                    {brl((Number(i.quantidade) || 0) * (Number(i.preco_unitario) || 0))}
+                  </div>
+                </div>
+              ))}
+              {itens.length === 0 && (
+                <div style={{ padding: 12, fontSize: 12.5, color: "#8A8778" }}>Esta nota não tem itens gravados.</div>
+              )}
+              {itens.length > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 11px", borderTop: "1px solid #E8E2D2", background: "#FBFAF6", fontSize: 12.5 }}>
+                  <span style={{ color: "#8A8778" }}>Soma dos itens</span>
+                  <b>{brl(somaItens)}</b>
+                </div>
+              )}
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: "#8A8778", marginTop: 10, lineHeight: 1.55 }}>
+            Esses números já entraram no estoque e no Plano de Contas — por isso a tela está travada.
+            Pra corrigir qualquer coisa, é preciso desfazer a entrada primeiro.
+          </div>
+          {isAdmin ? (
+            <button onClick={desfazer} disabled={desfazendo}
+              style={{ width: "100%", marginTop: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+                background: "#C4432B", color: "#FFFFFF", border: "none", borderRadius: 10, padding: "12px 16px",
+                fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+              {desfazendo ? <Loader2 size={16} /> : <RotateCcw size={16} />}
+              Desfazer a entrada e editar
+            </button>
+          ) : (
+            <div style={{ ...avisoStyle, marginTop: 12 }}>
+              <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+              <div style={{ fontSize: 12.5 }}>Só administrador desfaz a entrada de uma nota.</div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -888,13 +1004,19 @@ function Conferencia({ documento, onVoltar }) {
           )}
           <div style={{ fontSize: 12, color: "#8A8778" }}>{fmtData(documento.data_documento || documento.criado_em)} · {itens.length} itens lidos pela IA</div>
         </div>
-        <button onClick={abrirOriginal} disabled={abrindoOriginal}
-          title="Abre a nota escaneada numa aba nova"
-          style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-          {abrindoOriginal ? <Loader2 size={14} /> : <Eye size={14} />}
-          Ver original
-          <ExternalLink size={12} style={{ opacity: 0.55 }} />
-        </button>
+        {documento.arquivo_path ? (
+          <button onClick={abrirOriginal} disabled={abrindoOriginal}
+            title="Abre a nota escaneada numa aba nova"
+            style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            {abrindoOriginal ? <Loader2 size={14} /> : <Eye size={14} />}
+            Ver original
+            <ExternalLink size={12} style={{ opacity: 0.55 }} />
+          </button>
+        ) : (
+          <span style={{ fontSize: 11, fontWeight: 700, color: "#3A6684", background: "#EAF1F7", borderRadius: 999, padding: "5px 11px", flexShrink: 0 }}>
+            compra manual
+          </span>
+        )}
       </div>
 
       {fornecedorAtual.id && historicoFornecedor.length > 0 && (
@@ -1383,6 +1505,309 @@ function RegrasProduto({ onVoltar }) {
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// Compra manual — o que não tem nota pra fotografar
+//
+// Feira, açougue, compra de última hora. Dinheiro que sai e antes não entrava
+// em lugar nenhum, porque o único caminho era fotografar uma nota inexistente.
+//
+// Grava exatamente a mesma estrutura da nota — um documento_compra com seus
+// itens, em 'aguardando_confirmacao' — e joga a pessoa na MESMA tela de
+// conferência. Daí em diante estoque, custo médio e Contas a pagar seguem o
+// caminho que já funciona.
+//
+// A pessoa digita QUANTO COMPROU e QUANTO PAGOU naquele item; o preço por
+// quilo o sistema calcula. Na feira ninguém sabe o preço do quilo de cabeça —
+// sabe o que pesou e o que pagou. Pedir o unitário obrigaria a dividir na
+// hora, e é aí que entra número errado.
+// ---------------------------------------------------------------------------
+function CompraManual({ onVoltar, onCriada }) {
+  const [fornecedor, setFornecedor] = useState("");
+  const [dataCompra, setDataCompra] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  const [linhas, setLinhas] = useState([]);
+  const [insumos, setInsumos] = useState([]);
+  const [fornecedores, setFornecedores] = useState([]);
+  const [escolhido, setEscolhido] = useState(null);
+  const [qtd, setQtd] = useState("");
+  const [valor, setValor] = useState("");
+  const [criando, setCriando] = useState(null); // nome digitado que virou cadastro
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const [rIns, rForn] = await Promise.all([
+        supabase.from("insumos").select("id, nome, unidade, custo_medio_atual").order("nome"),
+        supabase.from("fornecedores").select("id, nome").order("nome"),
+      ]);
+      setInsumos(rIns.data || []);
+      setFornecedores(rForn.data || []);
+    })();
+  }, []);
+
+  const total = linhas.reduce((s, l) => s + (Number(l.valor) || 0), 0);
+
+  const adicionar = () => {
+    if (!escolhido) return;
+    const q = parseFloat(String(qtd).replace(",", ".")) || 0;
+    const v = parseFloat(String(valor).replace(",", ".")) || 0;
+    if (q <= 0) { setErro("Informe a quantidade comprada."); return; }
+    setErro("");
+    setLinhas((prev) => [...prev, {
+      insumo_id: escolhido.id, nome: escolhido.nome, unidade: escolhido.unidade,
+      quantidade: q, valor: v,
+    }]);
+    setEscolhido(null); setQtd(""); setValor("");
+  };
+
+  const salvar = async () => {
+    if (linhas.length === 0) { setErro("Adicione pelo menos um item."); return; }
+    setSalvando(true);
+    setErro("");
+    const { data: userData } = await supabase.auth.getUser();
+
+    // Fornecedor: usa o que já existe (sem diferenciar acento/caixa) ou cria.
+    let fornecedorId = null;
+    const nome = fornecedor.trim();
+    if (nome) {
+      const achado = fornecedores.find((f) => norm(f.nome) === norm(nome));
+      if (achado) fornecedorId = achado.id;
+      else {
+        const { data: novo } = await supabase.from("fornecedores").insert({ nome }).select().single();
+        fornecedorId = novo?.id || null;
+      }
+    }
+
+    const { data: doc, error } = await supabase.from("documentos_compra").insert({
+      status: "aguardando_confirmacao",
+      origem: "manual",
+      fornecedor: nome || null,
+      fornecedor_id: fornecedorId,
+      data_documento: dataCompra,
+      valor_total: round2(total),
+      criado_por: userData?.user?.id,
+    }).select().single();
+
+    if (error) {
+      setSalvando(false);
+      setErro(/arquivo_path|null value|origem/i.test(error.message)
+        ? "Falta rodar a migração 084 no banco — é ela que permite compra sem arquivo."
+        : error.message);
+      return;
+    }
+
+    const { error: errItens } = await supabase.from("itens_documento_compra").insert(
+      linhas.map((l) => ({
+        documento_id: doc.id,
+        nome_lido: l.nome,
+        quantidade: l.quantidade,
+        unidade: l.unidade,
+        preco_unitario: l.quantidade > 0 ? round4(l.valor / l.quantidade) : 0,
+        insumo_id: l.insumo_id,
+      }))
+    );
+    setSalvando(false);
+    if (errItens) {
+      // O documento já existe; deixar a pessoa achando que nada aconteceu
+      // seria pior — ela lançaria tudo de novo em cima.
+      setErro("A compra foi criada, mas os itens não gravaram: " + errItens.message);
+      return;
+    }
+    onCriada(doc);
+  };
+
+  return (
+    <div>
+      <button onClick={onVoltar} style={{ ...linkBtn, display: "flex", alignItems: "center", gap: 4, marginBottom: 14 }}>
+        <ChevronLeft size={14} /> Voltar
+      </button>
+
+      <div style={{ ...cardStyle, marginBottom: 12 }}>
+        <div style={{ ...sectionLabel, marginBottom: 10 }}>Compra manual</div>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
+          <div>
+            <label style={rotuloCM}>Onde comprou</label>
+            <input list="fornecedores-manual" value={fornecedor} onChange={(e) => setFornecedor(e.target.value)}
+              placeholder="Feira do Produtor" style={campoCM} />
+            <datalist id="fornecedores-manual">
+              {fornecedores.map((f) => <option key={f.id} value={f.nome} />)}
+            </datalist>
+          </div>
+          <div>
+            <label style={rotuloCM}>Data</label>
+            <input type="date" value={dataCompra} onChange={(e) => setDataCompra(e.target.value)} style={campoCM} />
+          </div>
+        </div>
+        <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 6, lineHeight: 1.5 }}>
+          Fornecedor novo é criado na hora. Se já existir, ele aparece enquanto você digita.
+        </div>
+      </div>
+
+      {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
+
+      <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, background: "#FFFFFF", overflow: "hidden", marginBottom: 12 }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ ...thCM, textAlign: "left" }}>Insumo</th>
+                <th style={thCM}>Quantidade</th>
+                <th style={thCM}>Valor pago</th>
+                <th style={thCM}>Sai a</th>
+                <th style={thCM}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {linhas.map((l, idx) => {
+                const unit = l.quantidade > 0 ? l.valor / l.quantidade : 0;
+                return (
+                  <tr key={`${l.insumo_id}-${idx}`}>
+                    <td style={{ ...tdCM, textAlign: "left", whiteSpace: "normal", minWidth: 130 }}>{l.nome}</td>
+                    <td style={tdCM}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <input value={l.quantidade}
+                          onChange={(e) => setLinhas((p) => p.map((x, i) => i === idx ? { ...x, quantidade: parseFloat(String(e.target.value).replace(",", ".")) || 0 } : x))}
+                          style={campoNumCM} />
+                        <span style={unCM}>{l.unidade}</span>
+                      </span>
+                    </td>
+                    <td style={tdCM}>
+                      <input value={l.valor}
+                        onChange={(e) => setLinhas((p) => p.map((x, i) => i === idx ? { ...x, valor: parseFloat(String(e.target.value).replace(",", ".")) || 0 } : x))}
+                        style={campoNumCM} />
+                    </td>
+                    <td style={{ ...tdCM, color: "#8A8778", fontSize: 11.5 }}>{brl(unit)} /{l.unidade}</td>
+                    <td style={tdCM}>
+                      <button onClick={() => setLinhas((p) => p.filter((_, i) => i !== idx))}
+                        style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Tirar item"><Trash2 size={14} /></button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {linhas.length === 0 && (
+                <tr><td colSpan={5} style={{ ...tdCM, textAlign: "center", color: "#8A8778" }}>Nenhum item ainda.</td></tr>
+              )}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={2} style={{ ...tfCM, textAlign: "left", fontSize: 10, letterSpacing: 0.3, textTransform: "uppercase", color: "#8A8778" }}>Total da compra</td>
+                <td style={tfCM}>{brl(total)}</td>
+                <td colSpan={2} style={tfCM}></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        {criando === null ? (
+          <div style={{ display: "flex", gap: 7, padding: "11px 12px", background: "#FCFAF3", borderTop: "1px dashed #DDD5BF", alignItems: "center", flexWrap: "wrap" }}>
+            <BuscaInsumo insumos={insumos} onEscolher={(i) => setEscolhido(i)} onCriar={(texto) => setCriando(texto)} />
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <input value={qtd} onChange={(e) => setQtd(e.target.value)} placeholder="qtd" style={campoNumCM} />
+              <span style={unCM}>{escolhido ? escolhido.unidade : "—"}</span>
+            </span>
+            <input value={valor} onChange={(e) => setValor(e.target.value)} placeholder="R$" style={{ ...campoNumCM, width: 84 }} />
+            <button onClick={adicionar} disabled={!escolhido}
+              style={{ ...btnSecondary, background: escolhido ? "#22231F" : "#F6F1E7", color: escolhido ? "#F3EFE3" : "#B3AC96", borderColor: escolhido ? "#22231F" : "#E8E2D2", display: "flex", alignItems: "center", gap: 5 }}>
+              <Plus size={14} /> Adicionar
+            </button>
+            {escolhido && (
+              <div style={{ width: "100%", fontSize: 11, color: "#8A8778" }}>
+                Escolhido: <strong>{escolhido.nome}</strong> · comprado em <strong>{escolhido.unidade}</strong>
+              </div>
+            )}
+          </div>
+        ) : (
+          <CadastroRapidoInsumo
+            nomeInicial={criando}
+            onCancelar={() => setCriando(null)}
+            onCriado={(novo) => {
+              setInsumos((prev) => [...prev, novo].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR")));
+              setEscolhido(novo);
+              setCriando(null);
+            }}
+          />
+        )}
+      </div>
+
+      <button onClick={salvar} disabled={salvando || linhas.length === 0}
+        style={{ ...btnPrimary, width: "100%" }}>
+        {salvando ? <Loader2 size={16} /> : <Check size={16} />}
+        {salvando ? "Criando…" : "Continuar para a conferência"}
+      </button>
+      <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 6, textAlign: "center", lineHeight: 1.5 }}>
+        A compra vai pra lista como <strong>manual</strong>, aguardando conferência — o mesmo lugar das notas.
+        É lá que você escolhe a forma de pagamento e confirma.
+      </div>
+    </div>
+  );
+}
+
+// Cadastro rápido dentro da compra manual: aqui o preço vem da PRÓPRIA
+// compra, então não se pergunta custo — só nome e como se compra.
+function CadastroRapidoInsumo({ nomeInicial, onCriado, onCancelar }) {
+  const [nome, setNome] = useState(nomeInicial);
+  const [unidade, setUnidade] = useState("kg");
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  const salvar = async () => {
+    if (!nome.trim()) { setErro("Dê um nome ao insumo."); return; }
+    setSalvando(true);
+    setErro("");
+    const { data, error } = await supabase.from("insumos")
+      .insert({ nome: nome.trim(), unidade, custo_medio_atual: 0 })
+      .select().single();
+    setSalvando(false);
+    if (error) {
+      setErro(/duplicate key|23505/i.test(error.message)
+        ? "Já existe um insumo com esse nome — procure por ele na busca."
+        : error.message);
+      return;
+    }
+    onCriado(data);
+  };
+
+  return (
+    <div style={{ padding: 12, background: "#FCFAF3", borderTop: "1px dashed #DDD5BF" }}>
+      <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 9 }}>Cadastrar insumo</div>
+      <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Nome do insumo"
+        style={{ ...campoCM, marginBottom: 9 }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
+        <span style={{ fontSize: 12.5, color: "#8A8778" }}>Como você compra?</span>
+        {[["kg", "Por peso (kg)"], ["l", "Por volume (l)"], ["un", "Por unidade"]].map(([v, rot]) => (
+          <button key={v} onClick={() => setUnidade(v)}
+            style={{ border: "1px solid #E8E2D2", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+              background: unidade === v ? "#22231F" : "#FFFFFF", color: unidade === v ? "#F3EFE3" : "#55534A", borderColor: unidade === v ? "#22231F" : "#E8E2D2" }}>
+            {rot}
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 10.5, color: "#8A8778", marginBottom: 10, lineHeight: 1.5 }}>
+        Não precisa informar preço: é esta compra que vai definir o custo dele.
+      </div>
+      {erro && <div style={{ fontSize: 12, color: "#A32D2D", marginBottom: 8 }}>{erro}</div>}
+      <div style={{ display: "flex", gap: 7 }}>
+        <button onClick={salvar} disabled={salvando}
+          style={{ ...btnSecondary, background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" }}>
+          {salvando ? "Salvando…" : "Cadastrar e escolher"}
+        </button>
+        <button onClick={onCancelar} style={btnSecondary}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+const campoCM = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 7, border: "1px solid #E8E2D2", fontSize: 13.5, fontFamily: "inherit", background: "#FFFFFF", color: "#22231F" };
+const rotuloCM = { display: "block", fontSize: 10, color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 };
+const campoNumCM = { width: 68, padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13, textAlign: "right", fontFamily: "inherit", fontVariantNumeric: "tabular-nums" };
+const unCM = { border: "1px solid #E8E2D2", background: "#F6F1E7", color: "#55534A", borderRadius: 6, padding: "5px 8px", fontSize: 11.5, fontWeight: 700, minWidth: 32, textAlign: "center", display: "inline-block" };
+const thCM = { background: "#F6F1E7", fontSize: 10, fontWeight: 800, letterSpacing: 0.3, textTransform: "uppercase", color: "#8A8778", padding: "8px 11px", textAlign: "right", borderBottom: "1px solid #E8E2D2", whiteSpace: "nowrap" };
+const tdCM = { padding: "9px 11px", textAlign: "right", borderBottom: "1px solid #F0EBDD", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", color: "#22231F" };
+const tfCM = { padding: "9px 11px", textAlign: "right", background: "#F6F1E7", fontWeight: 800, borderTop: "1px solid #E8E2D2", fontVariantNumeric: "tabular-nums" };
 const optStyle = { padding: "7px 10px", fontSize: 12.5, color: "#22231F", cursor: "pointer" };
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
 const linhaTabela = { display: "grid", gridTemplateColumns: "2fr 0.6fr 0.5fr 0.8fr 0.8fr 0.6fr", gap: 6, padding: "8px 10px", alignItems: "center" };
