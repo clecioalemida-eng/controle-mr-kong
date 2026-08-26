@@ -1,8 +1,11 @@
+// ===== CurvaABC.jsx =====
 import React, { useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
-import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+import { supabase } from "../lib/supabaseClient";
 
-function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
+function brl(v) {
+  return Number(v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
 function hoje() { return new Date().toISOString().slice(0, 10); }
 function diasAtras(n) { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); }
 
@@ -10,6 +13,12 @@ function diasAtras(n) { const d = new Date(); d.setDate(d.getDate() - n); return
 // que geram num período, calcula o percentual acumulado, e classifica —
 // A = geram até 80% do faturamento, B = até 95%, C = os últimos 5%.
 // Ajuda a enxergar rápido quais itens realmente sustentam o caixa.
+//
+// O cálculo mora no banco, na função curva_abc(), lendo os pedidos já
+// sincronizados em pedidos_cache. Antes esta tela chamava o CardápioWeb
+// na hora e somava item.total / item.price — campos que não existem na
+// resposta deles (os certos são total_price e unit_price). Por isso
+// tudo aparecia como R$ 0,00 e todo produto caía na classe A.
 export default function CurvaABC() {
   const [dias, setDias] = useState("30");
   const [agrupamento, setAgrupamento] = useState("produto"); // produto | linha
@@ -20,41 +29,27 @@ export default function CurvaABC() {
   const buscar = async () => {
     setBuscando(true);
     setErro("");
-    const inicio = diasAtras(parseInt(dias) || 30);
-    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
-      body: { data_inicio: `${inicio}T00:00:00-03:00`, data_fim: `${hoje()}T23:59:59-03:00` },
+    setLinhas(null);
+    const { data, error } = await supabase.rpc("curva_abc", {
+      p_inicio: diasAtras(parseInt(dias) || 30),
+      p_fim: hoje(),
+      p_por_linha: agrupamento === "linha",
     });
-    if (error) { setErro(await extrairErroFuncao(error)); setBuscando(false); return; }
-    if (data?.error) { setErro(data.error); setBuscando(false); return; }
-
-    const { data: pratosData } = await supabase.from("pratos").select("id, nome, cardapioweb_item_id, linha_produto");
-    const mapaPrato = new Map((pratosData || []).filter((p) => p.cardapioweb_item_id != null).map((p) => [p.cardapioweb_item_id, p]));
-
-    const somaPor = {};
-    for (const pedido of data.pedidos || []) {
-      if (pedido.status !== "closed") continue;
-      for (const item of pedido.items || []) {
-        const prato = mapaPrato.get(item.item_id);
-        const chave = agrupamento === "linha" ? (prato?.linha_produto || "Sem linha definida") : (prato?.nome || item.name || "Item não identificado");
-        somaPor[chave] = (somaPor[chave] || 0) + (item.total || (item.quantity || 0) * (item.price || 0));
-      }
-    }
-
-    const totalGeral = Object.values(somaPor).reduce((s, v) => s + v, 0);
-    const ordenado = Object.entries(somaPor).sort((a, b) => b[1] - a[1]);
-    let acumulado = 0;
-    const classificado = ordenado.map(([nome, valor]) => {
-      acumulado += valor;
-      const pctAcumulado = totalGeral > 0 ? (acumulado / totalGeral) * 100 : 0;
-      const classe = pctAcumulado <= 80 ? "A" : pctAcumulado <= 95 ? "B" : "C";
-      return { nome, valor, pctAcumulado, classe, pct: totalGeral > 0 ? (valor / totalGeral) * 100 : 0 };
-    });
-    setLinhas(classificado);
+    if (error) { setErro(error.message); setBuscando(false); return; }
+    setLinhas((data || []).map((l) => ({
+      nome: l.nome,
+      qtd: Number(l.qtd) || 0,
+      valor: Number(l.valor) || 0,
+      pct: Number(l.pct) || 0,
+      pctAcumulado: Number(l.pct_acumulado) || 0,
+      classe: l.classe,
+    })));
     setBuscando(false);
   };
 
   const CORES = { A: { bg: "#DCFCE7", cor: "#166534" }, B: { bg: "#FEF9C3", cor: "#854D0E" }, C: { bg: "#FEE2E2", cor: "#991B1B" } };
   const contagem = linhas ? { A: linhas.filter((l) => l.classe === "A").length, B: linhas.filter((l) => l.classe === "B").length, C: linhas.filter((l) => l.classe === "C").length } : null;
+  const totalPeriodo = linhas ? linhas.reduce((s, l) => s + l.valor, 0) : 0;
 
   return (
     <div>
@@ -78,7 +73,7 @@ export default function CurvaABC() {
 
       {linhas && (
         <>
-          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
             {["A", "B", "C"].map((c) => (
               <div key={c} style={{ flex: 1, background: CORES[c].bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: CORES[c].cor }}>{contagem[c]}</div>
@@ -86,12 +81,18 @@ export default function CurvaABC() {
               </div>
             ))}
           </div>
+          <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 12, textAlign: "center" }}>
+            {brl(totalPeriodo)} no período · {linhas.length} {agrupamento === "linha" ? "linhas" : "produtos"}
+          </div>
           <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF" }}>
             {linhas.map((l, idx) => (
               <div key={l.nome} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 13, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.nome}</div>
-                  <div style={{ fontSize: 11, color: "#8A8778" }}>{brl(l.valor)} · {l.pct.toFixed(1)}% do total</div>
+                  <div style={{ fontSize: 11, color: "#8A8778" }}>
+                    {brl(l.valor)} · {l.pct.toFixed(1)}% do total
+                    {l.qtd > 0 ? ` · ${l.qtd.toLocaleString("pt-BR")} vendidos` : ""}
+                  </div>
                 </div>
                 <span style={{ fontSize: 12, fontWeight: 700, padding: "2px 9px", borderRadius: 999, background: CORES[l.classe].bg, color: CORES[l.classe].cor, flexShrink: 0 }}>{l.classe}</span>
               </div>
