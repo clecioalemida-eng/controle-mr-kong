@@ -501,8 +501,12 @@ export default function FolhaPagamento() {
   const [janela, setJanela] = useState(12);            // meses olhados pra trás
   const inputArquivo = useRef(null);
 
-  const carregar = useCallback(async () => {
-    setCarregando(true);
+  // `silencioso` = recarrega sem apagar a tela. No primeiro carregamento
+  // o "Carregando…" é honesto (não tem nada ali ainda); no botão
+  // Atualizar ele só piscaria e faria você perder de vista o que estava
+  // conferindo.
+  const carregar = useCallback(async (silencioso) => {
+    if (!silencioso) setCarregando(true);
     const [{ data: pl }, { data: rs }, { data: hs }] = await Promise.all([
       supabase.from("plano_contas").select("codigo, nome, entra_dre")
         .eq("ativo", true).like("codigo", "%.%").order("ordem"),
@@ -547,6 +551,18 @@ export default function FolhaPagamento() {
   }, [competencia, historico, linhasFolha]);
 
   useEffect(() => { carregar(); }, [carregar]);
+
+  // Recarrega o que veio do banco, sem mexer no que você está conferindo
+  // na tela. Depois de desfazer e subir de novo, é isso que faz o
+  // relatório contar a história nova em vez da velha.
+  const [atualizando, setAtualizando] = useState(false);
+  const atualizar = async () => {
+    setAtualizando(true);
+    setErro(""); setOk("");
+    setLinhasFolha({});
+    await Promise.all([carregar(true), carregarRubricas()]);
+    setAtualizando(false);
+  };
 
   const limpar = () => {
     setFase("vazio"); setArquivos([]); setTexto("");
@@ -868,7 +884,8 @@ export default function FolhaPagamento() {
       );
       setLinhasFolha({});
       limpar();
-      carregar();
+      carregar(true);
+      carregarRubricas();
     } catch (e) {
       const bruto = e?.message || String(e);
       // "Load failed" é o Safari dizendo "a requisição morreu" e mais
@@ -904,7 +921,9 @@ export default function FolhaPagamento() {
     setDesfazendo(null);
     if (error) { setErro(error.message); return; }
     setOk(String(data || "Folha desfeita."));
-    carregar();
+    setLinhasFolha({});
+    carregar(true);
+    carregarRubricas();
   };
 
   // O holerite pertence a PESSOA, nao a folha. Abrir "o PDF da folha de
@@ -935,6 +954,18 @@ export default function FolhaPagamento() {
         e <b>só lança depois que você confirmar</b> — rubrica por rubrica, cada uma com sua
         conta do DRE, seu vencimento e a marca de já pago ou a pagar.
       </div>
+
+      {/* A revisão final: depois de desfazer e subir de novo, um clique
+          aqui traz tudo do banco outra vez — folhas, rubricas e a
+          conferência. Sem recarregar a página e sem perder o que estiver
+          na tela de conferência. */}
+      {fase === "vazio" && (historico.length > 0 || rubricas.length > 0) && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+          <button onClick={atualizar} disabled={atualizando} style={btnClaro}>
+            {atualizando ? <><Loader2 size={13} /> atualizando…</> : <><RotateCcw size={13} /> Atualizar tudo</>}
+          </button>
+        </div>
+      )}
 
       {erro && <div style={{ ...avisoStyle, marginBottom: 10 }}><AlertTriangle size={16} style={{ flexShrink: 0 }} /><div>{erro}</div></div>}
       {ok && <div style={{ ...okStyle, marginBottom: 10 }}><Check size={16} style={{ flexShrink: 0 }} /><div>{ok}</div></div>}
@@ -1373,13 +1404,19 @@ export default function FolhaPagamento() {
           <div style={{ ...tituloBloco, display: "flex", justifyContent: "space-between",
                         alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <span>De que é feita a folha</span>
-            <select value={janela} onChange={(e) => setJanela(Number(e.target.value))}
-              style={{ ...inputStyle, padding: "5px 8px", fontSize: 11, textTransform: "none",
-                       fontWeight: 600, letterSpacing: 0 }}>
-              <option value={3}>últimos 3 meses</option>
-              <option value={6}>últimos 6 meses</option>
-              <option value={12}>últimos 12 meses</option>
-            </select>
+            <span style={{ display: "flex", gap: 7, alignItems: "center" }}>
+              <select value={janela} onChange={(e) => setJanela(Number(e.target.value))}
+                style={{ ...inputStyle, padding: "5px 8px", fontSize: 11, textTransform: "none",
+                         fontWeight: 600, letterSpacing: 0 }}>
+                <option value={3}>últimos 3 meses</option>
+                <option value={6}>últimos 6 meses</option>
+                <option value={12}>últimos 12 meses</option>
+              </select>
+              <button onClick={atualizar} disabled={atualizando}
+                style={{ ...btnClaro, textTransform: "none", letterSpacing: 0 }}>
+                {atualizando ? <><Loader2 size={12} /> atualizando…</> : <><RotateCcw size={12} /> Atualizar</>}
+              </button>
+            </span>
           </div>
 
           {/* A folha tem dois números pra mesma coisa: o que foi lançado
@@ -1478,7 +1515,14 @@ export default function FolhaPagamento() {
 
       {/* ---------------- histórico ---------------- */}
       <div style={{ ...cardStyle, padding: 0 }}>
-        <div style={tituloBloco}>Folhas já lançadas</div>
+        <div style={{ ...tituloBloco, display: "flex", justifyContent: "space-between",
+                      alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span>Folhas já lançadas</span>
+          <button onClick={atualizar} disabled={atualizando}
+            style={{ ...btnClaro, textTransform: "none", letterSpacing: 0 }}>
+            {atualizando ? <><Loader2 size={12} /> atualizando…</> : <><RotateCcw size={12} /> Atualizar</>}
+          </button>
+        </div>
         {historico.length === 0 ? (
           <div style={{ padding: 16, fontSize: 12.5, color: "#8A8778" }}>Nenhuma folha lançada ainda.</div>
         ) : historico.map((f, idx) => (
