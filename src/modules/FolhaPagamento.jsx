@@ -85,7 +85,23 @@ async function lerPdf(arquivo) {
       .filter(Boolean);
     paginas.push(linhas.join("\n"));
   }
-  return { texto: paginas.join("\n"), paginas: doc.numPages, bytes };
+
+  // Holerite costuma vir em duas vias — a do funcionário e a da empresa —
+  // com o MESMO conteúdo em páginas diferentes. Somar as duas dobra cada
+  // rubrica daquela pessoa: o Volus de R$ 600 vira R$ 1.200 e ninguém
+  // desconfia, porque R$ 1.200 é um valor plausível. Página cujo texto
+  // repete outra é descartada.
+  const vistas = new Set();
+  const unicas = [];
+  let repetidas = 0;
+  paginas.forEach((pg) => {
+    const impressao = pg.replace(/\s+/g, " ").trim();
+    if (impressao.length > 40 && vistas.has(impressao)) { repetidas += 1; return; }
+    vistas.add(impressao);
+    unicas.push(pg);
+  });
+
+  return { texto: unicas.join("\n"), paginas: doc.numPages, paginasRepetidas: repetidas, bytes };
 }
 
 // ---------------------------------------------------------------------
@@ -274,15 +290,26 @@ function competenciaDoTexto(linhas) {
 // "001 SALARIO BASE 23,00" tem três partes: o código do contador, o nome
 // da rubrica e a referência (23 dias). Só o nome do meio serve pra somar
 // entre meses — a referência muda todo mês e quebraria o agrupamento.
+// "001 SALARIO BASE 23,00" tem três partes: o código, o nome da rubrica e
+// a referência (23 dias, 10,55 horas, 4 dias). Só o nome do meio serve
+// pra somar entre meses — a referência muda todo mês e quebraria o
+// agrupamento, e pior: vira um rótulo tipo "49,37" no relatório, que não
+// diz nada a ninguém.
+//
+// Tira do fim, uma de cada vez, enquanto for número puro. "60%" fica —
+// tem símbolo, é parte do nome da rubrica. "4." e "2,5" saem.
 function rotuloLimpo(rotulo, codigo) {
   let t = String(rotulo || "").trim();
   if (codigo && t.startsWith(codigo)) t = t.slice(codigo.length);
   t = t.replace(/^[\s.\-]+/, "");
-  // tira a referência do fim (só se sobrar nome): "SALARIO BASE 23,00" e
-  // "HORAS EXTRAS 60% 10,55" perdem o número, "ADICIONAL NOTURNO" não tem.
-  const sem = t.replace(/\s+\d{1,3}(?:\.\d{3})*,\d{2}\s*$/, "").trim();
-  if (sem.length >= 3) t = sem;
-  return t.replace(/\s+/g, " ").trim() || "(sem descrição)";
+  let partes = t.split(/\s+/).filter(Boolean);
+  while (partes.length > 0 && /^\d{1,3}(?:\.\d{3})*(?:[.,]\d+)?\.?$/.test(partes[partes.length - 1])) {
+    partes.pop();
+  }
+  // Se sobrou só número (a linha veio quebrada e o nome ficou noutro
+  // pedaço), é mais honesto dizer que não sei do que inventar um rótulo.
+  const limpo = partes.join(" ").replace(/[\s.\-]+$/, "").trim();
+  return limpo || "(sem descrição)";
 }
 
 // O que sobra no nome do arquivo DEPOIS do mês costuma ser o motivo do
@@ -470,6 +497,7 @@ export default function FolhaPagamento() {
   const [desfazendo, setDesfazendo] = useState(null);
   const [linhasFolha, setLinhasFolha] = useState({});   // folha_id -> itens
   const [rubricas, setRubricas] = useState([]);        // de que é feita a folha
+  const [divergencias, setDivergencias] = useState([]); // detalhe que não bate com o lançado
   const [janela, setJanela] = useState(12);            // meses olhados pra trás
   const inputArquivo = useRef(null);
 
@@ -496,8 +524,12 @@ export default function FolhaPagamento() {
     const ini = new Date(hoje.getFullYear(), hoje.getMonth() - (janela - 1), 1);
     const fim = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
     const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    const { data } = await supabase.rpc("rubricas_da_folha", { p_inicio: iso(ini), p_fim: iso(fim) });
+    const [{ data }, { data: conf }] = await Promise.all([
+      supabase.rpc("rubricas_da_folha", { p_inicio: iso(ini), p_fim: iso(fim) }),
+      supabase.rpc("conferencia_rubricas", { p_inicio: iso(ini), p_fim: iso(fim) }),
+    ]);
     setRubricas(data || []);
+    setDivergencias(conf || []);
   }, [janela]);
 
   useEffect(() => { carregarRubricas(); }, [carregarRubricas, historico]);
@@ -549,10 +581,10 @@ export default function FolhaPagamento() {
     let quantasPessoas = 0;
 
     for (const file of files) {
-      let txt = "", np = 0, bytes = null;
+      let txt = "", np = 0, bytes = null, repetidasPg = 0;
       try {
         const r = await lerPdf(file);
-        txt = r.texto; np = r.paginas; bytes = r.bytes;
+        txt = r.texto; np = r.paginas; bytes = r.bytes; repetidasPg = r.paginasRepetidas || 0;
       } catch (e) {
         novosAvisos.push(`Não consegui ler "${file.name}": ${e.message || e}`);
         continue;
@@ -563,6 +595,15 @@ export default function FolhaPagamento() {
         continue;
       }
       lidos.push({ nome: file.name, texto: txt, paginas: np, file, bytes });
+      // Duas vias do mesmo holerite é o normal — a do funcionário e a da
+      // empresa. Dizer que ignorei é o que evita a pergunta "por que o
+      // total não bate com o número de páginas".
+      if (repetidasPg > 0) {
+        novosAvisos.push(
+          `"${file.name}" tem ${repetidasPg} página(s) repetida(s) — provavelmente a segunda via. ` +
+          "Contei uma vez só; somar as duas dobraria as rubricas dessa pessoa."
+        );
+      }
 
       const linhas = txt.split("\n").map((l) => l.trim()).filter(Boolean);
 
@@ -1340,6 +1381,50 @@ export default function FolhaPagamento() {
               <option value={12}>últimos 12 meses</option>
             </select>
           </div>
+
+          {/* A folha tem dois números pra mesma coisa: o que foi lançado
+              como conta da pessoa, e a soma das rubricas dela. Eles têm
+              que bater. Quando não batem, o relatório está mentindo — e
+              mentindo de um jeito plausível, que é o pior tipo: o cartão
+              alimentação de R$ 600 aparecendo como R$ 1.200 não parece
+              erro nenhum. Isso aqui não mexe no DRE: lá entrou o total
+              lançado, que continua certo. É o detalhe que está torto. */}
+          {divergencias.length > 0 && (
+            <div style={{ padding: "13px 16px", borderBottom: "1px solid #F0EBDD" }}>
+              <div style={{ ...avisoStyle, display: "block" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 8 }}>
+                  <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <div>
+                    <b>Os números abaixo não são confiáveis para {divergencias.length} pessoa(s).</b>{" "}
+                    A soma das rubricas delas não fecha com o valor que foi lançado.
+                    Diferença <b>positiva</b> = rubrica contada duas vezes (holerite que veio em
+                    duas vias); <b>negativa</b> = rubrica que não foi lida.
+                    <div style={{ marginTop: 5 }}>
+                      O DRE não é afetado — lá entrou o total lançado, que está certo.
+                      Pra corrigir o detalhe: <b>Desfazer</b> a folha e subir de novo.
+                    </div>
+                  </div>
+                </div>
+                {divergencias.slice(0, 12).map((d, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 10,
+                                        flexWrap: "wrap", fontSize: 12, padding: "5px 0",
+                                        borderTop: i === 0 ? "1px solid #EFE3BC" : "1px solid #F5EDD4" }}>
+                    <span>
+                      <b>{d.pessoa}</b>
+                      <span style={{ opacity: 0.8 }}>
+                        {" · "}{competenciaTexto(String(d.competencia).slice(0, 7))}
+                        {" · "}{d.rubricas} rubricas
+                      </span>
+                    </span>
+                    <span style={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                      lançado {brl(d.total_lancado)} · rubricas {brl(d.soma_proventos)} ·{" "}
+                      <b>{Number(d.diferenca) > 0 ? "+" : ""}{brl(d.diferenca)}</b>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {(() => {
             const proventos = rubricas.filter((r) => r.tipo === "provento");
