@@ -285,6 +285,24 @@ function rotuloLimpo(rotulo, codigo) {
   return t.replace(/\s+/g, " ").trim() || "(sem descrição)";
 }
 
+// O que sobra no nome do arquivo DEPOIS do mês costuma ser o motivo do
+// segundo holerite: "LIDIANE ANDRADE ROSSI MES 07 2026 PERIODO SEM
+// REGISTRO.pdf". Esse pedaço é o que distingue os dois lançamentos da
+// mesma pessoa no mesmo mês — e o contador já escreveu pra gente.
+function complementoDoNome(nome) {
+  const base = String(nome || "").replace(/\.pdf$/i, "").replace(/[_-]+/g, " ");
+  const t = semAcento(base);
+  const m = t.match(/\bmes\b\s*\d{1,2}\s*(?:de\s*)?\d{4}\s*(.+)$/);
+  if (m && m[1].trim().length >= 3) {
+    // recorta do original, pra não perder acento nem caixa
+    const resto = base.slice(base.length - m[1].length).trim().replace(/\s+/g, " ");
+    // Frase, não Título Com Tudo Maiúsculo: isso vai virar parte do nome
+    // de uma conta a pagar, e vai ser lido no meio de uma lista.
+    return resto.charAt(0).toUpperCase() + resto.slice(1).toLowerCase();
+  }
+  return "";
+}
+
 function analisarHolerite(texto, nomeArquivo) {
   const linhas = String(texto || "").split("\n").map((l) => l.trim()).filter(Boolean);
   const proventos = [];
@@ -568,6 +586,9 @@ export default function FolhaPagamento() {
           aprendidaDe: 0, conflito: "",
           conferido: h.bateBruto,
           liquido: h.liquido,
+          forcar: false,
+          complemento: "",
+          complementoSugerido: complementoDoNome(file.name),
           proventos: h.proventos,
           descontos: h.descontos,
           arquivoNome: file.name,
@@ -654,10 +675,16 @@ export default function FolhaPagamento() {
   const folhaDoMes = historico.find((f) => String(f.competencia).slice(0, 7) === competencia) || null;
   const jaNaFolha = folhaDoMes ? (linhasFolha[folhaDoMes.id] || null) : null;
   const chavesNaFolha = new Set((jaNaFolha || []).map((l) => chaveRubrica(l.rubrica)));
-  const repetidasAgora = jaNaFolha
-    ? aLancar.filter((i) => chavesNaFolha.has(chaveRubrica(i.rubrica)))
-    : [];
-  const novasAgora = aLancar.filter((i) => !chavesNaFolha.has(chaveRubrica(i.rubrica)));
+  // O nome que vai pro banco: a pessoa, mais o motivo quando é o segundo
+  // holerite dela no mês. É esse texto que aparece em Contas a pagar, e
+  // é o que faz alguém entender em dezembro por que a Lidiane está duas
+  // vezes em julho.
+  const nomeFinal = (i) => (i.complemento ? `${i.rubrica} · ${i.complemento}` : i.rubrica);
+  const jaEstava = (i) => chavesNaFolha.has(chaveRubrica(nomeFinal(i)));
+  // Repetida só conta como problema se você NÃO marcou de propósito.
+  const repetidasAgora = jaNaFolha ? aLancar.filter((i) => jaEstava(i) && !i.forcar) : [];
+  const novasAgora = aLancar.filter((i) => !jaEstava(i) || i.forcar);
+  const forcadasAgora = aLancar.filter((i) => i.forcar);
   const totalNovas = novasAgora.reduce((t, i) => t + Number(i.valor || 0), 0);
   const temHolerite = itens.some((i) => i.familia === "holerite");
   const total = aLancar.reduce((t, i) => t + Number(i.valor || 0), 0);
@@ -672,7 +699,7 @@ export default function FolhaPagamento() {
       setErro(`${semConta.length} linha(s) sem conta do DRE escolhida: ${semConta.map((i) => i.rubrica).join(", ")}.`);
       return;
     }
-    const novas = aLancar.filter((i) => !chavesNaFolha.has(chaveRubrica(i.rubrica)));
+    const novas = novasAgora;
     if (novas.length === 0) {
       setErro("Todas essas pessoas já estão na folha de " + competenciaTexto(competencia) + ".");
       return;
@@ -686,6 +713,10 @@ export default function FolhaPagamento() {
       `${brl(somaNovas)}` +
       (repetidasAgora.length > 0
         ? `\n\n${repetidasAgora.length} já estavam na folha e vão ser ignoradas: ${repetidasAgora.map((i) => i.rubrica).join(", ")}.`
+        : "") +
+      (forcadasAgora.length > 0
+        ? `\n\n${forcadasAgora.length} entram como SEGUNDO lançamento da mesma pessoa, de propósito:\n` +
+          forcadasAgora.map((i) => "• " + nomeFinal(i)).join("\n")
         : "") +
       "\n\nDá pra desfazer a folha inteira depois, aqui mesmo."
     )) return;
@@ -731,7 +762,7 @@ export default function FolhaPagamento() {
       const corpoRpc = {
         p_competencia: competencia,
         p_itens: aLancar.map((i) => ({
-          rubrica: i.rubrica, detalhe: i.detalhe || null,
+          rubrica: nomeFinal(i), forcar: !!i.forcar, detalhe: i.detalhe || null,
           valor: Number(i.valor), plano_conta: i.plano_conta,
           vencimento: i.vencimento || null, pago: !!i.pago,
           aprender: i.aprender !== false,
@@ -790,6 +821,7 @@ export default function FolhaPagamento() {
       setOk(
         `${r.entraram || 0} pessoa(s) ${r.somou ? "somada(s) à" : "na"} folha de ${competenciaTexto(competencia)}. ` +
         `A folha está com ${r.pessoas || 0} pessoa(s) e ${brl(r.total || 0)}.` +
+        (r.forcadas > 0 ? ` ${r.forcadas} entrou(aram) como segundo lançamento de propósito.` : "") +
         (repetidas.length > 0 ? ` Ignorei ${repetidas.length} que já estavam: ${repetidas.join(", ")}.` : "") +
         (falharam.length > 0 ? ` Os PDFs de ${falharam.join(", ")} não subiram — o lançamento entrou do mesmo jeito.` : "")
       );
@@ -957,8 +989,18 @@ export default function FolhaPagamento() {
                     )}
                     {repetidasAgora.length > 0 && (
                       <div style={{ fontSize: 12, marginTop: 7, color: "#7A6A1E", fontWeight: 700 }}>
-                        {repetidasAgora.length} dessas já está na folha e vai ser ignorada:{" "}
-                        {repetidasAgora.map((i) => i.rubrica).join(", ")}. Ninguém entra duas vezes.
+                        {repetidasAgora.length} dessas já está na folha e não vai entrar de novo:{" "}
+                        {repetidasAgora.map((i) => i.rubrica).join(", ")}.{" "}
+                        <span style={{ fontWeight: 400 }}>
+                          Se for outro pagamento da mesma pessoa — período sem registro, férias —
+                          use “lançar assim mesmo” na linha dela.
+                        </span>
+                      </div>
+                    )}
+                    {forcadasAgora.length > 0 && (
+                      <div style={{ fontSize: 12, marginTop: 7, color: "#3F3466", fontWeight: 700 }}>
+                        {forcadasAgora.length} vai entrar como segundo lançamento de propósito:{" "}
+                        {forcadasAgora.map((i) => nomeFinal(i)).join(", ")}.
                       </div>
                     )}
                   </div>
@@ -1103,6 +1145,65 @@ export default function FolhaPagamento() {
               {i.conflito && (
                 <div style={{ ...avisoStyle, marginTop: 8, marginBottom: 0, fontSize: 12 }}>
                   <AlertTriangle size={15} style={{ flexShrink: 0 }} /><div>{i.conflito}</div>
+                </div>
+              )}
+
+              {/* Essa pessoa já está na folha do mês. Na maioria das vezes
+                  é engano — o mesmo holerite subindo duas vezes. Mas nem
+                  sempre: período sem registro + registrado, férias pagas
+                  à parte, rescisão no meio do mês. Nesses, são dois
+                  pagamentos de verdade.
+
+                  Então a trava fica, e ganha uma porta: você diz que é de
+                  propósito e escreve o motivo. O motivo não é burocracia
+                  — ele vira parte do nome da conta, e é o que explica em
+                  dezembro por que a Lidiane aparece duas vezes em julho. */}
+              {jaEstava(i) && !i.forcar && (
+                <div style={{ ...avisoStyle, marginTop: 8, marginBottom: 0, fontSize: 12, display: "block" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div>
+                      <b>{i.rubrica} já está na folha de {competenciaTexto(competencia)}.</b>{" "}
+                      Não vou lançar de novo — a menos que seja de propósito.
+                      <div style={{ marginTop: 8 }}>
+                        <button
+                          onClick={() => mudarItem(i.id, {
+                            forcar: true,
+                            complemento: i.complemento || i.complementoSugerido || "Segundo lançamento",
+                          })}
+                          style={btnClaro}>
+                          É outro pagamento — lançar assim mesmo
+                        </button>
+                        {i.complementoSugerido && (
+                          <span style={{ fontSize: 11, marginLeft: 8, opacity: 0.85 }}>
+                            o arquivo diz “{i.complementoSugerido}”
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {i.forcar && (
+                <div style={{ marginTop: 8, background: "#FBFAFE", border: "1px solid #C9BEE8",
+                              borderRadius: 10, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12, color: "#3F3466", fontWeight: 700 }}>
+                      Segundo lançamento desta pessoa. Motivo:
+                    </span>
+                    <input value={i.complemento} placeholder="período sem registro, férias…"
+                      onChange={(e) => mudarItem(i.id, { complemento: e.target.value })}
+                      style={{ ...inputStyle, padding: "6px 9px", fontSize: 12, minWidth: 210 }} />
+                    <button onClick={() => mudarItem(i.id, { forcar: false, complemento: "" })}
+                      style={{ ...btnTexto, color: "#4C3E77" }}>
+                      cancelar
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#4C3E77", marginTop: 7, lineHeight: 1.5 }}>
+                    Vai entrar como <b>{nomeFinal(i)}</b> — é assim que aparece em Contas a pagar
+                    e é isso que explica, daqui a seis meses, por que ela está duas vezes no mês.
+                  </div>
                 </div>
               )}
 
@@ -1349,9 +1450,11 @@ export default function FolhaPagamento() {
         ))}
         <div style={{ padding: "11px 16px", borderTop: "1px solid #F0EBDD", fontSize: 11.5, color: "#8A8778", lineHeight: 1.6 }}>
           A folha do mês vai enchendo: você paga pessoa por pessoa, e cada holerite soma na
-          folha daquele mês. O que o banco barra é a <b>mesma pessoa entrar duas vezes</b> —
-          subir o holerite dela de novo por engano não dobra o custo, só avisa. Desfazer apaga
-          a folha inteira do mês e tira tudo do DRE de uma vez.
+          folha daquele mês. Subir o holerite da mesma pessoa de novo por engano não dobra o
+          custo — o painel barra e avisa. Quando for de propósito (período sem registro,
+          férias, rescisão no meio do mês), o botão <b>“lançar assim mesmo”</b> na linha dela
+          libera, e o motivo que você escrever vira parte do nome da conta. Desfazer apaga a
+          folha inteira do mês e tira tudo do DRE de uma vez.
         </div>
       </div>
     </div>
