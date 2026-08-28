@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Loader2, AlertTriangle, Check, Upload, FileText, Trash2,
-  Plus, Eye, RotateCcw, X,
+  Plus, Eye, RotateCcw, X, Pencil,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
@@ -524,6 +524,10 @@ export default function FolhaPagamento() {
   const [origem, setOrigem] = useState({});            // chave da rubrica -> de onde veio
   const [abrindoOrigem, setAbrindoOrigem] = useState(null);
   const [refazendo, setRefazendo] = useState(null);
+  const [editando, setEditando] = useState(null);      // folha_item_id aberto pra edição
+  const [linhasEdit, setLinhasEdit] = useState([]);    // as rubricas em edição
+  const [repetidas, setRepetidas] = useState([]);      // linhas iguais dentro do mesmo holerite
+  const [salvandoEdit, setSalvandoEdit] = useState(false);
   const [janela, setJanela] = useState(12);            // meses olhados pra trás
   const inputArquivo = useRef(null);
 
@@ -1035,6 +1039,82 @@ export default function FolhaPagamento() {
       setRefazendo(null);
     }
   };
+
+  // ------------------------------------------------------------------
+  // Editar o detalhe à mão
+  //
+  // O "Refazer" só reexecuta a MINHA leitura — se ela erra, erra de
+  // novo, e você fica esperando eu acertar. Isso é o erro de projeto: eu
+  // me coloquei no caminho entre você e o seu dado.
+  //
+  // O holerite está impresso na sua mão. Corrigir uma linha não devia
+  // depender de mim.
+  // ------------------------------------------------------------------
+  const abrirEdicao = async (h) => {
+    if (editando === h.folha_item_id) { setEditando(null); setLinhasEdit([]); setRepetidas([]); return; }
+    setEditando(h.folha_item_id); setLinhasEdit([]); setRepetidas([]); setErro("");
+    const [{ data, error }, { data: reps }] = await Promise.all([
+      supabase.rpc("rubricas_do_holerite", { p_folha_item_id: h.folha_item_id }),
+      supabase.rpc("rubricas_repetidas", { p_folha_item_id: h.folha_item_id }),
+    ]);
+    if (error) { setErro(error.message); setEditando(null); return; }
+    setLinhasEdit((data || []).map((r, i) => ({
+      id: `${r.id || i}`, codigo: r.codigo || "", rotulo: r.rotulo || "",
+      valor: Number(r.valor) || 0, tipo: r.tipo || "provento",
+    })));
+    setRepetidas(reps || []);
+  };
+
+  const mudarLinha = (id, patch) =>
+    setLinhasEdit((atual) => atual.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+
+  const removerLinha = (id) => setLinhasEdit((atual) => atual.filter((l) => l.id !== id));
+
+  const adicionarRubrica = () =>
+    setLinhasEdit((atual) => [...atual, {
+      id: `novo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      codigo: "", rotulo: "", valor: 0, tipo: "provento",
+    }]);
+
+  // Apaga de uma vez as sobras que o banco identificou: mesma rubrica,
+  // mesmo valor, duas vezes no mesmo holerite. Mantém uma de cada.
+  const tirarRepetidas = () => {
+    const vistos = new Set();
+    setLinhasEdit((atual) => atual.filter((l) => {
+      const k = `${chaveRubrica(l.rotulo)}|${Number(l.valor).toFixed(2)}`;
+      if (vistos.has(k)) return false;
+      vistos.add(k); return true;
+    }));
+  };
+
+  const salvarEdicao = async (h) => {
+    setSalvandoEdit(true); setErro(""); setOk("");
+    try {
+      const rubricas = linhasEdit
+        .filter((l) => String(l.rotulo).trim() && Number(l.valor) !== 0)
+        .map((l) => ({ codigo: l.codigo || null, rotulo: String(l.rotulo).trim(),
+                       valor: Number(l.valor), tipo: l.tipo }));
+      const { data: qtd, error } = await supabase.rpc("regravar_rubricas",
+        { p_folha_item_id: h.folha_item_id, p_rubricas: rubricas });
+      if (error) throw error;
+      const soma = rubricas.filter((r) => r.tipo === "provento").reduce((t, r) => t + r.valor, 0);
+      const bate = Math.abs(soma - Number(h.valor)) <= 0.01;
+      setOk(
+        `Detalhe de ${h.pessoa} salvo: ${qtd} rubrica(s), somando ${brl(soma)}. ` +
+        (bate ? "Bate com o valor lançado." : `NÃO bate com o valor lançado (${brl(h.valor)}) — confira.`) +
+        " O lançamento, a conta a pagar e o DRE não foram tocados."
+      );
+      setEditando(null); setLinhasEdit([]); setRepetidas([]);
+      carregarRubricas();
+    } catch (e) {
+      setErro(`Não consegui salvar o detalhe: ${e.message || e}`);
+    } finally {
+      setSalvandoEdit(false);
+    }
+  };
+
+  const somaEdit = linhasEdit.filter((l) => l.tipo === "provento")
+    .reduce((t, l) => t + (Number(l.valor) || 0), 0);
 
   const abrirPdf = async (path) => {
     if (!path) { setErro("Essa folha foi lançada sem o PDF anexado."); return; }
@@ -1728,10 +1808,118 @@ export default function FolhaPagamento() {
                 {h.arquivo_path
                   ? <button onClick={() => abrirPdf(h.arquivo_path)} style={btnClaro}><Eye size={12} /> PDF</button>
                   : <span style={{ fontSize: 10.5, color: "#8A8778", minWidth: 46 }}>sem PDF</span>}
-                <button onClick={() => refazerDetalhe(h)} disabled={refazendo === h.folha_item_id}
-                  style={{ ...btnClaro, ...(h.confere === false ? { borderColor: "#C9BEE8", color: "#4C3E77", fontWeight: 700 } : {}) }}>
-                  {refazendo === h.folha_item_id ? <><Loader2 size={12} /> refazendo…</> : <><RotateCcw size={12} /> Refazer</>}
+                <button onClick={() => abrirEdicao(h)}
+                  style={{ ...btnClaro, ...(editando === h.folha_item_id
+                    ? { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" } : {}) }}>
+                  <Pencil size={12} /> {editando === h.folha_item_id ? "Fechar" : "Ver e editar"}
                 </button>
+
+                {editando === h.folha_item_id && (
+                <div style={{ flexBasis: "100%", marginTop: 10, border: "1px solid #E8E2D2",
+                              borderRadius: 11, overflow: "hidden", background: "#FFFFFF" }}>
+                  <div style={{ padding: "10px 12px", background: "#F6F1E7", borderBottom: "1px solid #E8E2D2" }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800 }}>
+                      Detalhe de {h.pessoa} — {linhasEdit.length} linha(s)
+                    </div>
+                    <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 3, lineHeight: 1.5 }}>
+                      Corrija o que estiver errado: apague linha repetida, arrume valor, renomeie.
+                      Isso <b>não mexe</b> no valor lançado, na conta a pagar nem no DRE — só no detalhe.
+                    </div>
+                  </div>
+
+                  {/* O banco já sabe qual linha sobra. Dizer "some as
+                      repetidas" é melhor que pedir pra achar entre
+                      dezesseis. */}
+                  {repetidas.length > 0 && (
+                    <div style={{ ...avisoStyle, margin: 0, borderRadius: 0, border: "none",
+                                  borderBottom: "1px solid #E8D48A", display: "block" }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                        <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                        <div style={{ fontSize: 12 }}>
+                          <b>{repetidas.length} rubrica(s) aparecem duas vezes neste holerite</b>{" "}
+                          — inflando o detalhe em{" "}
+                          <b>{brl(repetidas.reduce((t, r) => t + Number(r.sobra || 0), 0))}</b>:
+                          <div style={{ marginTop: 4 }}>
+                            {repetidas.map((r, k) => (
+                              <div key={k}>· {r.rotulo} — {brl(r.valor)} × {r.vezes}</div>
+                            ))}
+                          </div>
+                          <div style={{ marginTop: 7 }}>
+                            <button onClick={tirarRepetidas} style={btnClaro}>
+                              <Trash2 size={12} /> Tirar as repetidas
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div style={{ maxHeight: 340, overflowY: "auto" }}>
+                    {linhasEdit.length === 0 && (
+                      <div style={{ padding: "12px", fontSize: 12, color: "#8A8778" }}>
+                        Esse holerite não tem detalhe guardado. Use <b>Reler do PDF</b> ou adicione as linhas à mão.
+                      </div>
+                    )}
+                    {linhasEdit.map((l, k) => (
+                      <div key={l.id} style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap",
+                                               padding: "7px 12px", borderTop: k === 0 ? "none" : "1px solid #F5F1E6" }}>
+                        <input value={l.codigo} placeholder="cód"
+                          onChange={(e) => mudarLinha(l.id, { codigo: e.target.value })}
+                          style={{ ...inputStyle, padding: "5px 7px", fontSize: 11.5, width: 54 }} />
+                        <input value={l.rotulo} placeholder="Nome da rubrica"
+                          onChange={(e) => mudarLinha(l.id, { rotulo: e.target.value })}
+                          style={{ ...inputStyle, padding: "5px 8px", fontSize: 12, flex: 1, minWidth: 150 }} />
+                        <input type="number" step="0.01" value={l.valor}
+                          onChange={(e) => mudarLinha(l.id, { valor: e.target.value })}
+                          style={{ ...inputStyle, padding: "5px 8px", fontSize: 12, width: 104, textAlign: "right" }} />
+                        <div style={{ display: "inline-flex", border: "1px solid #E8E2D2", borderRadius: 7, overflow: "hidden" }}>
+                          <button onClick={() => mudarLinha(l.id, { tipo: "provento" })}
+                            style={{ ...segmento, padding: "5px 9px", fontSize: 11,
+                                     ...(l.tipo === "provento" ? segmentoAtivo : {}) }}>ganho</button>
+                          <button onClick={() => mudarLinha(l.id, { tipo: "desconto" })}
+                            style={{ ...segmento, padding: "5px 9px", fontSize: 11,
+                                     ...(l.tipo === "desconto" ? { background: "#C9A227", color: "#FFFFFF" } : {}) }}>desconto</button>
+                        </div>
+                        <button onClick={() => removerLinha(l.id)} style={{ ...btnTexto, padding: "4px 6px" }}>
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{ padding: "9px 12px", borderTop: "1px solid #F0EBDD", display: "flex",
+                                gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <button onClick={adicionarRubrica} style={btnClaro}><Plus size={12} /> Adicionar linha</button>
+                    <button onClick={() => refazerDetalhe(h)} disabled={refazendo === h.folha_item_id} style={btnClaro}>
+                      {refazendo === h.folha_item_id ? <><Loader2 size={12} /> relendo…</> : <><RotateCcw size={12} /> Reler do PDF</>}
+                    </button>
+                    <button onClick={() => setVerTexto((v) => !v)} style={btnTexto}>
+                      <Eye size={12} /> ver o texto lido
+                    </button>
+                  </div>
+
+                  {/* A soma ao vivo contra o valor lançado. É o mesmo
+                      princípio da tela de conferência: todo número que eu
+                      somo tem, do lado, o número independente que prova
+                      que a soma está certa. */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                                gap: 10, flexWrap: "wrap", padding: "11px 12px",
+                                background: Math.abs(somaEdit - Number(h.valor)) <= 0.01 ? "#EDF7F2" : "#FDF6E3",
+                                borderTop: "1px solid #E8E2D2" }}>
+                    <div style={{ fontSize: 12, lineHeight: 1.55 }}>
+                      Ganhos somam <b>{brl(somaEdit)}</b> · lançado <b>{brl(h.valor)}</b><br />
+                      <span style={{ color: Math.abs(somaEdit - Number(h.valor)) <= 0.01 ? "#14503F" : "#7A6A1E", fontWeight: 700 }}>
+                        {Math.abs(somaEdit - Number(h.valor)) <= 0.01
+                          ? "bate certinho"
+                          : `diferença de ${brl(somaEdit - Number(h.valor))}`}
+                      </span>
+                    </div>
+                    <button onClick={() => salvarEdicao(h)} disabled={salvandoEdit} style={btnRoxo}>
+                      {salvandoEdit ? <><Loader2 size={13} /> salvando…</> : "Salvar o detalhe"}
+                    </button>
+                  </div>
+                </div>
+                )}
               </div>
             ))}
           </div>
