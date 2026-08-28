@@ -650,7 +650,15 @@ function Conferencia({ documento, onVoltar }) {
   const [salvando, setSalvando] = useState(false);
   const [formaPagamento, setFormaPagamento] = useState("pix");
   const [formasPagamento, setFormasPagamento] = useState(FORMAS_PADRAO);
-  const [prazoBoleto, setPrazoBoleto] = useState("28");
+  // A data em que o boleto vence, não o prazo em dias.
+  //
+  // Prazo parece a mesma coisa e não é: ele era contado a partir de HOJE,
+  // o dia em que você confere a nota — não a partir da nota. Conferir uma
+  // nota de quinta na segunda seguinte jogava o vencimento quatro dias
+  // pra frente sem ninguém pedir. E o boleto tem uma data impressa nele;
+  // digitar essa data é mais curto que calcular quantos dias faltam.
+  const [vencimentoBoleto, setVencimentoBoleto] = useState("");
+  const [prazoAprendido, setPrazoAprendido] = useState(null); // { dias, de }
   const [erro, setErro] = useState("");
   const [editandoId, setEditandoId] = useState(null);
   const [formEdicao, setFormEdicao] = useState({ nome_lido: "", quantidade: 0, unidade: "un", preco_unitario: 0, insumo_id: "" });
@@ -698,7 +706,47 @@ function Conferencia({ documento, onVoltar }) {
     setItens(listaFinal);
     setCarregando(false);
     if (documento.fornecedor_id) carregarHistoricoFornecedor(documento.fornecedor_id);
+    sugerirVencimento();
   }, [documento.id]);
+
+  // Pré-enche o vencimento olhando o último boleto DESTE fornecedor:
+  // quantos dias houve entre a nota e o vencimento da última vez. Sem
+  // tabela nova, sem cadastro — a resposta já está no histórico.
+  //
+  // Se não achar nada, usa a data da nota + 28 dias, que é o costume da
+  // casa. Nos dois casos é palpite, e a tela diz que é.
+  const sugerirVencimento = async () => {
+    const dataDaNota = documento.data_documento || new Date().toISOString().slice(0, 10);
+    const somarDias = (iso, dias) => {
+      const [a, m, d] = String(iso).split("-").map(Number);
+      const x = new Date(a, m - 1, d);
+      x.setDate(x.getDate() + dias);
+      return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+    };
+    let dias = 28;
+    let de = "";
+    if (documento.fornecedor_id) {
+      const { data } = await supabase.from("contas_pagar")
+        .select("data_compra, data_vencimento, fornecedor_nome")
+        .eq("fornecedor_id", documento.fornecedor_id)
+        .eq("forma_pagamento", "boleto")
+        .not("data_compra", "is", null)
+        .not("data_vencimento", "is", null)
+        .order("data_compra", { ascending: false })
+        .limit(1);
+      const ultima = data?.[0];
+      if (ultima) {
+        const inicio = new Date(`${ultima.data_compra}T12:00:00`);
+        const fim = new Date(`${ultima.data_vencimento}T12:00:00`);
+        const d = Math.round((fim - inicio) / 86400000);
+        // Prazo negativo ou absurdo é lançamento torto de antes; não
+        // vale herdar erro do passado como se fosse regra.
+        if (d > 0 && d <= 180) { dias = d; de = ultima.fornecedor_nome || ""; }
+      }
+    }
+    setPrazoAprendido({ dias, de });
+    setVencimentoBoleto(somarDias(dataDaNota, dias));
+  };
   useEffect(() => { carregar(); }, [carregar]);
   const carregarHistoricoFornecedor = async (fornecedorId) => {
     const { data } = await supabase
@@ -985,9 +1033,11 @@ function Conferencia({ documento, onVoltar }) {
     // entra já como pago (foi pago na hora da compra).
     {
       const ehBoleto = formaPagamento === "boleto";
-      const dias = ehBoleto ? (parseInt(prazoBoleto) || 0) : 0;
-      const vencimento = new Date();
-      vencimento.setDate(vencimento.getDate() + dias);
+      // Boleto: a data que você digitou. Pago na hora: a data da nota
+      // (ou hoje, se a nota não trouxer data) — porque o dinheiro saiu
+      // quando a compra aconteceu, não quando a nota foi conferida.
+      const dataDaNota = documento.data_documento || new Date().toISOString().slice(0, 10);
+      const vencimento = ehBoleto ? (vencimentoBoleto || dataDaNota) : dataDaNota;
       const valorTotal = round2(itens.reduce((s, it) => s + it.quantidade * it.preco_unitario, 0));
       await supabase.from("contas_pagar").insert({
         documento_compra_id: documento.id,
@@ -1001,7 +1051,7 @@ function Conferencia({ documento, onVoltar }) {
         categoria: "compra",
         centro_custo: "insumos",
         data_compra: documento.data_documento || new Date().toISOString().slice(0, 10),
-        data_vencimento: vencimento.toISOString().slice(0, 10),
+        data_vencimento: vencimento,
         criado_por: userData?.user?.id,
       });
     }
@@ -1388,13 +1438,28 @@ function Conferencia({ documento, onVoltar }) {
         </select>
         {formaPagamento === "boleto" && (
           <div style={{ marginTop: 6 }}>
-            <label style={{ fontSize: 10, color: "#8A6A0F", display: "block", marginBottom: 3 }}>Prazo do boleto (dias)</label>
-            <input type="number" value={prazoBoleto} onChange={(e) => setPrazoBoleto(e.target.value)}
-              style={{ width: 80, padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 13 }} />
+            <label style={{ fontSize: 10, color: "#8A6A0F", display: "block", marginBottom: 3 }}>
+              Vencimento do boleto
+            </label>
+            <input type="date" value={vencimentoBoleto} onChange={(e) => setVencimentoBoleto(e.target.value)}
+              style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 13,
+                       fontFamily: "inherit", background: "#FFFFFF", color: "#22231F" }} />
+            {/* O painel não adivinha a data: ele olha o último boleto
+                desse mesmo fornecedor e sugere o mesmo intervalo. Se o
+                Serena sempre vence em 28 dias, no mês que vem já vem
+                preenchido — e continua sendo uma sugestão, não um fato. */}
+            {prazoAprendido && (
+              <div style={{ fontSize: 10, color: "#4C3E77", marginTop: 4 }}>
+                sugerido: {prazoAprendido.dias} dias depois da nota, como no último boleto
+                {prazoAprendido.de ? ` de ${prazoAprendido.de}` : ""} — mude se o boleto disser outra data
+              </div>
+            )}
           </div>
         )}
         <div style={{ fontSize: 10, color: "#8A8778", marginTop: 6 }}>
-          {formaPagamento === "boleto" ? "Gera uma conta a pagar com esse prazo, no valor total da nota." : "Pix/débito/crédito entra em Contas a Pagar já marcado como pago."}
+          {formaPagamento === "boleto"
+            ? "Gera uma conta a pagar com esse vencimento, no valor total da nota."
+            : "Pix/débito/crédito entra em Contas a Pagar já marcado como pago, na data da nota."}
         </div>
       </div>
       {erro && <div style={{ color: "#C4432B", fontSize: 13, marginBottom: 12 }}>{erro}</div>}
