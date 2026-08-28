@@ -8,6 +8,7 @@ import RadarConcorrentes from "./RadarConcorrentes";
 import DiagnosticoSocial from "./DiagnosticoSocial";
 import PistaMarketing from "./PistaMarketing";
 import MetaAds from "./MetaAds";
+import AssistenteMarketing from "./AssistenteMarketing";
 
 // ---------------------------------------------------------------------------
 // Módulo Marketing — Fase 0: Diagnóstico
@@ -61,6 +62,7 @@ const ABAS = [
   { chave: "leitura", label: "Diagnóstico" },
   { chave: "pista", label: "Pista" },
   { chave: "meta", label: "Meta", soAdmin: true },
+  { chave: "assistente", label: "Assistente" },
   { chave: "diagnostico", label: "CardápioWeb" },
 ];
 
@@ -129,7 +131,8 @@ export default function Marketing({ onVoltar, perfil }) {
         {aba === "radar" ? <RadarConcorrentes /> :
          aba === "leitura" ? <DiagnosticoSocial /> :
          aba === "pista" ? <PistaMarketing perfil={perfil} /> :
-         aba === "meta" ? <MetaAds perfil={perfil} /> : (
+         aba === "meta" ? <MetaAds perfil={perfil} /> :
+         aba === "assistente" ? <AssistenteMarketing perfil={perfil} /> : (
         <>
         <div style={{ ...cardStyle, marginBottom: 16 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F", marginBottom: 6 }}>
