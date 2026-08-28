@@ -168,6 +168,145 @@ const CONFLITO_SALARIO =
   "Lançar as duas dobra a folha no DRE. Deixei ligado o bruto: é o custo real da empresa; " +
   "o líquido é o que sobra depois do IRRF e do INSS do funcionário, que também saem do seu caixa.";
 
+// ---------------------------------------------------------------------
+// Holerite individual — o formato que o contador do Mr Kong usa
+//
+// Um PDF por pessoa, rubricas numeradas:
+//
+//   001 SALARIO BASE 23,00 ......... 1.613,33
+//   009 ADIC PRODUTIVIDADE .............. 81,61
+//   012 ADICIONAL NOTURNO .............. 173,52
+//   18  ADIANTAMENTO .................. 173,40   ← desconto
+//   2.066,16                                     ← total de vencimentos
+//   1.892,76                                     ← líquido
+//
+// Aqui está a armadilha desse formato: as nove linhas somam o mesmo
+// dinheiro TRÊS vezes. Provento por provento dá 2.066,16, que é o total
+// impresso; o total menos o adiantamento dá 1.892,76, que é o líquido.
+// Lançar linha por linha somaria mais de R$ 4.000 num holerite de
+// R$ 2.066. Por isso o holerite vira UMA linha só: o total dos
+// proventos, que é o que a empresa gastou com aquela pessoa.
+//
+// E dá pra conferir sem confiar: se a soma que eu fiz aparece impressa
+// no PDF, li certo. É a diferença entre "acho que entendi" e "confere".
+// ---------------------------------------------------------------------
+const DESCONTOS_HOLERITE = [
+  "adiantamento", "adiant", "inss", "irrf", "imposto de renda", "falta", "atraso",
+  "pensao", "desconto", "desc ", "contrib sindical", "sindical", "plano de saude",
+  "farmacia", "emprestimo", "consignado", "seguro", "coparticipacao", "arredondamento",
+];
+function ehDesconto(rotulo) {
+  const t = " " + semAcento(rotulo) + " ";
+  return DESCONTOS_HOLERITE.some((d) => t.includes(d));
+}
+// Linha de rubrica: começa com o código (2 ou 3 dígitos) e termina em dinheiro.
+const RE_RUBRICA = /^(\d{2,3})\s+(.*)$/;
+
+function pareceHolerite(linhas) {
+  const comCodigo = linhas.filter((l) => RE_RUBRICA.test(l) && valoresDaLinha(l).length > 0).length;
+  const t = semAcento(linhas.join(" "));
+  const palavra = /(holerite|recibo de pagamento|demonstrativo de pagamento|periodo sem registro|recibo de salario)/.test(t);
+  return comCodigo >= 3 || (comCodigo >= 1 && palavra);
+}
+
+// A competência costuma estar no NOME do arquivo, não no papel:
+// "LIDIANE ANDRADE ROSSI MES 07 2026 PERIODO SEM REGISTRO.pdf".
+function competenciaDoNome(nome) {
+  const t = semAcento(nome || "").replace(/[_.-]+/g, " ");
+  let m = t.match(/m[eê]s\s*(\d{1,2})\s*(?:de\s*)?(\d{4})/);
+  if (m) return `${m[2]}-${String(Number(m[1])).padStart(2, "0")}`;
+  m = t.match(/\b(\d{2})\s*[\/-]\s*(\d{4})\b/);
+  if (m && Number(m[1]) >= 1 && Number(m[1]) <= 12) return `${m[2]}-${m[1]}`;
+  const mes = MESES.findIndex((x) => t.includes(semAcento(x)));
+  if (mes >= 0) {
+    const ano = t.match(/\b(20\d{2})\b/);
+    if (ano) return `${ano[1]}-${String(mes + 1).padStart(2, "0")}`;
+  }
+  return "";
+}
+
+// Nome da pessoa: o pedaço do arquivo antes de "MES", ou a primeira
+// linha do PDF que seja só nome em maiúsculas.
+function pessoaDoNome(nomeArquivo, linhas) {
+  let base = String(nomeArquivo || "").replace(/\.pdf$/i, "").replace(/[_-]+/g, " ");
+  const corte = semAcento(base).search(/\bmes\b|\bcompetencia\b|\d{2}\s*[\/-]\s*\d{4}/);
+  if (corte > 3) base = base.slice(0, corte);
+  base = base.replace(/\s+/g, " ").trim();
+  if (base.length >= 5 && /[a-zA-Z]/.test(base) && !/^\d+$/.test(base)) return titulo(base);
+  const cand = (linhas || []).find((l) =>
+    /^[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ ]{8,50}$/.test(l.trim()) && l.trim().split(/\s+/).length >= 2);
+  return cand ? titulo(cand.trim()) : "";
+}
+function titulo(txt) {
+  const miudas = new Set(["da", "de", "do", "das", "dos", "e"]);
+  return String(txt).toLowerCase().split(/\s+/)
+    .map((p) => (miudas.has(p) ? p : p.charAt(0).toUpperCase() + p.slice(1)))
+    .join(" ");
+}
+
+// competência dentro do papel: "08/2026", "COMPETENCIA AGOSTO/2026", "REF. 08/2026"
+function competenciaDoTexto(linhas) {
+  for (const l of linhas) {
+    const t = semAcento(l);
+    let m = t.match(/(?:competencia|referencia|ref\.?|mes)\D{0,12}(\d{1,2})\s*[\/\-.]\s*(\d{4})/);
+    if (m && Number(m[1]) >= 1 && Number(m[1]) <= 12) {
+      return `${m[2]}-${String(Number(m[1])).padStart(2, "0")}`;
+    }
+    const nome = MESES.findIndex((mes) => t.includes(semAcento(mes)));
+    if (nome >= 0) {
+      m = t.match(/\b(20\d{2})\b/);
+      if (m) return `${m[1]}-${String(nome + 1).padStart(2, "0")}`;
+    }
+  }
+  for (const l of linhas) {
+    const m = semAcento(l).match(/\b(\d{2})\s*\/\s*(\d{4})\b/);
+    if (m && Number(m[1]) >= 1 && Number(m[1]) <= 12) return `${m[2]}-${m[1]}`;
+  }
+  return "";
+}
+
+function analisarHolerite(texto, nomeArquivo) {
+  const linhas = String(texto || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const proventos = [];
+  const descontos = [];
+  const soltos = [];
+
+  linhas.forEach((linha) => {
+    const valores = valoresDaLinha(linha);
+    if (valores.length === 0) return;
+    const valor = valores[valores.length - 1];
+    if (!valor || valor <= 0) return;
+    const m = linha.match(RE_RUBRICA);
+    if (!m) { soltos.push(valor); return; }
+    const rotulo = linha.replace(/[\d.,]+\s*$/, "").replace(/[.\s]{3,}/g, " ").trim() || linha;
+    (ehDesconto(rotulo) ? descontos : proventos).push({ rotulo, valor });
+  });
+
+  const somaProventos = round2(proventos.reduce((t, r) => t + r.valor, 0));
+  const somaDescontos = round2(descontos.reduce((t, r) => t + r.valor, 0));
+  const liquido = round2(somaProventos - somaDescontos);
+
+  // A conferência: os totais impressos batem com a minha soma?
+  const todos = linhas.flatMap(valoresDaLinha).map(round2);
+  const bateBruto = somaProventos > 0 && todos.some((v) => Math.abs(v - somaProventos) < 0.02);
+  const bateLiquido = liquido > 0 && todos.some((v) => Math.abs(v - liquido) < 0.02);
+
+  return {
+    modo: "holerite",
+    pessoa: pessoaDoNome(nomeArquivo, linhas),
+    competencia: competenciaDoNome(nomeArquivo) || competenciaDoTexto(linhas),
+    proventos, descontos,
+    somaProventos, somaDescontos, liquido,
+    bateBruto, bateLiquido,
+  };
+}
+function round2(v) { return Math.round((Number(v) || 0) * 100) / 100; }
+
+// A regra "toda folha vai pra Salários" mora numa chave só, ao lado das
+// regras de rubrica. Guardada no banco, ela sobrevive à sessão: você diz
+// uma vez, e nos meses seguintes a tela já vem preenchida.
+const CHAVE_FOLHA = "folhadepagamento";
+
 function reconhecer(linha) {
   const t = " " + semAcento(linha) + " ";
   for (const r of RUBRICAS) {
@@ -184,25 +323,7 @@ function reconhecer(linha) {
 // ---------------------------------------------------------------------
 function analisarFolha(texto, regras) {
   const linhas = String(texto || "").split("\n").map((l) => l.trim()).filter(Boolean);
-
-  // competência: "08/2026", "COMPETENCIA AGOSTO/2026", "REF. 08/2026"
-  let competencia = "";
-  for (const l of linhas) {
-    const t = semAcento(l);
-    let m = t.match(/(?:compet[eê]ncia|refer[eê]ncia|ref\.?|m[eê]s)\D{0,12}(\d{2})\s*[\/\-.]\s*(\d{4})/);
-    if (m) { competencia = `${m[2]}-${m[1]}`; break; }
-    const nome = MESES.findIndex((mes) => t.includes(semAcento(mes)));
-    if (nome >= 0) {
-      m = t.match(/(\d{4})/);
-      if (m) { competencia = `${m[1]}-${String(nome + 1).padStart(2, "0")}`; break; }
-    }
-  }
-  if (!competencia) {
-    for (const l of linhas) {
-      const m = semAcento(l).match(/\b(\d{2})\s*\/\s*(\d{4})\b/);
-      if (m && Number(m[1]) >= 1 && Number(m[1]) <= 12) { competencia = `${m[2]}-${m[1]}`; break; }
-    }
-  }
+  const competencia = competenciaDoTexto(linhas);
 
   let pessoas = null;
   for (const l of linhas) {
@@ -292,15 +413,15 @@ export default function FolhaPagamento() {
   const [fase, setFase] = useState("vazio");      // vazio | lendo | conferindo | lancando
   const [erro, setErro] = useState("");
   const [ok, setOk] = useState("");
-  const [arquivo, setArquivo] = useState(null);
+  const [arquivos, setArquivos] = useState([]);   // [{ nome, texto, paginas, file }]
   const [texto, setTexto] = useState("");
-  const [paginas, setPaginas] = useState(0);
   const [competencia, setCompetencia] = useState("");
   const [pessoas, setPessoas] = useState("");
   const [itens, setItens] = useState([]);
   const [naoEncaixadas, setNaoEncaixadas] = useState([]);
   const [avisos, setAvisos] = useState([]);
   const [verTexto, setVerTexto] = useState(false);
+  const [aberto, setAberto] = useState({});      // detalhe das rubricas por holerite
   const [arrastando, setArrastando] = useState(false);
 
   const [plano, setPlano] = useState([]);
@@ -308,6 +429,7 @@ export default function FolhaPagamento() {
   const [historico, setHistorico] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [desfazendo, setDesfazendo] = useState(null);
+  const [linhasFolha, setLinhasFolha] = useState({});   // folha_id -> itens
   const inputArquivo = useRef(null);
 
   const carregar = useCallback(async () => {
@@ -329,40 +451,120 @@ export default function FolhaPagamento() {
   useEffect(() => { carregar(); }, [carregar]);
 
   const limpar = () => {
-    setFase("vazio"); setArquivo(null); setTexto(""); setPaginas(0);
+    setFase("vazio"); setArquivos([]); setTexto("");
     setCompetencia(""); setPessoas(""); setItens([]); setNaoEncaixadas([]);
     setAvisos([]); setVerTexto(false); setErro("");
   };
 
-  const receberArquivo = async (file) => {
-    if (!file) return;
-    if (!/\.pdf$/i.test(file.name)) { setErro("Por enquanto só PDF. Se o contador manda em outro formato, me diga qual."); return; }
-    setErro(""); setOk(""); setFase("lendo"); setArquivo(file);
-    try {
-      const { texto: txt, paginas: np } = await lerPdf(file);
-      setTexto(txt); setPaginas(np);
+  // A conta pra onde a folha vai. Você já disse: é sempre Salários. Fica
+  // guardada como regra, aplicada sozinha, e visível num lugar só — não
+  // repetida em catorze seletores pedindo o mesmo sim catorze vezes.
+  const contaPadrao = regras[CHAVE_FOLHA]?.plano_conta || "4.1";
+  const vezesPadrao = regras[CHAVE_FOLHA]?.vezes_usada || 0;
+  const trocarContaPadrao = (codigo) => {
+    if (!codigo) return;
+    setRegras((r) => ({ ...r, [CHAVE_FOLHA]: { ...(r[CHAVE_FOLHA] || {}), plano_conta: codigo } }));
+    setItens((atual) => atual.map((i) => (i.familia === "holerite" ? { ...i, plano_conta: codigo } : i)));
+  };
 
-      // PDF que é foto não tem texto pra extrair. Vale dizer isso com
-      // todas as letras em vez de mostrar uma tela vazia.
-      if (txt.replace(/\s/g, "").length < 40) {
-        setErro("Esse PDF parece ser uma imagem (papel escaneado ou foto), não texto. " +
-          "Não dá pra ler os números dele. Peça ao contador o PDF gerado pelo sistema — " +
-          "aquele em que dá pra selecionar o texto com o mouse.");
-        setFase("vazio"); setArquivo(null);
-        return;
+  // Vários PDFs de uma vez: o contador manda um holerite por pessoa, e
+  // subir catorze arquivos em catorze idas e vindas seria o mesmo
+  // trabalho manual que essa tela existe pra tirar.
+  const receberArquivos = async (lista) => {
+    const files = [...(lista || [])].filter((f) => /\.pdf$/i.test(f.name));
+    if (files.length === 0) { setErro("Por enquanto só PDF. Se o contador manda em outro formato, me diga qual."); return; }
+    setErro(""); setOk(""); setFase("lendo");
+
+    const lidos = [];
+    const novosItens = [];
+    const novasNao = [];
+    const novosAvisos = [];
+    let comp = competencia;
+    let quantasPessoas = 0;
+
+    for (const file of files) {
+      let txt = "", np = 0;
+      try {
+        const r = await lerPdf(file);
+        txt = r.texto; np = r.paginas;
+      } catch (e) {
+        novosAvisos.push(`Não consegui ler "${file.name}": ${e.message || e}`);
+        continue;
       }
+      if (txt.replace(/\s/g, "").length < 40) {
+        novosAvisos.push(`"${file.name}" parece ser imagem (papel escaneado ou foto), não texto — ` +
+          "não dá pra ler os números. Peça ao contador o PDF em que dá pra selecionar o texto com o mouse.");
+        continue;
+      }
+      lidos.push({ nome: file.name, texto: txt, paginas: np, file });
 
-      const lido = analisarFolha(txt, regras);
-      setCompetencia(lido.competencia);
-      setPessoas(lido.pessoas != null ? String(lido.pessoas) : "");
-      setItens(lido.itens);
-      setNaoEncaixadas(lido.naoEncaixadas);
-      setAvisos(lido.avisos);
-      setFase("conferindo");
-    } catch (e) {
-      setErro("Não consegui ler o PDF: " + (e.message || e));
-      setFase("vazio"); setArquivo(null);
+      const linhas = txt.split("\n").map((l) => l.trim()).filter(Boolean);
+
+      if (pareceHolerite(linhas)) {
+        const h = analisarHolerite(txt, file.name);
+        if (!comp && h.competencia) comp = h.competencia;
+        if (h.somaProventos <= 0) {
+          novosAvisos.push(`"${file.name}": não achei nenhum provento com valor.`);
+          continue;
+        }
+        quantasPessoas += 1;
+        novosItens.push({
+          id: `hol-${file.name}-${novosItens.length}`,
+          rubrica: h.pessoa || file.name.replace(/\.pdf$/i, ""),
+          detalhe: `${h.proventos.length} provento(s) · líquido ${brl(h.liquido)}`,
+          valor: h.somaProventos,
+          plano_conta: regras[CHAVE_FOLHA]?.plano_conta || "4.1",
+          vencimento: "", pago: false, lancar: true,
+          familia: "holerite",
+          aprender: false,           // nome de pessoa não vira regra
+          aprendidaDe: 0, conflito: "",
+          conferido: h.bateBruto,
+          liquido: h.liquido,
+          proventos: h.proventos,
+          descontos: h.descontos,
+          arquivoNome: file.name,
+          file,
+        });
+      } else {
+        const lido = analisarFolha(txt, regras);
+        if (!comp && lido.competencia) comp = lido.competencia;
+        if (lido.pessoas) quantasPessoas += lido.pessoas;
+        lido.itens.forEach((i) => novosItens.push({ ...i, id: `${file.name}-${i.id}`, aprender: true, arquivoNome: file.name, file }));
+        lido.naoEncaixadas.forEach((n) => novasNao.push({ ...n, arquivo: file.name }));
+        lido.avisos.filter((a) => !/compet[eê]ncia/i.test(a))
+          .forEach((a) => novosAvisos.push(files.length > 1 ? `"${file.name}": ${a}` : a));
+      }
     }
+
+    if (lidos.length === 0) {
+      setErro(novosAvisos.join(" ") || "Nenhum PDF pôde ser lido.");
+      setFase("vazio");
+      return;
+    }
+
+    // Vencimento: dia 5 do mês seguinte à competência, pra todo mundo.
+    const venc = comp ? diaDoMesSeguinte(comp, 5) : "";
+    novosItens.forEach((i) => { if (!i.vencimento) i.vencimento = venc; });
+
+    const naoConferidos = novosItens.filter((i) => i.familia === "holerite" && !i.conferido);
+    if (naoConferidos.length > 0) {
+      novosAvisos.push(
+        `${naoConferidos.length} holerite(s) em que a minha soma NÃO bateu com o total impresso no PDF: ` +
+        naoConferidos.map((i) => i.rubrica).join(", ") +
+        ". Abra o detalhe e confira antes de lançar."
+      );
+    }
+    if (!comp) novosAvisos.push("Não achei o mês nem no nome do arquivo nem no PDF — escolha embaixo antes de lançar.");
+    if (novosItens.length === 0) novosAvisos.push("Não achei nada pra lançar. Confira o texto lido ou adicione as linhas à mão.");
+
+    setArquivos((a) => [...a, ...lidos]);
+    setTexto((t) => [t, ...lidos.map((l) => `===== ${l.nome} =====\n${l.texto}`)].filter(Boolean).join("\n\n"));
+    setCompetencia(comp);
+    setPessoas(quantasPessoas ? String(quantasPessoas) : "");
+    setItens((atual) => [...atual, ...novosItens]);
+    setNaoEncaixadas((atual) => [...atual, ...novasNao]);
+    setAvisos(novosAvisos);
+    setFase("conferindo");
   };
 
   const mudarItem = (id, patch) =>
@@ -382,6 +584,8 @@ export default function FolhaPagamento() {
   };
 
   const aLancar = itens.filter((i) => i.lancar && Number(i.valor) > 0);
+  const conferidas = itens.filter((i) => i.conferido).length;
+  const temHolerite = itens.some((i) => i.familia === "holerite");
   const total = aLancar.reduce((t, i) => t + Number(i.valor || 0), 0);
   const totalPago = aLancar.filter((i) => i.pago).reduce((t, i) => t + Number(i.valor || 0), 0);
   const semConta = aLancar.filter((i) => !i.plano_conta);
@@ -402,16 +606,22 @@ export default function FolhaPagamento() {
 
     setFase("lancando");
     try {
-      // O PDF sobe primeiro. Se o upload falhar, a folha entra sem ele —
-      // perder o anexo é chato, perder o lançamento é pior.
-      let caminho = null;
-      try {
-        const { data: userData } = await supabase.auth.getUser();
-        const nome = (arquivo?.name || "folha.pdf").replace(/[^a-zA-Z0-9.\-_]/g, "_");
-        caminho = `folhas/${userData?.user?.id || "anon"}/${Date.now()}-${nome}`;
-        const { error: errUp } = await supabase.storage.from("notas-fiscais").upload(caminho, arquivo);
-        if (errUp) caminho = null;
-      } catch { caminho = null; }
+      // Os PDFs sobem primeiro, um por pessoa — assim o "ver o PDF" da
+      // linha da Lidiane abre o holerite dela, não o de outra pessoa.
+      // Se o upload falhar, a folha entra sem anexo: perder o arquivo é
+      // chato, perder o lançamento é pior.
+      const { data: userData } = await supabase.auth.getUser();
+      const pasta = `folhas/${userData?.user?.id || "anon"}/${Date.now()}`;
+      const caminhos = {};
+      let subiram = 0;
+      for (const a of arquivos) {
+        try {
+          const nome = a.nome.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+          const caminho = `${pasta}/${nome}`;
+          const { error: errUp } = await supabase.storage.from("notas-fiscais").upload(caminho, a.file);
+          if (!errUp) { caminhos[a.nome] = caminho; subiram += 1; }
+        } catch { /* segue sem esse anexo */ }
+      }
 
       const { data, error } = await supabase.rpc("lancar_folha", {
         p_competencia: competencia,
@@ -419,16 +629,34 @@ export default function FolhaPagamento() {
           rubrica: i.rubrica, detalhe: i.detalhe || null,
           valor: Number(i.valor), plano_conta: i.plano_conta,
           vencimento: i.vencimento || null, pago: !!i.pago,
+          aprender: i.aprender !== false,
+          arquivo_path: caminhos[i.arquivoNome] || null,
         })),
-        p_arquivo_path: caminho,
-        p_arquivo_nome: arquivo?.name || null,
+        p_arquivo_path: caminhos[arquivos[0]?.nome] || null,
+        p_arquivo_nome: arquivos.length === 1 ? arquivos[0].nome : `${arquivos.length} arquivos`,
         p_texto: texto,
         p_pessoas: pessoas ? Number(pessoas) : null,
         p_observacao: null,
       });
       if (error) throw error;
+
+      // Guarda a resposta que você já deu: toda folha vai pra essa conta.
+      // No mês que vem a tela já vem assim e não pergunta de novo.
+      if (temHolerite && contaPadrao) {
+        const anterior = regras[CHAVE_FOLHA];
+        const vezes = anterior && anterior.plano_conta === contaPadrao ? (anterior.vezes_usada || 0) + 1 : 1;
+        await supabase.from("folha_rubrica_regras").upsert({
+          rubrica_chave: CHAVE_FOLHA,
+          rubrica_exemplo: "Folha de pagamento",
+          plano_conta: contaPadrao,
+          vezes_usada: vezes,
+          atualizada_em: new Date().toISOString(),
+          criado_por: userData?.user?.id || null,
+        }, { onConflict: "rubrica_chave" });
+      }
+
       setOk(`Folha de ${competenciaTexto(competencia)} lançada: ${aLancar.length} conta(s), ${brl(total)}.` +
-        (caminho ? "" : " (o PDF não subiu, mas o lançamento entrou)"));
+        (subiram === arquivos.length ? "" : ` (${arquivos.length - subiram} PDF(s) não subiram, mas o lançamento entrou)`));
       limpar();
       carregar();
       void data;
@@ -450,6 +678,18 @@ export default function FolhaPagamento() {
     if (error) { setErro(error.message); return; }
     setOk(String(data || "Folha desfeita."));
     carregar();
+  };
+
+  // O holerite pertence a PESSOA, nao a folha. Abrir "o PDF da folha de
+  // julho" quando ela tem catorze holerites abriria sempre o mesmo, o
+  // primeiro. Entao a folha abre a LISTA, e cada linha abre o seu.
+  const verLinhas = async (folha) => {
+    if (linhasFolha[folha.id]) { setLinhasFolha((l) => { const n = { ...l }; delete n[folha.id]; return n; }); return; }
+    const { data, error } = await supabase.from("folha_itens")
+      .select("id, rubrica, valor, plano_conta, data_vencimento, pago, arquivo_path")
+      .eq("folha_id", folha.id).order("ordem");
+    if (error) { setErro(error.message); return; }
+    setLinhasFolha((l) => ({ ...l, [folha.id]: data || [] }));
   };
 
   const abrirPdf = async (path) => {
@@ -477,7 +717,7 @@ export default function FolhaPagamento() {
         <div
           onDragOver={(e) => { e.preventDefault(); setArrastando(true); }}
           onDragLeave={() => setArrastando(false)}
-          onDrop={(e) => { e.preventDefault(); setArrastando(false); receberArquivo(e.dataTransfer.files?.[0]); }}
+          onDrop={(e) => { e.preventDefault(); setArrastando(false); receberArquivos(e.dataTransfer.files); }}
           style={{
             border: `2px dashed ${arrastando ? "#4C3E77" : "#D8D0BC"}`,
             background: arrastando ? "#FBFAFE" : "#FCFAF4",
@@ -491,17 +731,18 @@ export default function FolhaPagamento() {
           ) : (
             <>
               <FileText size={26} color="#8A8778" />
-              <div style={{ fontSize: 15, fontWeight: 800, margin: "9px 0 4px" }}>Solte aqui o PDF da folha</div>
+              <div style={{ fontSize: 15, fontWeight: 800, margin: "9px 0 4px" }}>Solte aqui os PDFs da folha</div>
               <div style={{ fontSize: 12.5, color: "#8A8778", lineHeight: 1.6 }}>
-                Ou clique pra escolher. Nada é lançado até você conferir.
+                Pode soltar <b>todos os holerites do mês de uma vez</b> — vira uma linha por pessoa.<br />
+                Nada é lançado até você conferir.
               </div>
               <div style={{ marginTop: 13 }}>
                 <button onClick={() => inputArquivo.current?.click()} style={btnEscuro}>
-                  <Upload size={14} /> Escolher o arquivo
+                  <Upload size={14} /> Escolher os arquivos
                 </button>
               </div>
-              <input ref={inputArquivo} type="file" accept="application/pdf,.pdf" style={{ display: "none" }}
-                onChange={(e) => { receberArquivo(e.target.files?.[0]); e.target.value = ""; }} />
+              <input ref={inputArquivo} type="file" accept="application/pdf,.pdf" multiple style={{ display: "none" }}
+                onChange={(e) => { receberArquivos(e.target.files); e.target.value = ""; }} />
             </>
           )}
         </div>
@@ -517,7 +758,9 @@ export default function FolhaPagamento() {
                   Folha de {competencia ? competenciaTexto(competencia) : "— escolha o mês"}
                 </div>
                 <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 3 }}>
-                  {pessoas ? `${pessoas} pessoas · ` : ""}{itens.length} rubrica(s) lida(s)
+                  {arquivos.length} arquivo{arquivos.length === 1 ? "" : "s"} ·{" "}
+                  {itens.length} linha{itens.length === 1 ? "" : "s"}
+                  {conferidas > 0 ? ` · ${conferidas} conferida(s) contra o total impresso` : ""}
                 </div>
               </div>
               <div style={{ fontSize: 18, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{brl(total)}</div>
@@ -530,10 +773,12 @@ export default function FolhaPagamento() {
               <label style={rotuloMini}>Pessoas</label>
               <input type="number" value={pessoas} onChange={(e) => setPessoas(e.target.value)}
                 style={{ ...inputStyle, padding: "6px 9px", fontSize: 12, width: 72 }} />
-              <span style={{ fontSize: 11, color: "#8A8778", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                <FileText size={12} /> {arquivo?.name}{paginas ? ` · ${paginas} pág.` : ""}
-              </span>
-              <button onClick={limpar} style={{ ...btnClaro, marginLeft: "auto" }}><X size={13} /> Trocar arquivo</button>
+              <button onClick={() => inputArquivo.current?.click()} style={btnClaro}>
+                <Plus size={13} /> Somar mais arquivos
+              </button>
+              <input ref={inputArquivo} type="file" accept="application/pdf,.pdf" multiple style={{ display: "none" }}
+                onChange={(e) => { receberArquivos(e.target.files); e.target.value = ""; }} />
+              <button onClick={limpar} style={{ ...btnClaro, marginLeft: "auto" }}><X size={13} /> Recomeçar</button>
             </div>
           </div>
 
@@ -544,6 +789,34 @@ export default function FolhaPagamento() {
                   <AlertTriangle size={16} style={{ flexShrink: 0 }} /><div>{a}</div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* A pergunta que voce ja respondeu, feita UMA vez.
+              Antes cada linha trazia seu proprio seletor pedindo o mesmo
+              sim. Com catorze holerites isso e catorze cliques pra dizer
+              a mesma coisa — e a decima quarta ninguem le mais. */}
+          {temHolerite && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                          background: "#FBFAFE", borderBottom: "1px solid #C9BEE8",
+                          padding: "11px 16px" }}>
+              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 0.3, textTransform: "uppercase",
+                             padding: "3px 9px", borderRadius: 999, background: "#EAE4F7", color: "#4C3E77" }}>
+                aprendido
+              </span>
+              <span style={{ fontSize: 12.5 }}>Toda folha vai para</span>
+              <select value={contaPadrao} onChange={(e) => trocarContaPadrao(e.target.value)}
+                style={{ ...inputStyle, padding: "6px 9px", fontSize: 12, minWidth: 200,
+                         borderColor: "#C9BEE8", background: "#FFFFFF", fontWeight: 600, color: "#4C3E77" }}>
+                {plano.map((p) => (
+                  <option key={p.codigo} value={p.codigo}>{p.codigo} — {p.nome}</option>
+                ))}
+              </select>
+              <span style={{ fontSize: 11, color: "#4C3E77" }}>
+                {vezesPadrao > 0
+                  ? `você já usou essa conta em ${vezesPadrao} folha${vezesPadrao === 1 ? "" : "s"} — não pergunto mais`
+                  : "escolha uma vez; nas próximas folhas já vem assim"}
+              </span>
             </div>
           )}
 
@@ -567,13 +840,68 @@ export default function FolhaPagamento() {
                   ) : (
                     <div style={{ fontSize: 13.5, fontWeight: 700, opacity: i.lancar ? 1 : 0.55 }}>{i.rubrica}</div>
                   )}
-                  {i.aprendidaDe > 0 ? (
+
+                  {i.familia === "holerite" ? (
+                    <div style={{ fontSize: 10.5, marginTop: 3, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                      {/* Conferencia: a soma que eu fiz aparece impressa no
+                          proprio PDF? Se aparece, li certo — e isso e
+                          diferente de "achei que entendi". */}
+                      {i.conferido ? (
+                        <span style={{ color: "#0F6E56", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                          <Check size={11} /> confere com o total impresso no PDF
+                        </span>
+                      ) : (
+                        <span style={{ color: "#A32D2D", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                          <AlertTriangle size={11} /> minha soma NÃO bateu com o total do PDF — confira
+                        </span>
+                      )}
+                      <span style={{ color: "#8A8778" }}>{i.detalhe}</span>
+                      <button onClick={() => setAberto((a) => ({ ...a, [i.id]: !a[i.id] }))} style={btnTexto}>
+                        {aberto[i.id] ? "esconder as rubricas" : `ver as ${(i.proventos || []).length + (i.descontos || []).length} rubricas`}
+                      </button>
+                    </div>
+                  ) : i.aprendidaDe > 0 ? (
                     <div style={{ fontSize: 10.5, color: "#4C3E77", marginTop: 3 }}>
                       aprendido de {i.aprendidaDe} folha{i.aprendidaDe === 1 ? "" : "s"} anterior{i.aprendidaDe === 1 ? "" : "es"}
                     </div>
                   ) : (
                     <div style={{ fontSize: 10.5, color: "#8A6A0F", marginTop: 3 }}>
                       primeira vez dessa rubrica — você decide, e eu guardo
+                    </div>
+                  )}
+
+                  {i.familia === "holerite" && aberto[i.id] && (
+                    <div style={{ marginTop: 8, background: "#FCFAF4", border: "1px solid #F0EBDD",
+                                  borderRadius: 9, padding: "8px 10px", maxWidth: 460 }}>
+                      {(i.proventos || []).map((r, k) => (
+                        <div key={`p${k}`} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11, padding: "2px 0" }}>
+                          <span style={{ color: "#6B685C" }}>{r.rotulo}</span>
+                          <span style={{ fontVariantNumeric: "tabular-nums" }}>{brl(r.valor)}</span>
+                        </div>
+                      ))}
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11.5,
+                                    fontWeight: 800, padding: "5px 0 2px", borderTop: "1px solid #EDE6D6", marginTop: 4 }}>
+                        <span>total de proventos — é isso que vira conta</span>
+                        <span style={{ fontVariantNumeric: "tabular-nums" }}>{brl(i.valor)}</span>
+                      </div>
+                      {(i.descontos || []).length > 0 && (
+                        <>
+                          {(i.descontos || []).map((r, k) => (
+                            <div key={`d${k}`} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11, padding: "2px 0", color: "#8A6A0F" }}>
+                              <span>− {r.rotulo}</span>
+                              <span style={{ fontVariantNumeric: "tabular-nums" }}>{brl(r.valor)}</span>
+                            </div>
+                          ))}
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11, padding: "4px 0 0", color: "#8A8778" }}>
+                            <span>líquido que a pessoa recebe</span>
+                            <span style={{ fontVariantNumeric: "tabular-nums" }}>{brl(i.liquido)}</span>
+                          </div>
+                          <div style={{ fontSize: 10, color: "#8A8778", marginTop: 5, lineHeight: 1.5 }}>
+                            O desconto não é lançado à parte: ele já está dentro do total de proventos.
+                            Lançar os dois contaria o mesmo dinheiro duas vezes.
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -594,16 +922,20 @@ export default function FolhaPagamento() {
               )}
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 9 }}>
-                <select value={i.plano_conta} onChange={(e) => mudarItem(i.id, { plano_conta: e.target.value })}
-                  style={{ ...inputStyle, padding: "6px 9px", fontSize: 11.5, minWidth: 200,
-                           ...(i.plano_conta ? { borderColor: "#C9BEE8", background: "#FBFAFE", fontWeight: 600, color: "#4C3E77" } : {}) }}>
-                  <option value="">Escolha a conta do DRE…</option>
-                  {plano.map((p) => (
-                    <option key={p.codigo} value={p.codigo}>
-                      {p.codigo} — {p.nome}{p.entra_dre ? "" : "  (fora do DRE)"}
-                    </option>
-                  ))}
-                </select>
+                {/* Holerite nao repete o seletor: a conta ja foi decidida
+                    la em cima, uma vez, pra folha inteira. */}
+                {i.familia !== "holerite" && (
+                  <select value={i.plano_conta} onChange={(e) => mudarItem(i.id, { plano_conta: e.target.value })}
+                    style={{ ...inputStyle, padding: "6px 9px", fontSize: 11.5, minWidth: 200,
+                             ...(i.plano_conta ? { borderColor: "#C9BEE8", background: "#FBFAFE", fontWeight: 600, color: "#4C3E77" } : {}) }}>
+                    <option value="">Escolha a conta do DRE…</option>
+                    {plano.map((p) => (
+                      <option key={p.codigo} value={p.codigo}>
+                        {p.codigo} — {p.nome}{p.entra_dre ? "" : "  (fora do DRE)"}
+                      </option>
+                    ))}
+                  </select>
+                )}
 
                 <input type="date" value={i.vencimento} onChange={(e) => mudarItem(i.id, { vencimento: e.target.value })}
                   style={{ ...inputStyle, padding: "6px 9px", fontSize: 11.5 }} />
@@ -714,12 +1046,40 @@ export default function FolhaPagamento() {
             </div>
             <div style={{ display: "flex", gap: 7 }}>
               {f.arquivo_path && (
-                <button onClick={() => abrirPdf(f.arquivo_path)} style={btnClaro}><Eye size={13} /> Ver o PDF</button>
+                <button onClick={() => verLinhas(f)} style={btnClaro}>
+                  <Eye size={13} /> {linhasFolha[f.id] ? "Esconder" : "Ver as linhas"}
+                </button>
               )}
               <button onClick={() => desfazer(f)} disabled={desfazendo === f.id} style={btnClaro}>
                 {desfazendo === f.id ? <><Loader2 size={13} /> desfazendo…</> : <><RotateCcw size={13} /> Desfazer</>}
               </button>
             </div>
+
+            {linhasFolha[f.id] && (
+              <div style={{ flexBasis: "100%", marginTop: 9, border: "1px solid #F0EBDD",
+                            borderRadius: 10, overflow: "hidden" }}>
+                {linhasFolha[f.id].length === 0 && (
+                  <div style={{ padding: "9px 12px", fontSize: 11.5, color: "#8A8778" }}>Sem linhas guardadas.</div>
+                )}
+                {linhasFolha[f.id].map((l, k) => (
+                  <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                                           padding: "8px 12px", borderTop: k === 0 ? "none" : "1px solid #F5F1E6" }}>
+                    <div style={{ flex: 1, minWidth: 150, fontSize: 12 }}>
+                      {l.rubrica}
+                      <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 1 }}>
+                        {l.plano_conta || "sem conta"}
+                        {l.data_vencimento ? ` · vence ${String(l.data_vencimento).split("-").reverse().join("/")}` : ""}
+                        {l.pago ? " · pago" : " · a pagar"}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{brl(l.valor)}</span>
+                    {l.arquivo_path
+                      ? <button onClick={() => abrirPdf(l.arquivo_path)} style={btnClaro}><Eye size={12} /> PDF</button>
+                      : <span style={{ fontSize: 10.5, color: "#8A8778", minWidth: 52 }}>sem PDF</span>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ))}
         <div style={{ padding: "11px 16px", borderTop: "1px solid #F0EBDD", fontSize: 11.5, color: "#8A8778", lineHeight: 1.6 }}>
