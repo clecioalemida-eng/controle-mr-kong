@@ -53,6 +53,12 @@ const LINHAS_PRODUTO = [
 ];
 // Palavras que não ajudam a reconhecer um produto renomeado — aparecem em
 // meio cardápio e casariam qualquer coisa com qualquer coisa.
+// Como o banco chama a fatia dos produtos que ainda nao tem linha. E o
+// rotulo que aparece no quadro — e agora tambem o gancho: e nessa linha
+// que o botao de preencher mora, porque e ali que a pessoa procura.
+const ROTULO_SEM_LINHA = "Sem linha definida";
+// Palavras que não ajudam a reconhecer um produto renomeado — aparecem em
+// meio cardápio e casariam qualquer coisa com qualquer coisa.
 const PALAVRAS_VAZIAS = new Set(["com", "sem", "de", "da", "do", "e", "ml", "gr", "kg", "un", "und"]);
 function palavrasDoNome(nome) {
   return String(nome || "")
@@ -594,6 +600,16 @@ export default function Dashboard() {
       .sort((a, b) => b.valor_atual - a.valor_atual);
   }, [produtos, pratosCadastro]);
 
+  // Pra que o aviso la de cima consiga levar a pessoa ate a fatia certa
+  // do quadro, em vez de so avisar e deixar ela procurando.
+  const refSemLinha = React.useRef(null);
+  const irParaSemLinha = () => {
+    setAbrirSemLinha(true);
+    setTimeout(() => {
+      refSemLinha.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 60);
+  };
+
   const salvarLinhaDoProduto = async (item, linha) => {
     if (!item.pratoId || !linha) return;
     setSalvandoLinha(item.produto);
@@ -788,62 +804,14 @@ export default function Dashboard() {
                     em "Sem linha definida" e não aparece separado no quadro abaixo.
                     {semLinhaDetalhe.length > 0 && (
                       <div style={{ marginTop: 8 }}>
-                        <button onClick={() => setAbrirSemLinha((v) => !v)}
+                        <button onClick={irParaSemLinha}
                           style={{ background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 8,
                                    padding: "8px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                          {abrirSemLinha ? "Esconder a lista" : `Ver os ${semLinhaDetalhe.length} produtos que faltam`}
+                          Ver os {semLinhaDetalhe.length} produtos que faltam
                         </button>
                       </div>
                     )}
                   </div>
-                </div>
-              )}
-
-              {!erroProdutos && !semPedidos && abrirSemLinha && semLinhaDetalhe.length > 0 && (
-                <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden",
-                              background: "#FFFFFF", marginBottom: 14 }}>
-                  <div style={{ padding: "10px 12px", background: "#F6F1E7", borderBottom: "1px solid #E8E2D2" }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 800 }}>
-                      {semLinhaDetalhe.length} produtos sem linha · {brl(semLinhaDetalhe.reduce((t, p) => t + p.valor_atual, 0))}
-                    </div>
-                    <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2, lineHeight: 1.5 }}>
-                      Escolha a linha aqui mesmo — grava na hora e o quadro acima se refaz. Ordenados pelo
-                      que mais fatura: o primeiro é o que mais muda o resultado.
-                    </div>
-                  </div>
-                  {erroLinha && (
-                    <div style={{ padding: "9px 12px", fontSize: 12, color: "#A32D2D", borderBottom: "1px solid #F0EBDD" }}>{erroLinha}</div>
-                  )}
-                  {semLinhaDetalhe.slice(0, 40).map((p, idx) => (
-                    <div key={p.produto} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-                                                  padding: "9px 12px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
-                      <div style={{ flex: 1, minWidth: 150 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 600, ...nomeStyle }}>{p.produto}</div>
-                        <div style={{ fontSize: 10.5, color: p.pratoId ? "#8A8778" : "#A32D2D", marginTop: 1 }}>
-                          {p.qtd_atual.toLocaleString("pt-BR")} un
-                          {p.pratoId ? "" : " · fora do cadastro de pratos"}
-                        </div>
-                      </div>
-                      <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap" }}>{brl(p.valor_atual)}</span>
-                      {p.pratoId ? (
-                        <select defaultValue="" disabled={salvandoLinha === p.produto}
-                          onChange={(e) => salvarLinhaDoProduto(p, e.target.value)}
-                          style={{ padding: "6px 8px", fontSize: 11.5, border: "1px solid #E8E2D2",
-                                   borderRadius: 7, background: "#FFFFFF", fontFamily: "inherit",
-                                   color: "#22231F", minWidth: 150 }}>
-                          <option value="">{salvandoLinha === p.produto ? "salvando…" : "Escolher linha…"}</option>
-                          {LINHAS_PRODUTO.map((l) => <option key={l} value={l}>{l}</option>)}
-                        </select>
-                      ) : (
-                        <span style={{ fontSize: 11, color: "#8A8778", minWidth: 150 }}>rode o Importar pratos</span>
-                      )}
-                    </div>
-                  ))}
-                  {semLinhaDetalhe.length > 40 && (
-                    <div style={{ padding: "9px 12px", borderTop: "1px solid #F0EBDD", fontSize: 10.5, color: "#8A8778" }}>
-                      Mostrando os 40 que mais faturam, de {semLinhaDetalhe.length}. Preencha esses e a lista se refaz com os próximos.
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -856,8 +824,11 @@ export default function Dashboard() {
                       {linhas.map((l, idx) => {
                         const share = ranking.total > 0 ? (l.valor_atual / ranking.total) * 100 : 0;
                         const pct = variacao(l.valor_atual, l.valor_ant);
+                        const ehSemLinha = String(l.linha || "").trim().toLowerCase() === ROTULO_SEM_LINHA.toLowerCase();
                         return (
-                          <div key={l.linha} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                          <div key={l.linha} ref={ehSemLinha ? refSemLinha : null}
+                            style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none",
+                                     background: ehSemLinha && abrirSemLinha ? "#FCFAF4" : "transparent" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, color: "#22231F" }}>
                               <span style={nomeStyle}>{l.linha}</span>
                               <span style={{ fontWeight: 700, flexShrink: 0 }}>{brl(l.valor_atual)}</span>
@@ -869,6 +840,78 @@ export default function Dashboard() {
                                 ? <span style={{ color: pct >= 0 ? "#0F6E56" : "#A32D2D", fontWeight: 700 }}>{pct >= 0 ? "+" : ""}{pct.toFixed(1)}%</span>
                                 : <span>sem base anterior</span>}
                             </div>
+
+                            {/* O botao mora AQUI, na propria fatia "Sem linha
+                                definida", e nao num aviso la em cima que so
+                                aparecia quando a cobertura estava abaixo de
+                                70%. Era exatamente esse o buraco: assim que
+                                voce preencheu o suficiente pra passar dos
+                                70%, o aviso sumia — e com ele a unica porta
+                                pra terminar o servico. Agora a porta esta na
+                                linha que incomoda, e some so quando nao
+                                sobra nenhum produto pra preencher. */}
+                            {ehSemLinha && semLinhaDetalhe.length > 0 && (
+                              <button onClick={() => setAbrirSemLinha((v) => !v)}
+                                style={{ marginTop: 8, background: abrirSemLinha ? "#FFFFFF" : "#22231F",
+                                         color: abrirSemLinha ? "#22231F" : "#F3EFE3",
+                                         border: abrirSemLinha ? "1px solid #E8E2D2" : "none",
+                                         borderRadius: 8, padding: "7px 12px", fontSize: 11.5,
+                                         fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                                {abrirSemLinha
+                                  ? "Esconder a lista"
+                                  : `Definir a linha desses ${semLinhaDetalhe.length}`}
+                              </button>
+                            )}
+
+                            {ehSemLinha && abrirSemLinha && semLinhaDetalhe.length > 0 && (
+                              <div style={{ marginTop: 10 }}>
+                          <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden",
+                                        background: "#FFFFFF", marginBottom: 14 }}>
+                            <div style={{ padding: "10px 12px", background: "#F6F1E7", borderBottom: "1px solid #E8E2D2" }}>
+                              <div style={{ fontSize: 12.5, fontWeight: 800 }}>
+                                {semLinhaDetalhe.length} produtos sem linha · {brl(semLinhaDetalhe.reduce((t, p) => t + p.valor_atual, 0))}
+                              </div>
+                              <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2, lineHeight: 1.5 }}>
+                                Escolha a linha aqui mesmo — grava na hora e esta fatia encolhe na sua
+                                frente. Ordenados pelo que mais fatura: o primeiro é o que mais muda o resultado.
+                              </div>
+                            </div>
+                            {erroLinha && (
+                              <div style={{ padding: "9px 12px", fontSize: 12, color: "#A32D2D", borderBottom: "1px solid #F0EBDD" }}>{erroLinha}</div>
+                            )}
+                            {semLinhaDetalhe.slice(0, 40).map((p, idx) => (
+                              <div key={p.produto} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                                                            padding: "9px 12px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                                <div style={{ flex: 1, minWidth: 150 }}>
+                                  <div style={{ fontSize: 12.5, fontWeight: 600, ...nomeStyle }}>{p.produto}</div>
+                                  <div style={{ fontSize: 10.5, color: p.pratoId ? "#8A8778" : "#A32D2D", marginTop: 1 }}>
+                                    {p.qtd_atual.toLocaleString("pt-BR")} un
+                                    {p.pratoId ? "" : " · fora do cadastro de pratos"}
+                                  </div>
+                                </div>
+                                <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap" }}>{brl(p.valor_atual)}</span>
+                                {p.pratoId ? (
+                                  <select defaultValue="" disabled={salvandoLinha === p.produto}
+                                    onChange={(e) => salvarLinhaDoProduto(p, e.target.value)}
+                                    style={{ padding: "6px 8px", fontSize: 11.5, border: "1px solid #E8E2D2",
+                                             borderRadius: 7, background: "#FFFFFF", fontFamily: "inherit",
+                                             color: "#22231F", minWidth: 150 }}>
+                                    <option value="">{salvandoLinha === p.produto ? "salvando…" : "Escolher linha…"}</option>
+                                    {LINHAS_PRODUTO.map((l) => <option key={l} value={l}>{l}</option>)}
+                                  </select>
+                                ) : (
+                                  <span style={{ fontSize: 11, color: "#8A8778", minWidth: 150 }}>rode o Importar pratos</span>
+                                )}
+                              </div>
+                            ))}
+                            {semLinhaDetalhe.length > 40 && (
+                              <div style={{ padding: "9px 12px", borderTop: "1px solid #F0EBDD", fontSize: 10.5, color: "#8A8778" }}>
+                                Mostrando os 40 que mais faturam, de {semLinhaDetalhe.length}. Preencha esses e a lista se refaz com os próximos.
+                              </div>
+                            )}
+                          </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
