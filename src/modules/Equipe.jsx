@@ -8,6 +8,7 @@ import {
   carregarApelidos, vincularApelido, desvincularApelido,
   ignorarNome, carregarIgnorados, sugerirPessoa,
 } from "../lib/fiado";
+import FolhaPagamento from "./FolhaPagamento";
 // Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
 // collation do banco e às vezes joga nome acentuado ou em maiúscula pro
 // fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
@@ -107,6 +108,7 @@ const SUBABAS = [
   { chave: "previsao", label: "Previsão de escala" },
   { chave: "premiacao", label: "Escala do dia" },
   { chave: "mensal", label: "Fechamento mensal", soAdmin: true },
+  { chave: "folha", label: "Folha de pagamento", soAdmin: true },
 ];
 // Só admin vê valores (salário, matriz de cargos, comissão calculada,
 // fechamento mensal) — outras pessoas aprovadas só marcam quem trabalhou
@@ -143,6 +145,7 @@ export default function Equipe() {
       {subaba === "previsao" && <PrevisaoDeEscala />}
       {subaba === "premiacao" && <PremiacaoDoDia isAdmin={isAdmin} />}
       {subaba === "mensal" && isAdmin && <FechamentoMensal />}
+      {subaba === "folha" && isAdmin && <FolhaPagamento />}
     </div>
   );
 }
