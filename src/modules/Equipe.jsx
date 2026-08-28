@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Loader2, Plus, Trash2, Pencil, Check, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, Eye, EyeOff, Search, Paperclip, Upload, Lock, Receipt, X, Download } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+import { podeVer } from "../lib/permissoes";
 import {
   buscarFiadoNoPeriodo, agruparPorPessoa, carregarBaixas, darBaixa,
   estornarBaixa, somar, diasAtrasISO, normalizaNome,
@@ -102,13 +103,22 @@ function textoPonto(part) {
   }
   return `${h}h`;
 }
+// Cada sub-aba tem sua própria permissão.
+//
+// Antes era tudo ou nada: `soAdmin` deixava a matriz, o fechamento e a
+// folha só pro administrador, e o resto pra qualquer um que abrisse o
+// módulo. Não dava pra deixar a gerente montar a escala do dia sem
+// mostrar salário — e é exatamente essa a divisão que um restaurante
+// precisa fazer.
+//
+// `perm` tem que bater com as chaves de gente.* em lib/permissoes.js.
 const SUBABAS = [
-  { chave: "pessoas", label: "Pessoas" },
-  { chave: "matriz", label: "Matriz de cargos", soAdmin: true },
-  { chave: "previsao", label: "Previsão de escala" },
-  { chave: "premiacao", label: "Escala do dia" },
-  { chave: "mensal", label: "Fechamento mensal", soAdmin: true },
-  { chave: "folha", label: "Folha de pagamento", soAdmin: true },
+  { chave: "pessoas",   label: "Pessoas",             perm: "gente.pessoas" },
+  { chave: "matriz",    label: "Matriz de cargos",    perm: "gente.matriz" },
+  { chave: "previsao",  label: "Previsão de escala",  perm: "gente.previsao" },
+  { chave: "premiacao", label: "Escala do dia",       perm: "gente.escala" },
+  { chave: "mensal",    label: "Fechamento mensal",   perm: "gente.mensal" },
+  { chave: "folha",     label: "Folha de pagamento",  perm: "gente.folha" },
 ];
 // Só admin vê valores (salário, matriz de cargos, comissão calculada,
 // fechamento mensal) — outras pessoas aprovadas só marcam quem trabalhou
@@ -126,10 +136,41 @@ function useIsAdmin() {
   }, []);
   return isAdmin;
 }
-export default function Equipe() {
-  const [subaba, setSubaba] = useState("pessoas");
+export default function Equipe({ permissoes }) {
   const isAdmin = useIsAdmin();
-  const subabasVisiveis = SUBABAS.filter((a) => !a.soAdmin || isAdmin);
+  // Administrador continua passando por cima de tudo — é assim no banco
+  // (nivel_acesso) e tem que ser assim aqui, senão as duas pontas
+  // discordam e alguém fica trancado fora do próprio painel.
+  const liberada = (a) => isAdmin || podeVer(permissoes, a.perm);
+  const subabasVisiveis = SUBABAS.filter(liberada);
+
+  // Ver valor de gente é decisão separada de gerir gente. A gerente pode
+  // precisar cadastrar e escalar sem enxergar salário, CPF ou fiado.
+  const verValores = isAdmin || podeVer(permissoes, "gente.salarios");
+
+  const [subaba, setSubaba] = useState("pessoas");
+  // Se a primeira aba não é permitida, cai na primeira que for — em vez
+  // de mostrar uma tela vazia sem explicar por quê. A dependência é a
+  // LISTA de chaves, não o array: o array é novo a cada render e faria
+  // o efeito rodar sem parar.
+  const chavesVisiveis = subabasVisiveis.map((a) => a.chave).join(",");
+  useEffect(() => {
+    const lista = chavesVisiveis ? chavesVisiveis.split(",") : [];
+    if (lista.length === 0) return;
+    if (!lista.includes(subaba)) setSubaba(lista[0]);
+  }, [chavesVisiveis, subaba]);
+
+  if (isAdmin === null) return <div style={{ padding: 16, fontSize: 13, color: "#8A8778" }}>Carregando…</div>;
+
+  if (subabasVisiveis.length === 0) {
+    return (
+      <div style={{ ...cardStyle, fontSize: 13, color: "#8A8778", lineHeight: 1.6 }}>
+        Seu cargo não tem acesso a nenhuma parte de Gente e Gestão.
+        Peça a quem administra o painel pra liberar em <b>Permissões › Gente e Gestão</b>.
+      </div>
+    );
+  }
+
   return (
     <div>
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
@@ -140,12 +181,12 @@ export default function Equipe() {
           </button>
         ))}
       </div>
-      {subaba === "pessoas" && <Pessoas isAdmin={isAdmin} />}
-      {subaba === "matriz" && isAdmin && <MatrizCargos />}
-      {subaba === "previsao" && <PrevisaoDeEscala />}
-      {subaba === "premiacao" && <PremiacaoDoDia isAdmin={isAdmin} />}
-      {subaba === "mensal" && isAdmin && <FechamentoMensal />}
-      {subaba === "folha" && isAdmin && <FolhaPagamento />}
+      {subaba === "pessoas"   && liberada(SUBABAS[0]) && <Pessoas isAdmin={verValores} />}
+      {subaba === "matriz"    && liberada(SUBABAS[1]) && <MatrizCargos />}
+      {subaba === "previsao"  && liberada(SUBABAS[2]) && <PrevisaoDeEscala />}
+      {subaba === "premiacao" && liberada(SUBABAS[3]) && <PremiacaoDoDia isAdmin={verValores} />}
+      {subaba === "mensal"    && liberada(SUBABAS[4]) && <FechamentoMensal />}
+      {subaba === "folha"     && liberada(SUBABAS[5]) && <FolhaPagamento />}
     </div>
   );
 }
