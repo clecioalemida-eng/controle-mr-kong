@@ -2089,10 +2089,23 @@ function PremiacaoDoDia({ isAdmin }) {
     if (data?.error) { setBuscandoTaxa(false); setErro(data.error); return; }
     setTaxaServico(String(data.taxa_servico));
     setTaxaAutomatica(data.encontrado_automaticamente);
-    // Só busca o faturamento bruto (base do percentual da gerente) se ela
-    // estiver na escala de hoje — evita gastar consulta à toa.
-    let faturamentoBruto = cacheTaxa?.faturamento_bruto || 0;
-    if (temGerente) {
+
+    // O faturamento agora vem JUNTO com a taxa: é a mesma leitura de
+    // pedidos, e a função devolve os dois.
+    //
+    // Até 28/08/2026 aqui havia uma segunda chamada, à ação
+    // `faturamento_periodo` — que não existia na Edge Function. O
+    // CardápioWeb respondia "Ação desconhecida", este código engolia o
+    // erro (`if (!fatErr && !fatData?.error)`) e o faturamento ficava em
+    // zero. A gerente fechava em R$ 0,00 todo santo dia, e parecia
+    // problema no cadastro dela.
+    //
+    // Duas lições viraram código: não pedir duas vezes o que dá pra
+    // trazer numa, e nunca mais descartar erro sem contar pra ninguém.
+    let faturamentoBruto = Number(data.faturamento_bruto);
+    if (!Number.isFinite(faturamentoBruto)) {
+      // Função antiga, ainda sem o faturamento na resposta: tenta a ação
+      // separada e, se ela também falhar, AVISA em vez de zerar calado.
       const diaSeguinte = new Date(`${dia}T12:00:00-03:00`);
       diaSeguinte.setDate(diaSeguinte.getDate() + 1);
       const { data: fatData, error: fatErr } = await supabase.functions.invoke("cardapioweb-proxy", {
@@ -2102,7 +2115,18 @@ function PremiacaoDoDia({ isAdmin }) {
           data_fim: `${diaSeguinte.toISOString().slice(0, 10)}T03:00:00-03:00`,
         },
       });
-      if (!fatErr && !fatData?.error) faturamentoBruto = fatData.faturamento_bruto;
+      if (fatErr || fatData?.error) {
+        faturamentoBruto = cacheTaxa?.faturamento_bruto || 0;
+        if (temGerente) {
+          setErro(
+            "A taxa de serviço veio, mas o faturamento do dia não: " +
+            (fatData?.error || (await extrairErroFuncao(fatErr))) +
+            " — sem ele o percentual da gerência fica em zero. Publique a versão nova da função cardapioweb-proxy."
+          );
+        }
+      } else {
+        faturamentoBruto = Number(fatData.faturamento_bruto) || 0;
+      }
     }
     setFaturamentoBrutoDia(faturamentoBruto);
     setBuscandoTaxa(false);
