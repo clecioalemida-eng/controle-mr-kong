@@ -60,6 +60,12 @@ function carregarPdfJs() {
 async function lerPdf(arquivo) {
   const pdfjsLib = await carregarPdfJs();
   const buffer = await arquivo.arrayBuffer();
+  // Guarda uma cópia dos bytes AGORA. O File que veio do input ou do
+  // arrastar não é eterno: no Safari, depois que o input é limpo (ou que
+  // passa tempo demais), ler esse File de novo estoura "Load failed" —
+  // um erro de rede que não tem nada de rede. O upload passa a usar esta
+  // cópia, que é nossa e não depende do navegador manter a original.
+  const bytes = buffer.slice(0);
   const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
   const paginas = [];
   for (let n = 1; n <= doc.numPages; n++) {
@@ -79,7 +85,7 @@ async function lerPdf(arquivo) {
       .filter(Boolean);
     paginas.push(linhas.join("\n"));
   }
-  return { texto: paginas.join("\n"), paginas: doc.numPages };
+  return { texto: paginas.join("\n"), paginas: doc.numPages, bytes };
 }
 
 // ---------------------------------------------------------------------
@@ -525,10 +531,10 @@ export default function FolhaPagamento() {
     let quantasPessoas = 0;
 
     for (const file of files) {
-      let txt = "", np = 0;
+      let txt = "", np = 0, bytes = null;
       try {
         const r = await lerPdf(file);
-        txt = r.texto; np = r.paginas;
+        txt = r.texto; np = r.paginas; bytes = r.bytes;
       } catch (e) {
         novosAvisos.push(`Não consegui ler "${file.name}": ${e.message || e}`);
         continue;
@@ -538,7 +544,7 @@ export default function FolhaPagamento() {
           "não dá pra ler os números. Peça ao contador o PDF em que dá pra selecionar o texto com o mouse.");
         continue;
       }
-      lidos.push({ nome: file.name, texto: txt, paginas: np, file });
+      lidos.push({ nome: file.name, texto: txt, paginas: np, file, bytes });
 
       const linhas = txt.split("\n").map((l) => l.trim()).filter(Boolean);
 
@@ -598,6 +604,20 @@ export default function FolhaPagamento() {
     }
     if (!comp) novosAvisos.push("Não achei o mês nem no nome do arquivo nem no PDF — escolha embaixo antes de lançar.");
     if (novosItens.length === 0) novosAvisos.push("Não achei nada pra lançar. Confira o texto lido ou adicione as linhas à mão.");
+
+    // Quem já está na folha desse mês, buscado AQUI e não num efeito
+    // solto: a tela precisa saber disso antes de você ler a lista, não
+    // depois. Foi por não saber que ela ofereceu somar alguém que já
+    // estava lá.
+    if (comp) {
+      const jaLancada = historico.find((h) => String(h.competencia).slice(0, 7) === comp);
+      if (jaLancada && !linhasFolha[jaLancada.id]) {
+        const { data: linhas } = await supabase.from("folha_itens")
+          .select("id, rubrica, valor, plano_conta, data_vencimento, pago, arquivo_path")
+          .eq("folha_id", jaLancada.id).order("ordem");
+        if (linhas) setLinhasFolha((l) => ({ ...l, [jaLancada.id]: linhas }));
+      }
+    }
 
     setArquivos((a) => [...a, ...lidos]);
     setTexto((t) => [t, ...lidos.map((l) => `===== ${l.nome} =====\n${l.texto}`)].filter(Boolean).join("\n\n"));
@@ -671,25 +691,44 @@ export default function FolhaPagamento() {
     )) return;
 
     setFase("lancando");
+    // Cada passo diz o próprio nome. Antes isso aqui era um try só pra
+    // cinco chamadas de rede, e qualquer uma que morresse aparecia como
+    // "TypeError: Load failed" — a mensagem crua do Safari, que não diz
+    // nem qual pedaço falhou. Erro que não aponta o lugar é erro que
+    // custa uma tarde.
+    let passo = "preparando";
     try {
-      // Os PDFs sobem primeiro, um por pessoa — assim o "ver o PDF" da
-      // linha da Lidiane abre o holerite dela, não o de outra pessoa.
-      // Se o upload falhar, a folha entra sem anexo: perder o arquivo é
-      // chato, perder o lançamento é pior.
-      const { data: userData } = await supabase.auth.getUser();
-      const pasta = `folhas/${userData?.user?.id || "anon"}/${Date.now()}`;
+      // A sessão vem do armazenamento local do navegador — sem ida à
+      // rede. Antes eu usava getUser(), que faz uma chamada extra só pra
+      // descobrir quem já estava logado: mais um lugar pra falhar sem
+      // motivo.
+      passo = "identificando você";
+      const { data: sessao } = await supabase.auth.getSession();
+      const meuId = sessao?.session?.user?.id || null;
+
+      const pasta = `folhas/${meuId || "anon"}/${Date.now()}`;
       const caminhos = {};
-      let subiram = 0;
+      const falharam = [];
       for (const a of arquivos) {
+        passo = `enviando o PDF "${a.nome}"`;
         try {
           const nome = a.nome.replace(/[^a-zA-Z0-9.\-_]/g, "_");
           const caminho = `${pasta}/${nome}`;
-          const { error: errUp } = await supabase.storage.from("notas-fiscais").upload(caminho, a.file);
-          if (!errUp) { caminhos[a.nome] = caminho; subiram += 1; }
-        } catch { /* segue sem esse anexo */ }
+          // Sobe a cópia dos bytes, não o File original.
+          const corpo = a.bytes ? new Blob([a.bytes], { type: "application/pdf" }) : a.file;
+          const { error: errUp } = await supabase.storage.from("notas-fiscais")
+            .upload(caminho, corpo, { contentType: "application/pdf", upsert: false });
+          if (errUp) falharam.push(`${a.nome} (${errUp.message})`);
+          else caminhos[a.nome] = caminho;
+        } catch (e) {
+          falharam.push(`${a.nome} (${e.message || e})`);
+        }
       }
 
-      const { data, error } = await supabase.rpc("lancar_folha", {
+      // O anexo é bom ter; o lançamento é o que não pode faltar. Se o
+      // PDF não subiu, a folha entra assim mesmo — e eu digo quais.
+      passo = "gravando a folha no banco";
+      const corpoRpc = {
         p_competencia: competencia,
         p_itens: aLancar.map((i) => ({
           rubrica: i.rubrica, detalhe: i.detalhe || null,
@@ -713,37 +752,70 @@ export default function FolhaPagamento() {
         // tela quem já estava lá. O banco continua barrando pessoa
         // repetida — a trava que importa não saiu do lugar.
         p_somar: true,
-      });
-      if (error) throw error;
+      };
+
+      let resposta = await supabase.rpc("lancar_folha", corpoRpc);
+      // Falha de rede não é falha de lançamento: o Wi-Fi do salão cai, a
+      // aba dorme. Tenta de novo uma vez antes de desistir. Se a
+      // primeira tiver gravado e a segunda repetir, o banco recusa a
+      // pessoa duplicada — por isso dá pra tentar sem medo.
+      if (resposta.error && /load failed|network|fetch|timeout|abort/i.test(resposta.error.message || "")) {
+        await new Promise((r) => setTimeout(r, 1500));
+        resposta = await supabase.rpc("lancar_folha", corpoRpc);
+      }
+      if (resposta.error) throw resposta.error;
 
       // Guarda a resposta que você já deu: toda folha vai pra essa conta.
-      // No mês que vem a tela já vem assim e não pergunta de novo.
+      // No mês que vem a tela já vem assim e não pergunta de novo. Se
+      // falhar, não é motivo pra dizer que o lançamento deu errado — ele
+      // não deu.
+      passo = "guardando a conta padrão";
       if (temHolerite && contaPadrao) {
-        const anterior = regras[CHAVE_FOLHA];
-        const vezes = anterior && anterior.plano_conta === contaPadrao ? (anterior.vezes_usada || 0) + 1 : 1;
-        await supabase.from("folha_rubrica_regras").upsert({
-          rubrica_chave: CHAVE_FOLHA,
-          rubrica_exemplo: "Folha de pagamento",
-          plano_conta: contaPadrao,
-          vezes_usada: vezes,
-          atualizada_em: new Date().toISOString(),
-          criado_por: userData?.user?.id || null,
-        }, { onConflict: "rubrica_chave" });
+        try {
+          const anterior = regras[CHAVE_FOLHA];
+          const vezes = anterior && anterior.plano_conta === contaPadrao ? (anterior.vezes_usada || 0) + 1 : 1;
+          await supabase.from("folha_rubrica_regras").upsert({
+            rubrica_chave: CHAVE_FOLHA,
+            rubrica_exemplo: "Folha de pagamento",
+            plano_conta: contaPadrao,
+            vezes_usada: vezes,
+            atualizada_em: new Date().toISOString(),
+            criado_por: meuId,
+          }, { onConflict: "rubrica_chave" });
+        } catch { /* a folha entrou; a memória tenta de novo no mês que vem */ }
       }
 
-      const r = data || {};
+      const r = resposta.data || {};
       const repetidas = Array.isArray(r.repetidas) ? r.repetidas : [];
       setOk(
         `${r.entraram || 0} pessoa(s) ${r.somou ? "somada(s) à" : "na"} folha de ${competenciaTexto(competencia)}. ` +
         `A folha está com ${r.pessoas || 0} pessoa(s) e ${brl(r.total || 0)}.` +
         (repetidas.length > 0 ? ` Ignorei ${repetidas.length} que já estavam: ${repetidas.join(", ")}.` : "") +
-        (subiram === arquivos.length ? "" : ` (${arquivos.length - subiram} PDF(s) não subiram, mas o lançamento entrou.)`)
+        (falharam.length > 0 ? ` Os PDFs de ${falharam.join(", ")} não subiram — o lançamento entrou do mesmo jeito.` : "")
       );
       setLinhasFolha({});
       limpar();
       carregar();
     } catch (e) {
-      setErro(e.message || String(e));
+      const bruto = e?.message || String(e);
+      // "Load failed" é o Safari dizendo "a requisição morreu" e mais
+      // nada. Traduz pra algo que diga o que fazer.
+      const rede = /load failed|network|fetch|failed to fetch/i.test(bruto);
+      // Assinatura de função que não existe é sintoma de migração que
+      // não rodou — e a mensagem crua do PostgREST não diz isso pra
+      // ninguém.
+      const faltaSql = /PGRST202|could not find the function|does not exist/i.test(bruto);
+      setErro(
+        `Parei ${passo}. ` +
+        (faltaSql
+          ? "O banco não tem a versão nova da função lancar_folha — falta rodar a migração 097 no SQL Editor do Supabase. " +
+            "Nada foi gravado."
+          : rede
+            ? "A conexão caiu no meio (é isso que \"Load failed\" quer dizer). " +
+              "Confira a internet e clique de novo — se a primeira tentativa tiver gravado, " +
+              "o banco não deixa a mesma pessoa entrar duas vezes."
+            : bruto)
+      );
       setFase("conferindo");
     }
   };
