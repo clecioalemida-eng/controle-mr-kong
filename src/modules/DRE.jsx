@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   Loader2, AlertTriangle, RefreshCw, Plus, Trash2, Check,
   Calculator, Package, Tag, Settings, List, Lock, Pencil, Power, Eye, Printer,
+  ChevronDown, ChevronRight,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { podeEditar } from "../lib/permissoes";
@@ -79,6 +80,32 @@ function mesPorExtenso(mes) {
   const [a, m] = String(mes || "").split("-").map(Number);
   if (!a || !m) return mes || "";
   return `${NOMES_MES[m - 1]} de ${a}`;
+}
+// Chave do fornecedor: sem acento, sem pontuação, sem caixa, e sem a
+// forma jurídica no fim — "STONE PAGAMENTOS" e "Stone Pagamentos S/A"
+// são o mesmo fornecedor, e a nota vem ora de um jeito ora de outro.
+//
+// Tem que ser IDÊNTICA à função chave_fornecedor() do banco (migração
+// 094). Duas normalizações diferentes pro mesmo dado é como ter dois
+// cadastros: a tela aprende numa chave e procura noutra.
+const SUFIXOS_JURIDICOS = ["ltda", "sa", "s", "a", "me", "mei", "epp", "eireli", "cia", "ss", "ltd", "filial", "matriz"];
+function chaveFornecedor(nome) {
+  const texto = String(nome || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    // pontuação vira espaço, não some: "s/a" precisa virar "s a" pra que
+    // as duas letras sejam vistas como sufixo, e não coladas no nome.
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  if (!texto) return "";
+  const partes = texto.split(" ");
+  // tira do fim, uma de cada vez, enquanto for forma jurídica. Só no FIM
+  // e só palavra inteira: cortar "me" de dentro de "creme" transformaria
+  // a Sorveteria Creme noutro fornecedor.
+  while (partes.length > 1 && SUFIXOS_JURIDICOS.includes(partes[partes.length - 1])) {
+    partes.pop();
+  }
+  return partes.join("");
 }
 function agoraTexto() {
   const d = new Date();
@@ -476,6 +503,13 @@ function Classificar({ editar }) {
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(null);
   const [erro, setErro] = useState("");
+  // O que o painel aprendeu: { chave_do_fornecedor: regra }. Fica em
+  // memoria pra sugerir enquanto voce classifica, e aparece por inteiro
+  // na lista do rodape — memoria que ninguem ve, ninguem confere.
+  const [regras, setRegras] = useState({});
+  const [confirmando, setConfirmando] = useState(false);
+  const [esquecendo, setEsquecendo] = useState(null);
+  const [verAprendido, setVerAprendido] = useState(false);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -511,10 +545,40 @@ function Classificar({ editar }) {
       return { ...c, arquivo_path: doc?.arquivo_path || null, manual: !!doc && !doc.arquivo_path };
     }));
     setPlano(pl || []);
+    {
+      const { data: rs } = await supabase
+        .from("classificacao_regras")
+        .select("fornecedor_chave, fornecedor_exemplo, plano_conta, vezes_usada");
+      setRegras(Object.fromEntries((rs || []).map((r) => [r.fornecedor_chave, r])));
+    }
     setCarregando(false);
   }, []);
 
   useEffect(() => { carregar(); }, [carregar]);
+
+  const nomeFornecedor = (c) => c.fornecedor_nome || c.descricao || "";
+
+  // Guarda a decisão pro futuro. A regra é sempre a ÚLTIMA escolha, não a
+  // primeira: se você mudar a conta de um fornecedor, é porque a de antes
+  // não servia mais.
+  const aprender = async (conta, codigo) => {
+    const nome = nomeFornecedor(conta);
+    const chave = chaveFornecedor(nome);
+    if (!chave) return;
+    const { data: usuario } = await supabase.auth.getUser();
+    const anterior = regras[chave];
+    const vezes = anterior && anterior.plano_conta === codigo ? (anterior.vezes_usada || 0) + 1 : 1;
+    const linha = {
+      fornecedor_chave: chave,
+      fornecedor_exemplo: nome,
+      plano_conta: codigo,
+      vezes_usada: vezes,
+      atualizada_em: new Date().toISOString(),
+      criado_por: usuario?.user?.id || null,
+    };
+    await supabase.from("classificacao_regras").upsert(linha, { onConflict: "fornecedor_chave" });
+    setRegras((r) => ({ ...r, [chave]: linha }));
+  };
 
   const classificar = async (conta, codigo) => {
     if (!codigo) return;
@@ -522,9 +586,51 @@ function Classificar({ editar }) {
     setErro("");
     const { error } = await supabase.from("contas_pagar")
       .update({ plano_conta: codigo }).eq("id", conta.id);
+    if (error) { setSalvando(null); setErro(error.message); return; }
+    await aprender(conta, codigo);
     setSalvando(null);
-    if (error) { setErro(error.message); return; }
     setContas((atual) => atual.filter((c) => c.id !== conta.id));
+  };
+
+  const sugestaoDe = (c) => regras[chaveFornecedor(nomeFornecedor(c))] || null;
+  const comSugestao = contas.filter((c) => sugestaoDe(c));
+
+  // Confirma em lote o que o painel já sabia. Grava só depois do clique:
+  // classificação move dinheiro pro DRE, e regra errada aplicada em
+  // silêncio contamina o mês inteiro antes de alguém notar.
+  const confirmarSugeridas = async () => {
+    if (comSugestao.length === 0) return;
+    if (!window.confirm(
+      `Classificar ${comSugestao.length} conta(s) com o que o painel aprendeu?\n\n` +
+      "Você pode mudar qualquer uma depois, na aba Contas a pagar."
+    )) return;
+    setConfirmando(true);
+    setErro("");
+    const feitas = [];
+    for (const c of comSugestao) {
+      const codigo = sugestaoDe(c).plano_conta;
+      const { error } = await supabase.from("contas_pagar")
+        .update({ plano_conta: codigo }).eq("id", c.id);
+      if (error) { setConfirmando(false); setErro(error.message); return; }
+      await aprender(c, codigo);
+      feitas.push(c.id);
+    }
+    setConfirmando(false);
+    setContas((atual) => atual.filter((c) => !feitas.includes(c.id)));
+  };
+
+  // Ordem: o que ele mais usa em cima — se tem uma regra errada
+  // estragando muita conta, ela e a primeira que voce ve.
+  const listaRegras = Object.values(regras).sort(
+    (a, b) => (b.vezes_usada || 1) - (a.vezes_usada || 1) ||
+      String(a.fornecedor_exemplo || "").localeCompare(String(b.fornecedor_exemplo || ""))
+  );
+
+  const esquecer = async (chave) => {
+    setEsquecendo(chave);
+    await supabase.from("classificacao_regras").delete().eq("fornecedor_chave", chave);
+    setRegras((r) => { const n = { ...r }; delete n[chave]; return n; });
+    setEsquecendo(null);
   };
 
   if (carregando) return <div style={vazio}><Loader2 size={16} /> Carregando…</div>;
@@ -539,6 +645,32 @@ function Classificar({ editar }) {
         depreciação.
       </div>
       {erro && <div style={{ ...avisoStyle, marginBottom: 10 }}><AlertTriangle size={16} /><div>{erro}</div></div>}
+
+      {/* O painel já sabe a resposta de parte da fila. Ele PREENCHE e
+          espera o aval — nunca grava sozinho. Classificação move dinheiro
+          pro DRE; regra errada aplicada em silêncio contamina o mês
+          inteiro antes de alguém notar. Confirmar em lote é um clique;
+          descobrir o erro três meses depois é uma tarde. */}
+      {editar && comSugestao.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 11, flexWrap: "wrap",
+                      background: "#FBFAFE", border: "1px solid #C9BEE8", borderRadius: 12,
+                      padding: "11px 13px", marginBottom: 10 }}>
+          <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 0.3, textTransform: "uppercase",
+                         padding: "3px 9px", borderRadius: 999, background: "#EAE4F7", color: "#4C3E77" }}>
+            aprendido
+          </span>
+          <div style={{ flex: 1, minWidth: 200, fontSize: 12.5, lineHeight: 1.55 }}>
+            <b>{comSugestao.length} de {contas.length} contas já têm resposta.</b>{" "}
+            Você classificou esses fornecedores antes — o painel preencheu e está esperando seu aval.
+          </div>
+          <button onClick={confirmarSugeridas} disabled={confirmando}
+            style={{ background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 8,
+                     padding: "9px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+            {confirmando ? "confirmando…" : `Confirmar as ${comSugestao.length}`}
+          </button>
+        </div>
+      )}
+
       {contas.length === 0 ? (
         <div style={{ ...cardStyle, display: "flex", alignItems: "center", gap: 8, color: "#27500A", fontSize: 13 }}>
           <Check size={16} /> Nenhuma conta pendente de classificação.
@@ -577,12 +709,23 @@ function Classificar({ editar }) {
                   {c.centro_custo ? ` · ${c.centro_custo}` : ""}
                   {c.documento_compra_id ? " · veio de nota" : ""}
                 </div>
+                {sugestaoDe(c) ? (
+                  <div style={{ fontSize: 11, color: "#4C3E77", marginTop: 2 }}>
+                    aprendido de {sugestaoDe(c).vezes_usada || 1}{" "}
+                    {(sugestaoDe(c).vezes_usada || 1) === 1 ? "nota anterior" : "notas anteriores"} deste fornecedor
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11, color: "#8A6A0F", marginTop: 2 }}>
+                    primeira vez deste fornecedor — você decide
+                  </div>
+                )}
               </div>
               <select
-                defaultValue=""
+                defaultValue={sugestaoDe(c)?.plano_conta || ""}
                 disabled={!editar || salvando === c.id}
                 onChange={(e) => classificar(c, e.target.value)}
-                style={{ ...inputStyle, minWidth: 210 }}
+                style={{ ...inputStyle, minWidth: 210,
+                         ...(sugestaoDe(c) ? { borderColor: "#C9BEE8", background: "#FBFAFE", fontWeight: 600 } : {}) }}
               >
                 <option value="">Escolha a conta…</option>
                 {plano.map((p) => (
@@ -593,6 +736,74 @@ function Classificar({ editar }) {
               </select>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Memoria que ninguem ve e memoria que ninguem consegue corrigir.
+          Se o painel aprendeu errado — o fornecedor mudou de ramo, alguem
+          classificou com pressa — tem que dar pra abrir a lista, ver o
+          que ele acha que sabe, e apagar a linha errada. Esquecer NAO
+          desfaz classificacao nenhuma: as contas ja lancadas continuam
+          onde estao, so para de sugerir dali pra frente. */}
+      {listaRegras.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <button
+            onClick={() => setVerAprendido((v) => !v)}
+            style={{ display: "flex", alignItems: "center", gap: 7, background: "none", border: "none",
+                     padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5,
+                     fontWeight: 700, color: "#4C3E77" }}
+          >
+            {verAprendido ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+            O que o painel já sabe ({listaRegras.length}{" "}
+            {listaRegras.length === 1 ? "fornecedor" : "fornecedores"})
+          </button>
+
+          {verAprendido && (
+            <div style={{ marginTop: 9, border: "1px solid #E6E1D3", borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ padding: "9px 13px", background: "#FBFAFE", borderBottom: "1px solid #EAE4F7",
+                            fontSize: 11.5, color: "#4C3E77", lineHeight: 1.55 }}>
+                Cada linha é uma decisão sua que o painel guardou. <b>Esquecer</b> não
+                mexe em nada que já foi lançado — só faz o painel parar de sugerir
+                aquela conta pra esse fornecedor.
+              </div>
+              <div style={{ maxHeight: 340, overflowY: "auto" }}>
+                {listaRegras.map((r, i) => {
+                  const conta = plano.find((p) => p.codigo === r.plano_conta);
+                  return (
+                    <div key={r.fornecedor_chave}
+                      style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                               padding: "10px 13px",
+                               borderTop: i === 0 ? "none" : "1px solid #F1EDE1" }}>
+                      <div style={{ flex: 1, minWidth: 190 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, color: "#22231F" }}>
+                          {r.fornecedor_exemplo || r.fornecedor_chave}
+                        </div>
+                        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 1 }}>
+                          {r.plano_conta}{conta ? ` — ${conta.nome}` : ""}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 10.5, fontWeight: 700, color: "#4C3E77", background: "#EAE4F7",
+                                     borderRadius: 999, padding: "3px 9px", whiteSpace: "nowrap" }}>
+                        {r.vezes_usada || 1}{" "}
+                        {(r.vezes_usada || 1) === 1 ? "vez" : "vezes"}
+                      </span>
+                      {editar && (
+                        <button
+                          onClick={() => esquecer(r.fornecedor_chave)}
+                          disabled={esquecendo === r.fornecedor_chave}
+                          style={{ background: "none", border: "1px solid #E0DACA", borderRadius: 8,
+                                   padding: "5px 10px", fontSize: 11.5, cursor: "pointer",
+                                   fontFamily: "inherit", color: "#8A6A0F", whiteSpace: "nowrap" }}
+                        >
+                          {esquecendo === r.fornecedor_chave ? "esquecendo…" : "esquecer"}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
