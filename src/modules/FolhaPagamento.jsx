@@ -265,6 +265,20 @@ function competenciaDoTexto(linhas) {
   return "";
 }
 
+// "001 SALARIO BASE 23,00" tem três partes: o código do contador, o nome
+// da rubrica e a referência (23 dias). Só o nome do meio serve pra somar
+// entre meses — a referência muda todo mês e quebraria o agrupamento.
+function rotuloLimpo(rotulo, codigo) {
+  let t = String(rotulo || "").trim();
+  if (codigo && t.startsWith(codigo)) t = t.slice(codigo.length);
+  t = t.replace(/^[\s.\-]+/, "");
+  // tira a referência do fim (só se sobrar nome): "SALARIO BASE 23,00" e
+  // "HORAS EXTRAS 60% 10,55" perdem o número, "ADICIONAL NOTURNO" não tem.
+  const sem = t.replace(/\s+\d{1,3}(?:\.\d{3})*,\d{2}\s*$/, "").trim();
+  if (sem.length >= 3) t = sem;
+  return t.replace(/\s+/g, " ").trim() || "(sem descrição)";
+}
+
 function analisarHolerite(texto, nomeArquivo) {
   const linhas = String(texto || "").split("\n").map((l) => l.trim()).filter(Boolean);
   const proventos = [];
@@ -279,7 +293,8 @@ function analisarHolerite(texto, nomeArquivo) {
     const m = linha.match(RE_RUBRICA);
     if (!m) { soltos.push(valor); return; }
     const rotulo = linha.replace(/[\d.,]+\s*$/, "").replace(/[.\s]{3,}/g, " ").trim() || linha;
-    (ehDesconto(rotulo) ? descontos : proventos).push({ rotulo, valor });
+    const limpo = rotuloLimpo(rotulo, m[1]);
+    (ehDesconto(rotulo) ? descontos : proventos).push({ rotulo, codigo: m[1], limpo, valor });
   });
 
   const somaProventos = round2(proventos.reduce((t, r) => t + r.valor, 0));
@@ -430,6 +445,8 @@ export default function FolhaPagamento() {
   const [carregando, setCarregando] = useState(true);
   const [desfazendo, setDesfazendo] = useState(null);
   const [linhasFolha, setLinhasFolha] = useState({});   // folha_id -> itens
+  const [rubricas, setRubricas] = useState([]);        // de que é feita a folha
+  const [janela, setJanela] = useState(12);            // meses olhados pra trás
   const inputArquivo = useRef(null);
 
   const carregar = useCallback(async () => {
@@ -447,6 +464,31 @@ export default function FolhaPagamento() {
     setHistorico(hs || []);
     setCarregando(false);
   }, []);
+
+  // De que é feita a folha. Consulta separada porque muda de janela sem
+  // recarregar o resto da tela.
+  const carregarRubricas = useCallback(async () => {
+    const hoje = new Date();
+    const ini = new Date(hoje.getFullYear(), hoje.getMonth() - (janela - 1), 1);
+    const fim = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const { data } = await supabase.rpc("rubricas_da_folha", { p_inicio: iso(ini), p_fim: iso(fim) });
+    setRubricas(data || []);
+  }, [janela]);
+
+  useEffect(() => { carregarRubricas(); }, [carregarRubricas, historico]);
+
+  // Assim que a competência é conhecida, busca quem já está na folha
+  // desse mês — pra dizer na tela, antes do clique, quem já entrou.
+  useEffect(() => {
+    const f = historico.find((h) => String(h.competencia).slice(0, 7) === competencia);
+    if (!f || linhasFolha[f.id]) return;
+    let vivo = true;
+    supabase.from("folha_itens").select("id, rubrica, valor, plano_conta, data_vencimento, pago, arquivo_path")
+      .eq("folha_id", f.id).order("ordem")
+      .then(({ data }) => { if (vivo && data) setLinhasFolha((l) => ({ ...l, [f.id]: data })); });
+    return () => { vivo = false; };
+  }, [competencia, historico, linhasFolha]);
 
   useEffect(() => { carregar(); }, [carregar]);
 
@@ -585,6 +627,18 @@ export default function FolhaPagamento() {
 
   const aLancar = itens.filter((i) => i.lancar && Number(i.valor) > 0);
   const conferidas = itens.filter((i) => i.conferido).length;
+
+  // A folha do mês pode já existir: você paga pessoa por pessoa, ao
+  // longo de dias. Isso não é erro — é como o trabalho acontece. Erro é
+  // a MESMA pessoa entrar duas vezes, e essa trava está no banco.
+  const folhaDoMes = historico.find((f) => String(f.competencia).slice(0, 7) === competencia) || null;
+  const jaNaFolha = folhaDoMes ? (linhasFolha[folhaDoMes.id] || null) : null;
+  const chavesNaFolha = new Set((jaNaFolha || []).map((l) => chaveRubrica(l.rubrica)));
+  const repetidasAgora = jaNaFolha
+    ? aLancar.filter((i) => chavesNaFolha.has(chaveRubrica(i.rubrica)))
+    : [];
+  const novasAgora = aLancar.filter((i) => !chavesNaFolha.has(chaveRubrica(i.rubrica)));
+  const totalNovas = novasAgora.reduce((t, i) => t + Number(i.valor || 0), 0);
   const temHolerite = itens.some((i) => i.familia === "holerite");
   const total = aLancar.reduce((t, i) => t + Number(i.valor || 0), 0);
   const totalPago = aLancar.filter((i) => i.pago).reduce((t, i) => t + Number(i.valor || 0), 0);
@@ -598,10 +652,22 @@ export default function FolhaPagamento() {
       setErro(`${semConta.length} linha(s) sem conta do DRE escolhida: ${semConta.map((i) => i.rubrica).join(", ")}.`);
       return;
     }
+    const novas = aLancar.filter((i) => !chavesNaFolha.has(chaveRubrica(i.rubrica)));
+    if (novas.length === 0) {
+      setErro("Todas essas pessoas já estão na folha de " + competenciaTexto(competencia) + ".");
+      return;
+    }
+    const somaNovas = novas.reduce((t, i) => t + Number(i.valor || 0), 0);
+
     if (!window.confirm(
-      `Lançar ${aLancar.length} conta(s) da folha de ${competenciaTexto(competencia)}?\n\n` +
-      `Total ${brl(total)} — ${brl(totalPago)} como já pago.\n\n` +
-      "Dá pra desfazer tudo de uma vez depois, aqui mesmo."
+      (folhaDoMes
+        ? `Somar ${novas.length} pessoa(s) à folha de ${competenciaTexto(competencia)}, que já tem ${folhaDoMes.pessoas || 0}?\n\n`
+        : `Lançar ${novas.length} conta(s) da folha de ${competenciaTexto(competencia)}?\n\n`) +
+      `${brl(somaNovas)}` +
+      (repetidasAgora.length > 0
+        ? `\n\n${repetidasAgora.length} já estavam na folha e vão ser ignoradas: ${repetidasAgora.map((i) => i.rubrica).join(", ")}.`
+        : "") +
+      "\n\nDá pra desfazer a folha inteira depois, aqui mesmo."
     )) return;
 
     setFase("lancando");
@@ -631,12 +697,22 @@ export default function FolhaPagamento() {
           vencimento: i.vencimento || null, pago: !!i.pago,
           aprender: i.aprender !== false,
           arquivo_path: caminhos[i.arquivoNome] || null,
+          // O detalhe de dentro do holerite. Não soma em lugar nenhum —
+          // é o que responde depois "quanto disso é hora extra".
+          rubricas: [
+            ...(i.proventos || []).map((r) => ({ codigo: r.codigo || null, rotulo: r.limpo || r.rotulo, valor: Number(r.valor), tipo: "provento" })),
+            ...(i.descontos || []).map((r) => ({ codigo: r.codigo || null, rotulo: r.limpo || r.rotulo, valor: Number(r.valor), tipo: "desconto" })),
+          ],
         })),
         p_arquivo_path: caminhos[arquivos[0]?.nome] || null,
         p_arquivo_nome: arquivos.length === 1 ? arquivos[0].nome : `${arquivos.length} arquivos`,
         p_texto: texto,
         p_pessoas: pessoas ? Number(pessoas) : null,
         p_observacao: null,
+        // Somar é sempre permitido a partir da tela: quem lança viu na
+        // tela quem já estava lá. O banco continua barrando pessoa
+        // repetida — a trava que importa não saiu do lugar.
+        p_somar: true,
       });
       if (error) throw error;
 
@@ -655,11 +731,17 @@ export default function FolhaPagamento() {
         }, { onConflict: "rubrica_chave" });
       }
 
-      setOk(`Folha de ${competenciaTexto(competencia)} lançada: ${aLancar.length} conta(s), ${brl(total)}.` +
-        (subiram === arquivos.length ? "" : ` (${arquivos.length - subiram} PDF(s) não subiram, mas o lançamento entrou)`));
+      const r = data || {};
+      const repetidas = Array.isArray(r.repetidas) ? r.repetidas : [];
+      setOk(
+        `${r.entraram || 0} pessoa(s) ${r.somou ? "somada(s) à" : "na"} folha de ${competenciaTexto(competencia)}. ` +
+        `A folha está com ${r.pessoas || 0} pessoa(s) e ${brl(r.total || 0)}.` +
+        (repetidas.length > 0 ? ` Ignorei ${repetidas.length} que já estavam: ${repetidas.join(", ")}.` : "") +
+        (subiram === arquivos.length ? "" : ` (${arquivos.length - subiram} PDF(s) não subiram, mas o lançamento entrou.)`)
+      );
+      setLinhasFolha({});
       limpar();
       carregar();
-      void data;
     } catch (e) {
       setErro(e.message || String(e));
       setFase("conferindo");
@@ -782,6 +864,37 @@ export default function FolhaPagamento() {
             </div>
           </div>
 
+          {/* A folha do mês já existir não é problema — é o normal, porque
+              você paga pessoa por pessoa ao longo de dias. Então isso
+              aqui informa, não alarma: diz quem já está lá e quem falta. */}
+          {folhaDoMes && (
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid #F0EBDD" }}>
+              <div style={{ ...okStyle, display: "block" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <Check size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div>
+                    <b>{competenciaTexto(competencia)} já tem folha aberta</b>{" "}
+                    <span style={{ opacity: 0.85 }}>
+                      — {folhaDoMes.pessoas || 0} pessoa(s), {brl(folhaDoMes.valor_total)}.
+                      Estas {aLancar.length} vão <b>somar</b> a ela.
+                    </span>
+                    {jaNaFolha && jaNaFolha.length > 0 && (
+                      <div style={{ fontSize: 11.5, marginTop: 6, opacity: 0.9 }}>
+                        Já lançadas: {jaNaFolha.map((l) => l.rubrica).join(" · ")}
+                      </div>
+                    )}
+                    {repetidasAgora.length > 0 && (
+                      <div style={{ fontSize: 12, marginTop: 7, color: "#7A6A1E", fontWeight: 700 }}>
+                        {repetidasAgora.length} dessas já está na folha e vai ser ignorada:{" "}
+                        {repetidasAgora.map((i) => i.rubrica).join(", ")}. Ninguém entra duas vezes.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {avisos.length > 0 && (
             <div style={{ padding: "12px 16px", borderBottom: "1px solid #F0EBDD" }}>
               {avisos.map((a, i) => (
@@ -875,7 +988,7 @@ export default function FolhaPagamento() {
                                   borderRadius: 9, padding: "8px 10px", maxWidth: 460 }}>
                       {(i.proventos || []).map((r, k) => (
                         <div key={`p${k}`} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11, padding: "2px 0" }}>
-                          <span style={{ color: "#6B685C" }}>{r.rotulo}</span>
+                          <span style={{ color: "#6B685C" }}>{r.limpo || r.rotulo}</span>
                           <span style={{ fontVariantNumeric: "tabular-nums" }}>{brl(r.valor)}</span>
                         </div>
                       ))}
@@ -888,7 +1001,7 @@ export default function FolhaPagamento() {
                         <>
                           {(i.descontos || []).map((r, k) => (
                             <div key={`d${k}`} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11, padding: "2px 0", color: "#8A6A0F" }}>
-                              <span>− {r.rotulo}</span>
+                              <span>− {r.limpo || r.rotulo}</span>
                               <span style={{ fontVariantNumeric: "tabular-nums" }}>{brl(r.valor)}</span>
                             </div>
                           ))}
@@ -1012,16 +1125,96 @@ export default function FolhaPagamento() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12,
                         flexWrap: "wrap", padding: "14px 16px", background: "#FCFAF4", borderTop: "1px solid #E8E2D2" }}>
             <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-              Vai lançar <b>{aLancar.length} conta(s)</b> · <b>{brl(total)}</b><br />
+              {folhaDoMes ? "Vai somar" : "Vai lançar"} <b>{novasAgora.length} conta(s)</b> · <b>{brl(totalNovas)}</b><br />
               <span style={{ color: "#8A8778" }}>
-                {aLancar.filter((i) => i.pago).length} como já paga(s) ({brl(totalPago)}) ·{" "}
-                {aLancar.filter((i) => !i.pago).length} a pagar ({brl(total - totalPago)})
+                {novasAgora.filter((i) => i.pago).length} como já paga(s) ·{" "}
+                {novasAgora.filter((i) => !i.pago).length} a pagar
+                {folhaDoMes ? ` · a folha de ${competenciaTexto(competencia)} fica com ${(folhaDoMes.pessoas || 0) + novasAgora.length} pessoa(s)` : ""}
               </span>
             </div>
-            <button onClick={lancar} disabled={fase === "lancando" || aLancar.length === 0} style={btnRoxo}>
-              {fase === "lancando" ? <><Loader2 size={14} /> lançando…</> : `Conferi — pode lançar ${aLancar.length}`}
+            <button onClick={lancar} disabled={fase === "lancando" || novasAgora.length === 0} style={btnRoxo}>
+              {fase === "lancando"
+                ? <><Loader2 size={14} /> lançando…</>
+                : folhaDoMes
+                  ? `Somar ${novasAgora.length} à folha de ${competenciaTexto(competencia).split(" de ")[0]}`
+                  : `Conferi — pode lançar ${novasAgora.length}`}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ---------------- de que é feita a folha ----------------
+
+          O DRE responde "quanto custou pessoal": uma linha, 4.1
+          Salários. Essa pergunta é outra — "por que custou isso" — e é a
+          que muda a escala da semana que vem. Hora extra e adicional
+          noturno são o custo de folha que uma decisão sua mexe no mês
+          seguinte; salário base não.
+
+          Não entra no DRE de propósito: o total já entrou lá como conta
+          única. Somar rubrica em cima contaria o mesmo dinheiro duas
+          vezes — a mesma armadilha do bruto com o líquido. */}
+      {rubricas.length > 0 && (
+        <div style={{ ...cardStyle, padding: 0, marginBottom: 14 }}>
+          <div style={{ ...tituloBloco, display: "flex", justifyContent: "space-between",
+                        alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span>De que é feita a folha</span>
+            <select value={janela} onChange={(e) => setJanela(Number(e.target.value))}
+              style={{ ...inputStyle, padding: "5px 8px", fontSize: 11, textTransform: "none",
+                       fontWeight: 600, letterSpacing: 0 }}>
+              <option value={3}>últimos 3 meses</option>
+              <option value={6}>últimos 6 meses</option>
+              <option value={12}>últimos 12 meses</option>
+            </select>
+          </div>
+
+          {(() => {
+            const proventos = rubricas.filter((r) => r.tipo === "provento");
+            const descontos = rubricas.filter((r) => r.tipo === "desconto");
+            const maior = Math.max(1, ...proventos.map((r) => Number(r.total) || 0));
+            const linha = (r, i, ref) => {
+              const t = Number(r.total) || 0;
+              return (
+                <div key={r.chave} style={{ padding: "10px 16px", borderTop: i === 0 ? "none" : "1px solid #F0EBDD" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13 }}>
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {r.rotulo}
+                    </span>
+                    <span style={{ fontWeight: 700, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{brl(t)}</span>
+                  </div>
+                  <div style={{ height: 5, background: "#F0EBDD", borderRadius: 999, margin: "6px 0 5px", overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${Math.min(100, (t / ref) * 100)}%`,
+                                  background: r.tipo === "desconto" ? "#C9A227" : "#22231F", borderRadius: 999 }} />
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 10, color: "#8A8778" }}>
+                    <span>
+                      {r.meses} {r.meses === 1 ? "mês" : "meses"} · {r.pessoas} {r.pessoas === 1 ? "pessoa" : "pessoas"}
+                      {" · "}média {brl(r.media_mes)}/mês
+                    </span>
+                    <span>último mês {brl(r.ultimo_mes)}</span>
+                  </div>
+                </div>
+              );
+            };
+            return (
+              <>
+                {proventos.map((r, i) => linha(r, i, maior))}
+                {descontos.length > 0 && (
+                  <>
+                    <div style={{ ...tituloBloco, borderTop: "1px solid #F0EBDD" }}>
+                      Descontos do funcionário — já estão dentro dos valores acima
+                    </div>
+                    {descontos.map((r, i) => linha(r, i, Math.max(1, ...descontos.map((d) => Number(d.total) || 0))))}
+                  </>
+                )}
+                <div style={{ padding: "11px 16px", borderTop: "1px solid #F0EBDD", fontSize: 11.5,
+                              color: "#8A8778", lineHeight: 1.6 }}>
+                  Esses números <b>não entram no DRE</b> — lá a folha já entrou inteira, como uma conta só.
+                  Aqui é o avesso dela: serve pra decidir escala, não pra fechar o mês.
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -1083,8 +1276,10 @@ export default function FolhaPagamento() {
           </div>
         ))}
         <div style={{ padding: "11px 16px", borderTop: "1px solid #F0EBDD", fontSize: 11.5, color: "#8A8778", lineHeight: 1.6 }}>
-          Uma folha por mês. Subir o mesmo mês duas vezes é barrado no banco — folha duplicada
-          some no meio do DRE e só aparece quando o ano fecha. Desfazer libera o mês de novo.
+          A folha do mês vai enchendo: você paga pessoa por pessoa, e cada holerite soma na
+          folha daquele mês. O que o banco barra é a <b>mesma pessoa entrar duas vezes</b> —
+          subir o holerite dela de novo por engano não dobra o custo, só avisa. Desfazer apaga
+          a folha inteira do mês e tira tudo do DRE de uma vez.
         </div>
       </div>
     </div>
