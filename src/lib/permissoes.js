@@ -12,7 +12,26 @@ import { supabase } from "./supabaseClient";
 export const CATALOGO = [
   { chave: "checklist", nome: "Checklist Operacional" },
   { chave: "dashboard", nome: "Dashboard",      sensivel: true },
-  { chave: "gente",     nome: "Gente e Gestão", sensivel: true },
+  {
+    // Gente e Gestão era uma chave só, e isso obrigava a escolher entre
+    // dar TUDO ou NADA: quem podia montar a escala do dia também via
+    // salário, matriz de cargos e folha de pagamento. As sub-abas aqui
+    // precisam bater exatamente com as chaves do array SUBABAS do
+    // Equipe.jsx — se divergirem, a permissão é salva num nome e
+    // conferida em outro, e nada funciona.
+    chave: "gente",
+    nome: "Gente e Gestão",
+    sensivel: true,
+    filhos: [
+      { chave: "gente.pessoas",   nome: "Pessoas" },
+      { chave: "gente.salarios",  nome: "Salários e dados pessoais", sensivel: true },
+      { chave: "gente.matriz",    nome: "Matriz de cargos",          sensivel: true },
+      { chave: "gente.previsao",  nome: "Previsão de escala" },
+      { chave: "gente.escala",    nome: "Escala do dia" },
+      { chave: "gente.mensal",    nome: "Fechamento mensal",         sensivel: true },
+      { chave: "gente.folha",     nome: "Folha de pagamento",        sensivel: true },
+    ],
+  },
   {
     chave: "financeiro",
     nome: "Financeiro",
@@ -83,7 +102,20 @@ export function nivelDe(permissoes, chave) {
 
 export function podeVer(permissoes, chave) {
   const n = nivelDe(permissoes, chave);
-  return n === "ver" || n === "editar";
+  if (n === "ver" || n === "editar") return true;
+  // Módulo com sub-abas abre quando QUALQUER sub-aba está liberada.
+  //
+  // Sem isso existe uma armadilha silenciosa: você libera "Escala do dia"
+  // pra gerente, salva, e ela continua sem conseguir entrar — porque a
+  // linha do módulo ficou em "—". O módulo não é uma permissão à parte;
+  // ele é a porta pro que tem dentro. Se tem alguma coisa lá dentro que
+  // a pessoa pode ver, a porta abre.
+  const modulo = CATALOGO.find((m) => m.chave === chave);
+  if (!modulo || !modulo.filhos) return false;
+  return modulo.filhos.some((f) => {
+    const nf = nivelDe(permissoes, f.chave);
+    return nf === "ver" || nf === "editar";
+  });
 }
 
 export function podeEditar(permissoes, chave) {
