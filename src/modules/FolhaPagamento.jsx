@@ -330,6 +330,28 @@ function complementoDoNome(nome) {
   return "";
 }
 
+// O texto de todos os PDFs de uma folha fica guardado num campo só,
+// separado por um cabeçalho com o nome do arquivo. Isso é o que permite
+// refazer o detalhe depois: o holerite não precisa ser subido de novo,
+// porque o que ele dizia continua ali.
+function documentosDoTexto(texto) {
+  const bruto = String(texto || "");
+  if (!bruto.trim()) return [];
+  const partes = bruto.split(/^=====\s*(.+?)\s*=====$/m);
+  if (partes.length < 3) return [{ nome: "", texto: bruto }];
+  const docs = [];
+  for (let i = 1; i < partes.length; i += 2) {
+    docs.push({ nome: partes[i], texto: partes[i + 1] || "" });
+  }
+  return docs.filter((d) => d.texto.trim());
+}
+
+// O nome da pessoa sem o complemento ("· período sem registro"), pra
+// casar o documento com a linha certa da folha.
+function soPessoa(nome) {
+  return chaveRubrica(String(nome || "").split(" · ")[0]);
+}
+
 function analisarHolerite(texto, nomeArquivo) {
   const linhas = String(texto || "").split("\n").map((l) => l.trim()).filter(Boolean);
   const proventos = [];
@@ -498,6 +520,10 @@ export default function FolhaPagamento() {
   const [linhasFolha, setLinhasFolha] = useState({});   // folha_id -> itens
   const [rubricas, setRubricas] = useState([]);        // de que é feita a folha
   const [divergencias, setDivergencias] = useState([]); // detalhe que não bate com o lançado
+  const [holerites, setHolerites] = useState([]);      // o arquivo de holerites baixados
+  const [origem, setOrigem] = useState({});            // chave da rubrica -> de onde veio
+  const [abrindoOrigem, setAbrindoOrigem] = useState(null);
+  const [refazendo, setRefazendo] = useState(null);
   const [janela, setJanela] = useState(12);            // meses olhados pra trás
   const inputArquivo = useRef(null);
 
@@ -528,12 +554,15 @@ export default function FolhaPagamento() {
     const ini = new Date(hoje.getFullYear(), hoje.getMonth() - (janela - 1), 1);
     const fim = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
     const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    const [{ data }, { data: conf }] = await Promise.all([
+    const [{ data }, { data: conf }, { data: hol }] = await Promise.all([
       supabase.rpc("rubricas_da_folha", { p_inicio: iso(ini), p_fim: iso(fim) }),
       supabase.rpc("conferencia_rubricas", { p_inicio: iso(ini), p_fim: iso(fim) }),
+      supabase.rpc("holerites_baixados", { p_inicio: iso(ini), p_fim: iso(fim) }),
     ]);
     setRubricas(data || []);
     setDivergencias(conf || []);
+    setHolerites(hol || []);
+    setOrigem({});
   }, [janela]);
 
   useEffect(() => { carregarRubricas(); }, [carregarRubricas, historico]);
@@ -936,6 +965,75 @@ export default function FolhaPagamento() {
       .eq("folha_id", folha.id).order("ordem");
     if (error) { setErro(error.message); return; }
     setLinhasFolha((l) => ({ ...l, [folha.id]: data || [] }));
+  };
+
+  // Abre a origem de uma linha do relatório: quem, quando, quanto.
+  //
+  // Um total que não abre é um total em que ninguém pode confiar. Quando
+  // você estranhar um número — e vai estranhar — a resposta tem que estar
+  // a um clique, não numa conversa.
+  const verOrigem = async (chave) => {
+    if (origem[chave]) { setOrigem((o) => { const n = { ...o }; delete n[chave]; return n; }); return; }
+    setAbrindoOrigem(chave);
+    const hoje = new Date();
+    const ini = new Date(hoje.getFullYear(), hoje.getMonth() - (janela - 1), 1);
+    const fim = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const { data, error } = await supabase.rpc("origem_da_rubrica",
+      { p_chave: chave, p_inicio: iso(ini), p_fim: iso(fim) });
+    setAbrindoOrigem(null);
+    if (error) { setErro(error.message); return; }
+    setOrigem((o) => ({ ...o, [chave]: data || [] }));
+  };
+
+  // Refaz o detalhe de UM holerite a partir do texto que já está
+  // guardado. Não sobe arquivo de novo, não mexe na conta a pagar, não
+  // mexe no DRE — o detalhe é derivado, então quando a leitura melhora
+  // ele pode ser recalculado.
+  //
+  // É isso que conserta um relatório torto sem desfazer o mês inteiro e
+  // arriscar perder pagamento já baixado.
+  const refazerDetalhe = async (h) => {
+    setRefazendo(h.folha_item_id); setErro(""); setOk("");
+    try {
+      const { data: texto, error: errTexto } = await supabase.rpc("texto_da_folha", { p_folha_id: h.folha_id });
+      if (errTexto) throw errTexto;
+      if (!texto) throw new Error("Essa folha foi lançada sem guardar o texto do PDF — só dá pra corrigir desfazendo e subindo de novo.");
+
+      const docs = documentosDoTexto(texto);
+      const alvo = soPessoa(h.pessoa);
+      let escolhido = null;
+      for (const d of docs) {
+        const lido = analisarHolerite(d.texto, d.nome);
+        if (soPessoa(lido.pessoa) === alvo || soPessoa(d.nome) === alvo) { escolhido = lido; break; }
+      }
+      // Um documento só na folha: é ele, sem precisar casar o nome.
+      if (!escolhido && docs.length === 1) escolhido = analisarHolerite(docs[0].texto, docs[0].nome);
+      if (!escolhido) throw new Error(`Não achei o holerite de ${h.pessoa} dentro do texto guardado dessa folha.`);
+
+      const rubricas = [
+        ...(escolhido.proventos || []).map((r) => ({ codigo: r.codigo || null, rotulo: r.limpo || r.rotulo, valor: Number(r.valor), tipo: "provento" })),
+        ...(escolhido.descontos || []).map((r) => ({ codigo: r.codigo || null, rotulo: r.limpo || r.rotulo, valor: Number(r.valor), tipo: "desconto" })),
+      ];
+      const { data: qtd, error } = await supabase.rpc("regravar_rubricas",
+        { p_folha_item_id: h.folha_item_id, p_rubricas: rubricas });
+      if (error) throw error;
+
+      const soma = (escolhido.proventos || []).reduce((t, r) => t + Number(r.valor || 0), 0);
+      const bate = Math.abs(soma - Number(h.valor)) <= 0.01;
+      setOk(
+        `Detalhe de ${h.pessoa} refeito: ${qtd} rubrica(s), somando ${brl(soma)}. ` +
+        (bate
+          ? "Agora bate com o valor lançado."
+          : `Ainda NÃO bate com o valor lançado (${brl(h.valor)}) — abra "ver o texto" e me diga o que aparece.`) +
+        " O lançamento e o DRE não foram tocados."
+      );
+      carregarRubricas();
+    } catch (e) {
+      setErro(`Não consegui refazer o detalhe de ${h.pessoa}: ${e.message || e}`);
+    } finally {
+      setRefazendo(null);
+    }
   };
 
   const abrirPdf = async (path) => {
@@ -1469,25 +1567,89 @@ export default function FolhaPagamento() {
             const maior = Math.max(1, ...proventos.map((r) => Number(r.total) || 0));
             const linha = (r, i, ref) => {
               const t = Number(r.total) || 0;
+              const aberta = origem[r.chave];
               return (
-                <div key={r.chave} style={{ padding: "10px 16px", borderTop: i === 0 ? "none" : "1px solid #F0EBDD" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13 }}>
-                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {r.rotulo}
-                    </span>
-                    <span style={{ fontWeight: 700, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{brl(t)}</span>
-                  </div>
-                  <div style={{ height: 5, background: "#F0EBDD", borderRadius: 999, margin: "6px 0 5px", overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${Math.min(100, (t / ref) * 100)}%`,
-                                  background: r.tipo === "desconto" ? "#C9A227" : "#22231F", borderRadius: 999 }} />
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 10, color: "#8A8778" }}>
-                    <span>
-                      {r.meses} {r.meses === 1 ? "mês" : "meses"} · {r.pessoas} {r.pessoas === 1 ? "pessoa" : "pessoas"}
-                      {" · "}média {brl(r.media_mes)}/mês
-                    </span>
-                    <span>último mês {brl(r.ultimo_mes)}</span>
-                  </div>
+                <div key={r.chave} style={{ borderTop: i === 0 ? "none" : "1px solid #F0EBDD",
+                                            background: aberta ? "#FCFAF4" : "transparent" }}>
+                  {/* A linha inteira é o botão. Qualquer número desse
+                      relatório abre no que ele é feito — quem, quando,
+                      quanto, e o holerite de onde saiu. */}
+                  <button onClick={() => verOrigem(r.chave)}
+                    style={{ display: "block", width: "100%", textAlign: "left", background: "none",
+                             border: "none", padding: "10px 16px", cursor: "pointer", fontFamily: "inherit" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13, color: "#22231F" }}>
+                      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {aberta ? "▾" : "▸"} {r.rotulo}
+                      </span>
+                      <span style={{ fontWeight: 700, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{brl(t)}</span>
+                    </div>
+                    <div style={{ height: 5, background: "#F0EBDD", borderRadius: 999, margin: "6px 0 5px", overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${Math.min(100, (t / ref) * 100)}%`,
+                                    background: r.tipo === "desconto" ? "#C9A227" : "#22231F", borderRadius: 999 }} />
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 10, color: "#8A8778" }}>
+                      <span>
+                        {r.meses} {r.meses === 1 ? "mês" : "meses"} · {r.pessoas} {r.pessoas === 1 ? "pessoa" : "pessoas"}
+                        {" · "}média {brl(r.media_mes)}/mês
+                        {abrindoOrigem === r.chave ? " · abrindo…" : ""}
+                      </span>
+                      <span>último mês {brl(r.ultimo_mes)}</span>
+                    </div>
+                  </button>
+
+                  {aberta && (
+                    <div style={{ padding: "0 16px 12px" }}>
+                      <div style={{ border: "1px solid #E8E2D2", borderRadius: 10, overflow: "hidden", background: "#FFFFFF" }}>
+                        <div style={{ padding: "7px 11px", fontSize: 10.5, color: "#8A8778",
+                                      background: "#F6F1E7", borderBottom: "1px solid #E8E2D2" }}>
+                          De onde vêm esses {brl(t)} — {aberta.length} lançamento(s)
+                        </div>
+                        {aberta.length === 0 && (
+                          <div style={{ padding: "9px 11px", fontSize: 11.5, color: "#8A8778" }}>
+                            Sem detalhe guardado nesse período.
+                          </div>
+                        )}
+                        {aberta.map((o, k) => (
+                          <div key={k} style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap",
+                                                padding: "7px 11px", borderTop: k === 0 ? "none" : "1px solid #F5F1E6" }}>
+                            <span style={{ fontSize: 10.5, color: "#8A8778", minWidth: 58 }}>
+                              {competenciaTexto(String(o.competencia).slice(0, 7)).replace(" de ", "/")}
+                            </span>
+                            <span style={{ flex: 1, minWidth: 130, fontSize: 12 }}>
+                              {o.pessoa}
+                              {o.codigo ? <span style={{ color: "#8A8778" }}> · cód {o.codigo}</span> : null}
+                            </span>
+                            <span style={{ fontSize: 12.5, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{brl(o.valor)}</span>
+                            {o.arquivo_path
+                              ? <button onClick={() => abrirPdf(o.arquivo_path)} style={btnClaro}><Eye size={12} /> holerite</button>
+                              : <span style={{ fontSize: 10.5, color: "#8A8778", minWidth: 60 }}>sem PDF</span>}
+                          </div>
+                        ))}
+                        {/* Mesma pessoa, mesmo mês, mesmo valor, duas vezes: é
+                            a mesma linha lida em dobro. Dizer isso aqui é o
+                            que transforma "esse número parece errado" em
+                            "esse número está errado por este motivo". */}
+                        {(() => {
+                          const vistos = new Set();
+                          const repetidos = aberta.filter((o) => {
+                            const k = `${o.competencia}|${o.pessoa}|${o.valor}`;
+                            if (vistos.has(k)) return true;
+                            vistos.add(k); return false;
+                          });
+                          if (repetidos.length === 0) return null;
+                          return (
+                            <div style={{ padding: "9px 11px", borderTop: "1px solid #F0EBDD",
+                                          background: "#FBF3D9", fontSize: 11.5, color: "#7A6A1E", lineHeight: 1.55 }}>
+                              <b>{repetidos.length} desses estão repetidos</b> — mesma pessoa, mesmo mês, mesmo valor.
+                              É a mesma linha do holerite contada duas vezes (holerite que veio em duas vias).
+                              No histórico de holerites, embaixo, o botão <b>Refazer</b> na linha dela conserta
+                              sem mexer no lançamento nem no DRE.
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             };
@@ -1510,6 +1672,74 @@ export default function FolhaPagamento() {
               </>
             );
           })()}
+        </div>
+      )}
+
+      {/* ---------------- holerites baixados ----------------
+
+          O arquivo do escritório dentro do painel. Daqui a um ano,
+          "cadê o holerite da Jackelyne de julho" tem resposta em dois
+          cliques — e não numa pasta de e-mail.
+
+          Cada linha traz a conferência entre o detalhe lido e o valor
+          lançado. Quando não bate, o Refazer relê o texto que já está
+          guardado e regrava só o detalhe: não sobe arquivo de novo, não
+          mexe na conta a pagar, não mexe no DRE. */}
+      {holerites.length > 0 && (
+        <div style={{ ...cardStyle, padding: 0, marginBottom: 14 }}>
+          <div style={{ ...tituloBloco, display: "flex", justifyContent: "space-between",
+                        alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span>Holerites baixados ({holerites.length})</span>
+            <span style={{ fontSize: 10, fontWeight: 500, textTransform: "none", letterSpacing: 0, color: "#8A8778" }}>
+              mesma janela do relatório acima
+            </span>
+          </div>
+          <div style={{ maxHeight: 420, overflowY: "auto" }}>
+            {holerites.map((h, i) => (
+              <div key={h.folha_item_id} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                                                  padding: "10px 16px",
+                                                  borderTop: i === 0 ? "none" : "1px solid #F0EBDD",
+                                                  background: h.confere === false ? "#FDF6E3" : "transparent" }}>
+                <span style={{ fontSize: 10.5, color: "#8A8778", minWidth: 62 }}>
+                  {competenciaTexto(String(h.competencia).slice(0, 7)).replace(" de ", "/")}
+                </span>
+                <div style={{ flex: 1, minWidth: 165 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{h.pessoa}</div>
+                  <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 1 }}>
+                    {h.plano_conta || "sem conta"}
+                    {h.vencimento ? ` · vence ${String(h.vencimento).split("-").reverse().join("/")}` : ""}
+                    {h.pago ? " · pago" : " · a pagar"}
+                    {h.rubricas > 0 ? ` · ${h.rubricas} rubricas` : " · sem detalhe"}
+                  </div>
+                  {h.confere === false && (
+                    <div style={{ fontSize: 10.5, color: "#8A6A0F", fontWeight: 700, marginTop: 3 }}>
+                      o detalhe soma {brl(h.soma_rubricas)}, mas o lançado é {brl(h.valor)} — use Refazer
+                    </div>
+                  )}
+                  {h.confere === true && (
+                    <div style={{ fontSize: 10.5, color: "#0F6E56", marginTop: 3, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                      <Check size={10} /> detalhe confere com o lançado
+                    </div>
+                  )}
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                  {brl(h.valor)}
+                </span>
+                {h.arquivo_path
+                  ? <button onClick={() => abrirPdf(h.arquivo_path)} style={btnClaro}><Eye size={12} /> PDF</button>
+                  : <span style={{ fontSize: 10.5, color: "#8A8778", minWidth: 46 }}>sem PDF</span>}
+                <button onClick={() => refazerDetalhe(h)} disabled={refazendo === h.folha_item_id}
+                  style={{ ...btnClaro, ...(h.confere === false ? { borderColor: "#C9BEE8", color: "#4C3E77", fontWeight: 700 } : {}) }}>
+                  {refazendo === h.folha_item_id ? <><Loader2 size={12} /> refazendo…</> : <><RotateCcw size={12} /> Refazer</>}
+                </button>
+              </div>
+            ))}
+          </div>
+          <div style={{ padding: "11px 16px", borderTop: "1px solid #F0EBDD", fontSize: 11.5, color: "#8A8778", lineHeight: 1.6 }}>
+            <b>Refazer</b> relê o texto do holerite que já ficou guardado e regrava só o detalhe das rubricas.
+            O valor lançado, a conta a pagar e o DRE não são tocados — é o conserto sem risco.
+            Se depois de refazer ainda não bater, me mande o que aparece em "ver o texto que eu li".
+          </div>
         </div>
       )}
 
