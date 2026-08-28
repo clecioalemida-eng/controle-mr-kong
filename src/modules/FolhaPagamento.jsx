@@ -1050,6 +1050,7 @@ export default function FolhaPagamento() {
   // O holerite está impresso na sua mão. Corrigir uma linha não devia
   // depender de mim.
   // ------------------------------------------------------------------
+  const refEdicao = useRef(null);
   const abrirEdicao = async (h) => {
     if (editando === h.folha_item_id) { setEditando(null); setLinhasEdit([]); setRepetidas([]); return; }
     setEditando(h.folha_item_id); setLinhasEdit([]); setRepetidas([]); setErro("");
@@ -1063,6 +1064,9 @@ export default function FolhaPagamento() {
       valor: Number(r.valor) || 0, tipo: r.tipo || "provento",
     })));
     setRepetidas(reps || []);
+    // Leva o painel pra vista: ele abre no meio de uma lista longa, e
+    // quem clicou precisa ver o que abriu sem caçar na rolagem.
+    setTimeout(() => refEdicao.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
   };
 
   const mudarLinha = (id, patch) =>
@@ -1108,6 +1112,48 @@ export default function FolhaPagamento() {
       carregarRubricas();
     } catch (e) {
       setErro(`Não consegui salvar o detalhe: ${e.message || e}`);
+    } finally {
+      setSalvandoEdit(false);
+    }
+  };
+
+  // Corrige o valor lançado da pessoa. Isso MEXE no DRE — de propósito,
+  // porque se a soma inflada virou conta a pagar, o resultado do mês está
+  // errado e ninguém vê. Pergunta antes, mostra o de e o para.
+  const corrigirLancado = async (h) => {
+    const novo = Math.round(somaEdit * 100) / 100;
+    if (!window.confirm(
+      `Corrigir o valor lançado de ${h.pessoa}?\n\n` +
+      `De ${brl(h.valor)} para ${brl(novo)} (${brl(novo - Number(h.valor))}).\n\n` +
+      "Isso muda a conta a pagar, o pagamento registrado, o total da folha e o DRE do mês.\n\n" +
+      "Confira antes no PDF qual é o total impresso desse holerite."
+    )) return;
+    setSalvandoEdit(true); setErro(""); setOk("");
+    try {
+      // O detalhe vai junto: salvar um sem o outro deixaria os dois
+      // discordando de novo, que é o problema que estamos consertando.
+      const rubricas = linhasEdit
+        .filter((l) => String(l.rotulo).trim() && Number(l.valor) !== 0)
+        .map((l) => ({ codigo: l.codigo || null, rotulo: String(l.rotulo).trim(),
+                       valor: Number(l.valor), tipo: l.tipo }));
+      const { error: errDet } = await supabase.rpc("regravar_rubricas",
+        { p_folha_item_id: h.folha_item_id, p_rubricas: rubricas });
+      if (errDet) throw errDet;
+
+      const { data, error } = await supabase.rpc("ajustar_valor_do_holerite",
+        { p_folha_item_id: h.folha_item_id, p_novo_valor: novo });
+      if (error) throw error;
+      const r = data || {};
+      setOk(
+        `${r.pessoa}: de ${brl(r.valor_antigo)} para ${brl(r.valor_novo)} (${brl(r.diferenca)}). ` +
+        `A conta a pagar foi ajustada e a folha ficou em ${brl(r.total_da_folha)}. ` +
+        "O DRE do mês mudou nesse mesmo valor."
+      );
+      setEditando(null); setLinhasEdit([]); setRepetidas([]);
+      carregar(true);
+      carregarRubricas();
+    } catch (e) {
+      setErro(`Não consegui corrigir o valor lançado: ${e.message || e}`);
     } finally {
       setSalvandoEdit(false);
     }
@@ -1774,7 +1820,12 @@ export default function FolhaPagamento() {
               mesma janela do relatório acima
             </span>
           </div>
-          <div style={{ maxHeight: 420, overflowY: "auto" }}>
+          {/* A lista rolava dentro de uma caixa de 420px. Quando o
+              painel de edição abria ali dentro, os campos existiam mas
+              ficavam cortados — dava pra ver o cabeçalho e o aviso, e o
+              resto sumia. Com um holerite aberto, a caixa deixa de
+              recortar: a edição é a tarefa, não a lista. */}
+          <div style={editando ? undefined : { maxHeight: 420, overflowY: "auto" }}>
             {holerites.map((h, i) => (
               <div key={h.folha_item_id} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
                                                   padding: "10px 16px",
@@ -1815,8 +1866,9 @@ export default function FolhaPagamento() {
                 </button>
 
                 {editando === h.folha_item_id && (
-                <div style={{ flexBasis: "100%", marginTop: 10, border: "1px solid #E8E2D2",
-                              borderRadius: 11, overflow: "hidden", background: "#FFFFFF" }}>
+                <div ref={refEdicao}
+                  style={{ flexBasis: "100%", width: "100%", marginTop: 10, border: "1px solid #C9BEE8",
+                           borderRadius: 11, background: "#FFFFFF", boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
                   <div style={{ padding: "10px 12px", background: "#F6F1E7", borderBottom: "1px solid #E8E2D2" }}>
                     <div style={{ fontSize: 12.5, fontWeight: 800 }}>
                       Detalhe de {h.pessoa} — {linhasEdit.length} linha(s)
@@ -1854,7 +1906,7 @@ export default function FolhaPagamento() {
                     </div>
                   )}
 
-                  <div style={{ maxHeight: 340, overflowY: "auto" }}>
+                  <div>
                     {linhasEdit.length === 0 && (
                       <div style={{ padding: "12px", fontSize: 12, color: "#8A8778" }}>
                         Esse holerite não tem detalhe guardado. Use <b>Reler do PDF</b> ou adicione as linhas à mão.
@@ -1914,10 +1966,33 @@ export default function FolhaPagamento() {
                           : `diferença de ${brl(somaEdit - Number(h.valor))}`}
                       </span>
                     </div>
-                    <button onClick={() => salvarEdicao(h)} disabled={salvandoEdit} style={btnRoxo}>
-                      {salvandoEdit ? <><Loader2 size={13} /> salvando…</> : "Salvar o detalhe"}
-                    </button>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {/* Corrigir o detalhe deixa o RELATÓRIO certo. Se o
+                          valor lançado saiu da mesma soma inflada, o DRE
+                          continua errado — e errado invisível é pior que
+                          errado visível. Por isso o botão aparece assim
+                          que a soma e o lançado se separam. */}
+                      {Math.abs(somaEdit - Number(h.valor)) > 0.01 && somaEdit > 0 && (
+                        <button onClick={() => corrigirLancado(h)} disabled={salvandoEdit} style={btnEscuro}>
+                          Corrigir também o lançado para {brl(somaEdit)}
+                        </button>
+                      )}
+                      <button onClick={() => salvarEdicao(h)} disabled={salvandoEdit} style={btnRoxo}>
+                        {salvandoEdit ? <><Loader2 size={13} /> salvando…</> : "Salvar o detalhe"}
+                      </button>
+                    </div>
                   </div>
+
+                  {Math.abs(somaEdit - Number(h.valor)) > 0.01 && somaEdit > 0 && (
+                    <div style={{ padding: "10px 12px", borderTop: "1px solid #E8E2D2",
+                                  fontSize: 11.5, color: "#7A6A1E", lineHeight: 1.6, background: "#FDF6E3" }}>
+                      <b>Atenção:</b> “Salvar o detalhe” arruma só o relatório — a conta a pagar
+                      e o DRE continuam com {brl(h.valor)}. Se o valor certo desta pessoa é{" "}
+                      <b>{brl(somaEdit)}</b>, use <b>Corrigir também o lançado</b>: ele leva junto a
+                      conta a pagar, o pagamento e o total da folha. <b>Confira antes no PDF</b> qual
+                      é o total impresso.
+                    </div>
+                  )}
                 </div>
                 )}
               </div>
