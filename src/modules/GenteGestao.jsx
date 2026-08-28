@@ -10,9 +10,10 @@ import Equipe from "./Equipe";
 // módulo que também contém contas a pagar, curva ABC e faturamento.
 // Separado, dá para liberar gestão de pessoas sem abrir o caixa.
 //
-// O Equipe.jsx continua igual — este arquivo é só a moldura de página que
-// o Financeiro fornecia antes (cabeçalho e botão de voltar).
-export default function GenteGestao({ onVoltar }) {
+// Este arquivo é a moldura de página que o Financeiro fornecia antes
+// (cabeçalho e botão de voltar) — e o carteiro das permissões: o Equipe
+// precisa delas pra decidir quais sub-abas cada cargo enxerga.
+export default function GenteGestao({ onVoltar, permissoes }) {
   return (
     <div style={pageStyle}>
       <div className="app-shell">
@@ -20,7 +21,7 @@ export default function GenteGestao({ onVoltar }) {
           <button onClick={onVoltar} style={iconBtn}><ChevronLeft size={18} /></button>
           <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Gente e Gestão</div>
         </div>
-        <Equipe />
+        <Equipe permissoes={permissoes} />
       </div>
     </div>
   );
