@@ -313,6 +313,7 @@ export default function FichasTecnicas() {
   const [pratos, setPratos] = useState([]);
   const [carregandoLista, setCarregandoLista] = useState(true);
   const [importando, setImportando] = useState(false);
+  const [resumoImport, setResumoImport] = useState(null);
   const [erro, setErro] = useState("");
   const [pratoAtual, setPratoAtual] = useState(null);
   const [busca, setBusca] = useState("");
@@ -491,12 +492,27 @@ export default function FichasTecnicas() {
   const importarPratos = async () => {
     setImportando(true);
     setErro("");
+    setResumoImport(null);
     const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
       body: { acao: "importar_pratos", data_inicio: `${diasAtras(90)}T00:00:00-03:00`, data_fim: `${hoje()}T23:59:59-03:00` },
     });
     setImportando(false);
     if (error) { setErro(await extrairErroFuncao(error)); return; }
     if (data?.error) { setErro(data.error); return; }
+    // Dizer o que aconteceu.
+    //
+    // Antes o botão importava e recarregava a lista, e mais nada. Se
+    // nenhum prato novo tivesse entrado, a tela ficava igualzinha — e a
+    // conclusão natural de quem clica é "não funcionou". Não dava pra
+    // distinguir "não achei nada novo" de "não rodei".
+    setResumoImport({
+      encontrados: data?.pratos_distintos_encontrados || 0,
+      criados: data?.pratos_criados || 0,
+      atualizados: data?.pratos_atualizados || 0,
+      nomesCriados: data?.nomes_criados || [],
+      nomesAmbiguos: data?.nomes_ambiguos || [],
+      pedidos: data?.pedidos_analisados || 0,
+    });
     carregarPratos();
   };
 
@@ -526,7 +542,14 @@ export default function FichasTecnicas() {
     <div>
       <div style={{ ...cardStyle, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
         <div style={{ fontSize: 13, color: "#8A8778" }}>
-          {pratos.filter((p) => p.temFicha && p.ativo).length} de {pratos.filter((p) => p.ativo).length} pratos com ficha cadastrada
+          <b>{pratos.filter((p) => p.temFicha && p.ativo).length} de {pratos.filter((p) => p.ativo).length}</b> pratos com ficha cadastrada
+          {/* Os dois números se movem por caminhos diferentes, e confundir
+              isso faz a pessoa clicar em Importar esperando o primeiro
+              subir. Ele nunca sobe por aí. */}
+          <div style={{ fontSize: 10.5, marginTop: 3, lineHeight: 1.5 }}>
+            <b>Importar pratos</b> mexe no segundo número (traz do CardápioWeb o que foi vendido
+            e não estava no cadastro). O primeiro só sobe preenchendo ficha.
+          </div>
           {escondidos > 0 && (
             <button onClick={() => setVerEscondidos((v) => !v)} style={{ ...linkBtn, fontSize: 12, marginLeft: 8 }}>
               {verEscondidos ? "esconder os fora do cardápio" : `ver ${escondidos} fora do cardápio`}
@@ -538,6 +561,54 @@ export default function FichasTecnicas() {
           Importar pratos
         </button>
       </div>
+
+      {/* O que a importação fez. Sem isto, clicar e não ver mudança é
+          indistinguível de o botão estar quebrado — e foi assim que ele
+          pareceu quebrado por dias. */}
+      {resumoImport && (
+        <div style={{ ...cardStyle, marginBottom: 10, padding: "11px 14px",
+                      background: resumoImport.criados > 0 ? "#EDF7F2" : "#FBF3D9",
+                      border: `1px solid ${resumoImport.criados > 0 ? "#B6DDCC" : "#E8D48A"}`,
+                      color: resumoImport.criados > 0 ? "#14503F" : "#7A6A1E" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+            <div style={{ fontSize: 12.5, lineHeight: 1.6, flex: 1, minWidth: 220 }}>
+              <b>
+                {resumoImport.criados > 0
+                  ? `${resumoImport.criados} prato(s) novo(s) no cadastro.`
+                  : "Nenhum prato novo — o cadastro já tinha todos."}
+              </b>{" "}
+              Achei <b>{resumoImport.encontrados}</b> itens distintos vendidos nos últimos 90 dias
+              ({resumoImport.pedidos} pedidos): {resumoImport.criados} criados,{" "}
+              {resumoImport.atualizados} que já existiam e receberam o código do CardápioWeb.
+              {resumoImport.criados === 0 && (
+                <div style={{ marginTop: 6 }}>
+                  Se ainda tem produto aparecendo como “fora do cadastro” no Dashboard, ele
+                  provavelmente <b>não foi vendido nos últimos 90 dias</b> — ou o nome dele
+                  bate com dois pratos diferentes aqui. Me diga qual é que eu vejo.
+                </div>
+              )}
+            </div>
+            <button onClick={() => setResumoImport(null)} style={{ ...linkBtn, fontSize: 11 }}>fechar</button>
+          </div>
+
+          {resumoImport.nomesCriados.length > 0 && (
+            <div style={{ fontSize: 11.5, marginTop: 8, lineHeight: 1.6 }}>
+              <b>Criados:</b> {resumoImport.nomesCriados.join(" · ")}
+              <div style={{ marginTop: 4, opacity: 0.85 }}>
+                Eles entram <b>sem ficha e sem linha</b> — apareceram agora nos filtros aqui de cima.
+              </div>
+            </div>
+          )}
+
+          {resumoImport.nomesAmbiguos.length > 0 && (
+            <div style={{ fontSize: 11.5, marginTop: 8, lineHeight: 1.6 }}>
+              <b>Atenção — nome repetido no cadastro:</b> {resumoImport.nomesAmbiguos.join(" · ")}.
+              Existe mais de um prato com esse nome aqui, então não dava pra escolher sozinho qual
+              recebe o código — entraram como pratos novos. Vale apagar a duplicata.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* preços vindos do CardápioWeb */}
       <div style={{ ...cardStyle, marginBottom: 10, padding: "11px 14px" }}>
