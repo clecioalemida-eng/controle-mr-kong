@@ -57,6 +57,12 @@ const LINHAS_PRODUTO = [
 // rotulo que aparece no quadro — e agora tambem o gancho: e nessa linha
 // que o botao de preencher mora, porque e ali que a pessoa procura.
 const ROTULO_SEM_LINHA = "Sem linha definida";
+// "sem linha" pode chegar como vazio (se algum dia a consulta mudar) ou
+// como o rótulo. As duas formas significam a mesma coisa.
+function semLinhaDefinida(linha) {
+  const t = String(linha || "").trim().toLowerCase();
+  return t === "" || t === ROTULO_SEM_LINHA.toLowerCase();
+}
 // Palavras que não ajudam a reconhecer um produto renomeado — aparecem em
 // meio cardápio e casariam qualquer coisa com qualquer coisa.
 const PALAVRAS_VAZIAS = new Set(["com", "sem", "de", "da", "do", "e", "ml", "gr", "kg", "un", "und"]);
@@ -592,7 +598,12 @@ export default function Dashboard() {
       porNome.set(p.nome, p);
     });
     return produtos
-      .filter((p) => p.valor_atual > 0 && !p.linha)
+      // O banco NUNCA devolve linha vazia: desempenho_produtos faz
+      // coalesce(linha, 'Sem linha definida'). Eu filtrava por vazio, a
+      // lista dava sempre zero, e o botão nunca aparecia — o dado estava
+      // certo e a pergunta é que estava errada. Compara pelo rótulo, que
+      // é o que existe de verdade.
+      .filter((p) => p.valor_atual > 0 && semLinhaDefinida(p.linha))
       .map((p) => {
         const prato = p.no_cadastro && !repetidos.has(p.produto) ? porNome.get(p.produto) : null;
         return { ...p, pratoId: prato?.id || null };
