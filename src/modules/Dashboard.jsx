@@ -166,6 +166,7 @@ export default function Dashboard() {
   // desempenho_produtos devolve o NOME do prato, não o id — então o
   // casamento é por nome, que é de onde o nome veio.
   const [pratosCadastro, setPratosCadastro] = useState([]);
+
   const [abrirSemLinha, setAbrirSemLinha] = useState(false);
   const [salvandoLinha, setSalvandoLinha] = useState(null);
   const [erroLinha, setErroLinha] = useState("");
@@ -277,7 +278,7 @@ export default function Dashboard() {
     }
     setErroProdutos("");
     {
-      const { data: pr } = await supabase.from("pratos").select("id, nome, linha_produto");
+      const { data: pr } = await supabase.from("pratos").select("id, nome, linha_produto, ativo");
       setPratosCadastro(pr || []);
     }
     setProdutos((rProd.data || []).map((l) => ({
@@ -287,6 +288,13 @@ export default function Dashboard() {
       qtd_ant: Number(l.qtd_ant) || 0,
       valor_ant: Number(l.valor_ant) || 0,
       preco_medio: Number(l.preco_medio) || 0,
+      // Migracao 105: diz se o CardapioWeb mandou esse item COM codigo ou
+      // sem. E o que separa "prato que falta cadastrar" de "prato que o
+      // Importar so acha pelo nome".
+      sem_codigo: !!l.sem_codigo,
+      // Migracao 106: true quando o casamento veio de um apelido que
+      // VOCE ensinou, e nao do palpite automatico.
+      ensinado: !!l.ensinado,
     })));
     setLinhas((rLinhas.data || []).map((l) => ({
       ...l,
@@ -611,6 +619,23 @@ export default function Dashboard() {
       .sort((a, b) => b.valor_atual - a.valor_atual);
   }, [produtos, pratosCadastro]);
 
+  // Os que nem prato tem. Sao esses — e so esses — que o Importar
+  // resolve; para o resto o seletor de linha ja basta.
+  // Os pratos do cadastro em ordem alfabetica, pro seletor de "e qual
+  // prato meu?". Inativo fica de fora: ele foi juntado em outro e
+  // apontar pra ele devolveria a venda pro prato morto.
+  const pratosOrdenados = React.useMemo(
+    () => [...pratosCadastro]
+      .filter((p) => p.ativo !== false)
+      .sort((a, b) => String(a.nome || "").localeCompare(String(b.nome || ""), "pt-BR")),
+    [pratosCadastro]
+  );
+
+  const foraDoCadastro = React.useMemo(
+    () => semLinhaDetalhe.filter((p) => !p.pratoId),
+    [semLinhaDetalhe]
+  );
+
   // Pra que o aviso la de cima consiga levar a pessoa ate a fatia certa
   // do quadro, em vez de so avisar e deixar ela procurando.
   const refSemLinha = React.useRef(null);
@@ -630,6 +655,45 @@ export default function Dashboard() {
     if (error) { setErroLinha(error.message); return; }
     // Recarrega o desempenho: a linha nova muda o quadro de cima, e ver o
     // número andar é o que diz que valeu a pena preencher.
+    await buscarProdutos(periodo);
+  };
+
+  // ------------------------------------------------------------------
+  // "Esse item vendido e qual prato meu?"
+  //
+  // Antes este botao mandava o CardapioWeb criar o prato. Foi assim que
+  // nasceram os irmaos: "Coca Cola Zero 350 Ml" do lado do "Coca Cola
+  // Zero" que ja existia — nomes diferentes pra regra de casamento, o
+  // mesmo refrigerante na vida real. E irmao racha a venda e a ficha em
+  // dois, entao o CMV passa a contar metade do custo.
+  //
+  // A regra agora e a que voce estabeleceu: o CardapioWeb da venda e
+  // preco, o cadastro e seu. Aqui voce aponta o prato uma vez e o
+  // sistema nunca mais pergunta — a proxima venda com esse nome ja
+  // chega casada.
+  // ------------------------------------------------------------------
+  const [ensinando, setEnsinando] = useState(null);
+
+  const ensinarPrato = async (item, pratoId) => {
+    if (!pratoId) return;
+    setEnsinando(item.produto);
+    setErroLinha("");
+    const { error } = await supabase.rpc("ensinar_apelido_de_prato", {
+      p_nome_lido: item.produto,
+      p_prato: pratoId,
+      p_item_id: null,
+    });
+    setEnsinando(null);
+    if (error) {
+      setErroLinha(
+        /does not exist|schema cache/i.test(error.message || "")
+          ? "Falta rodar a migração 106 no banco."
+          : error.message
+      );
+      return;
+    }
+    // Recarrega: a venda salta pro prato certo na hora. Ver o número
+    // mudar de lugar é a prova de que a lição pegou.
     await buscarProdutos(periodo);
   };
 
@@ -886,6 +950,14 @@ export default function Dashboard() {
                                 Escolha a linha aqui mesmo — grava na hora e esta fatia encolhe na sua
                                 frente. Ordenados pelo que mais fatura: o primeiro é o que mais muda o resultado.
                               </div>
+
+                              {foraDoCadastro.length > 0 && (
+                                <div style={{ marginTop: 8, fontSize: 10.5, color: "#8A8778", lineHeight: 1.5 }}>
+                                  Os <b style={{ color: "#A32D2D" }}>{foraDoCadastro.length} em vermelho</b> o
+                                  CardápioWeb manda sem código. Aponte o prato que já existe no seu cadastro —
+                                  a partir daí toda venda com esse nome cai lá sozinha.
+                                </div>
+                              )}
                             </div>
                             {erroLinha && (
                               <div style={{ padding: "9px 12px", fontSize: 12, color: "#A32D2D", borderBottom: "1px solid #F0EBDD" }}>{erroLinha}</div>
@@ -897,7 +969,10 @@ export default function Dashboard() {
                                   <div style={{ fontSize: 12.5, fontWeight: 600, ...nomeStyle }}>{p.produto}</div>
                                   <div style={{ fontSize: 10.5, color: p.pratoId ? "#8A8778" : "#A32D2D", marginTop: 1 }}>
                                     {p.qtd_atual.toLocaleString("pt-BR")} un
-                                    {p.pratoId ? "" : " · fora do cadastro de pratos"}
+                                    {p.pratoId ? "" : (p.sem_codigo
+                                      ? " · vem sem código do CardápioWeb"
+                                      : " · fora do cadastro de pratos")}
+                                    {p.ensinado && " · casado por você"}
                                   </div>
                                 </div>
                                 <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap" }}>{brl(p.valor_atual)}</span>
@@ -911,7 +986,24 @@ export default function Dashboard() {
                                     {LINHAS_PRODUTO.map((l) => <option key={l} value={l}>{l}</option>)}
                                   </select>
                                 ) : (
-                                  <span style={{ fontSize: 11, color: "#8A8778", minWidth: 150 }}>rode o Importar pratos</span>
+                                  /* Item sem dono. O seletor lista os SEUS pratos,
+                                     nao linhas: a pergunta aqui e "isso e qual prato
+                                     seu?", e a resposta vale pra sempre. Ordenado
+                                     por nome porque e assim que se procura um. */
+                                  <select defaultValue="" disabled={ensinando === p.produto}
+                                    onChange={(e) => ensinarPrato(p, e.target.value)}
+                                    style={{ padding: "6px 8px", fontSize: 11.5, border: "1px solid #E1C6C6",
+                                             borderRadius: 7, background: "#FFFFFF", fontFamily: "inherit",
+                                             color: "#22231F", minWidth: 190 }}>
+                                    <option value="">
+                                      {ensinando === p.produto ? "gravando…" : "É qual prato meu?"}
+                                    </option>
+                                    {pratosOrdenados.map((pr) => (
+                                      <option key={pr.id} value={pr.id}>
+                                        {pr.nome}{pr.linha_produto ? ` · ${pr.linha_produto}` : ""}
+                                      </option>
+                                    ))}
+                                  </select>
                                 )}
                               </div>
                             ))}

@@ -314,6 +314,13 @@ export default function FichasTecnicas() {
   const [carregandoLista, setCarregandoLista] = useState(true);
   const [importando, setImportando] = useState(false);
   const [resumoImport, setResumoImport] = useState(null);
+  // Pratos irmaos: dois cadastros pro mesmo produto de verdade. Nasceram
+  // do Importar automatico ("Coca Cola Zero" + "Coca Cola Zero 350 Ml"),
+  // e enquanto os dois viverem a venda e a ficha ficam rachadas em duas
+  // — o CMV conta metade do custo e a margem aparece melhor do que e.
+  const [irmaos, setIrmaos] = useState(null);
+  const [juntando, setJuntando] = useState(null);
+  const [verIrmaos, setVerIrmaos] = useState(false);
   const [erro, setErro] = useState("");
   const [pratoAtual, setPratoAtual] = useState(null);
   const [busca, setBusca] = useState("");
@@ -354,6 +361,27 @@ export default function FichasTecnicas() {
     if (rLinhas.data) setMargensLinha(Object.fromEntries(rLinhas.data.map((l) => [l.linha, Number(l.margem)])));
   }, []);
 
+  const carregarIrmaos = useCallback(async () => {
+    const { data, error } = await supabase.rpc("pratos_irmaos", { p_dias: 90 });
+    // Sem a migracao 106 a funcao nao existe. Nao e erro pra mostrar: o
+    // painel simplesmente nao aparece.
+    if (error) { setIrmaos([]); return; }
+    setIrmaos(data || []);
+  }, []);
+
+  const juntar = async (par, vencedorId, perdedorId) => {
+    setJuntando(par.a_id + par.b_id);
+    setErro("");
+    const { error } = await supabase.rpc("juntar_pratos", {
+      p_vencedor: vencedorId,
+      p_perdedor: perdedorId,
+    });
+    setJuntando(null);
+    if (error) { setErro(error.message); return; }
+    await carregarIrmaos();
+    await carregarPratos();
+  };
+
   const carregarPratos = useCallback(async () => {
     setCarregandoLista(true);
     setErro("");
@@ -382,7 +410,8 @@ export default function FichasTecnicas() {
     setCarregandoLista(false);
   }, []);
 
-  useEffect(() => { carregarPratos(); carregarMargens(); }, [carregarPratos, carregarMargens]);
+  useEffect(() => { carregarPratos(); carregarMargens(); carregarIrmaos(); },
+            [carregarPratos, carregarMargens, carregarIrmaos]);
 
   const salvarMargemGeral = async (v) => {
     const n = paraNumero(v);
@@ -505,13 +534,28 @@ export default function FichasTecnicas() {
     // nenhum prato novo tivesse entrado, a tela ficava igualzinha — e a
     // conclusão natural de quem clica é "não funcionou". Não dava pra
     // distinguir "não achei nada novo" de "não rodei".
+    // `criados` soma os dois caminhos de proposito: pra quem esta olhando
+    // a tela, prato novo e prato novo — nao interessa se entrou pelo
+    // codigo ou pelo nome. A quebra fica no detalhe, logo abaixo.
     setResumoImport({
       encontrados: data?.pratos_distintos_encontrados || 0,
-      criados: data?.pratos_criados || 0,
+      criados: (data?.pratos_criados || 0) + (data?.sem_codigo_criados || 0),
+      criadosComCodigo: data?.pratos_criados || 0,
       atualizados: data?.pratos_atualizados || 0,
       nomesCriados: data?.nomes_criados || [],
       nomesAmbiguos: data?.nomes_ambiguos || [],
       pedidos: data?.pedidos_analisados || 0,
+      // Itens que o CardapioWeb manda SEM codigo. Ate 30/08/2026 esses
+      // nem eram contados — sumiam antes de chegar aqui, e por isso o
+      // numero de pratos travava por mais que se importasse.
+      semCodigoEncontrados: data?.itens_sem_codigo || 0,
+      semCodigoCriados: data?.sem_codigo_criados || 0,
+      semCodigoJaExistiam: data?.sem_codigo_ja_existiam || 0,
+      nomesSemCodigo: data?.nomes_sem_codigo || [],
+      // Orfaos: item sem codigo que nao casou com nada. O Importar NAO
+      // cria mais esses sozinho — foi assim que os irmaos nasceram.
+      semDono: data?.sem_dono || [],
+      semDonoTotal: data?.sem_dono_total || 0,
     });
     carregarPratos();
   };
@@ -577,10 +621,30 @@ export default function FichasTecnicas() {
                   ? `${resumoImport.criados} prato(s) novo(s) no cadastro.`
                   : "Nenhum prato novo — o cadastro já tinha todos."}
               </b>{" "}
-              Achei <b>{resumoImport.encontrados}</b> itens distintos vendidos nos últimos 90 dias
-              ({resumoImport.pedidos} pedidos): {resumoImport.criados} criados,{" "}
-              {resumoImport.atualizados} que já existiam e receberam o código do CardápioWeb.
-              {resumoImport.criados === 0 && (
+              Achei <b>{resumoImport.encontrados}</b> itens com código do CardápioWeb nos últimos
+              90 dias ({resumoImport.pedidos} pedidos): {resumoImport.criadosComCodigo} criados,{" "}
+              {resumoImport.atualizados} que já existiam e receberam o código.
+              {resumoImport.semCodigoEncontrados > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  E mais <b>{resumoImport.semCodigoEncontrados}</b> itens que o CardápioWeb manda{" "}
+                  <b>sem código nenhum</b> — só com o nome:{" "}
+                  {resumoImport.semCodigoJaExistiam} já têm dono no seu cadastro,{" "}
+                  <b>{resumoImport.semDonoTotal}</b> ainda não.
+                </div>
+              )}
+              {resumoImport.semDonoTotal > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  Esses {resumoImport.semDonoTotal} <b>não viram prato sozinhos</b> — era isso que
+                  criava prato irmão. Quem diz qual prato é você, no Dashboard, na lista “Sem linha
+                  definida”: cada um tem um seletor “É qual prato meu?”.
+                  {resumoImport.semDono.length > 0 && (
+                    <div style={{ marginTop: 4, opacity: 0.85 }}>
+                      {resumoImport.semDono.slice(0, 20).map((d) => d.nome).join(" · ")}
+                    </div>
+                  )}
+                </div>
+              )}
+              {resumoImport.criados === 0 && resumoImport.semCodigoEncontrados === 0 && (
                 <div style={{ marginTop: 6 }}>
                   Se ainda tem produto aparecendo como “fora do cadastro” no Dashboard, ele
                   provavelmente <b>não foi vendido nos últimos 90 dias</b> — ou o nome dele
@@ -605,6 +669,78 @@ export default function FichasTecnicas() {
               <b>Atenção — nome repetido no cadastro:</b> {resumoImport.nomesAmbiguos.join(" · ")}.
               Existe mais de um prato com esse nome aqui, então não dava pra escolher sozinho qual
               recebe o código — entraram como pratos novos. Vale apagar a duplicata.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ---------------------------------------------------------------
+          Pratos irmãos
+
+          Dois cadastros pro mesmo produto de verdade. Nasceram do
+          Importar automático, que criava prato com o nome que o
+          CardápioWeb mandava — e "Coca Cola Zero 350 Ml" é um nome
+          diferente de "Coca Cola Zero" pra qualquer regra de casamento,
+          mesmo sendo o mesmo refrigerante na geladeira.
+
+          Não é bagunça de tela. Enquanto os dois viverem, a venda vai
+          num e a ficha fica no outro: o CMV conta metade do custo e a
+          margem aparece melhor do que ela é.
+
+          A lista aqui é SUSPEITA, não sentença — "Suco 300ml" e
+          "Sucos 300ml" podem ser dois produtos de verdade. Por isso vem
+          com venda e ficha dos dois lados: é olhando isso que se decide
+          qual fica. Quem decide é você; o sistema só junta.
+          --------------------------------------------------------------- */}
+      {irmaos && irmaos.length > 0 && (
+        <div style={{ ...cardStyle, marginBottom: 10, padding: "11px 14px",
+                      background: "#FDF6EC", border: "1px solid #E8D48A" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ fontSize: 12.5, lineHeight: 1.6, flex: 1, minWidth: 220, color: "#7A6A1E" }}>
+              <b>{irmaos.length} par{irmaos.length === 1 ? "" : "es"} de prato com nome parecido.</b>{" "}
+              Se for o mesmo produto, a venda está indo num e a ficha ficou no outro — e o custo
+              some da conta.
+            </div>
+            <button onClick={() => setVerIrmaos((v) => !v)} style={{ ...linkBtn, fontSize: 12 }}>
+              {verIrmaos ? "esconder" : "revisar"}
+            </button>
+          </div>
+
+          {verIrmaos && irmaos.map((par) => (
+            <div key={par.a_id + par.b_id}
+                 style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #EFE2C0",
+                          display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+              {[
+                { id: par.a_id, nome: par.a_nome, cod: par.a_codigo, linha: par.a_linha, ins: par.a_insumos, vend: par.a_vendas, outro: par.b_id },
+                { id: par.b_id, nome: par.b_nome, cod: par.b_codigo, linha: par.b_linha, ins: par.b_insumos, vend: par.b_vendas, outro: par.a_id },
+              ].map((lado) => (
+                <div key={lado.id} style={{ flex: 1, minWidth: 210, background: "#FFFFFF",
+                                            border: "1px solid #E8E2D2", borderRadius: 10, padding: "9px 11px" }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700 }}>{lado.nome}</div>
+                  <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2, lineHeight: 1.5 }}>
+                    {lado.linha} · {lado.ins} {lado.ins === 1 ? "insumo" : "insumos"} na ficha
+                    {lado.cod ? ` · código ${lado.cod}` : " · sem código"}
+                    <br />
+                    vendeu {brl(Number(lado.vend) || 0)} em 90 dias
+                  </div>
+                  <button onClick={() => juntar(par, lado.id, lado.outro)}
+                          disabled={juntando === par.a_id + par.b_id}
+                          style={{ marginTop: 7, background: "#22231F", color: "#F3EFE3", border: "none",
+                                   borderRadius: 7, padding: "6px 10px", fontSize: 11, fontWeight: 700,
+                                   cursor: "pointer", fontFamily: "inherit" }}>
+                    {juntando === par.a_id + par.b_id ? "juntando…" : "Este fica"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ))}
+
+          {verIrmaos && (
+            <div style={{ fontSize: 10.5, color: "#7A6A1E", marginTop: 9, lineHeight: 1.6 }}>
+              <b>“Este fica”</b> leva pro escolhido a ficha, o código e o histórico do outro, e
+              transforma o nome do outro em apelido — a venda antiga continua achando dono, nada é
+              perdido. O prato que sai fica escondido, não apagado. Se os dois forem produtos
+              diferentes de verdade, é só não mexer.
             </div>
           )}
         </div>
