@@ -505,13 +505,24 @@ export default function FichasTecnicas() {
     // nenhum prato novo tivesse entrado, a tela ficava igualzinha — e a
     // conclusão natural de quem clica é "não funcionou". Não dava pra
     // distinguir "não achei nada novo" de "não rodei".
+    // `criados` soma os dois caminhos de proposito: pra quem esta olhando
+    // a tela, prato novo e prato novo — nao interessa se entrou pelo
+    // codigo ou pelo nome. A quebra fica no detalhe, logo abaixo.
     setResumoImport({
       encontrados: data?.pratos_distintos_encontrados || 0,
-      criados: data?.pratos_criados || 0,
+      criados: (data?.pratos_criados || 0) + (data?.sem_codigo_criados || 0),
+      criadosComCodigo: data?.pratos_criados || 0,
       atualizados: data?.pratos_atualizados || 0,
       nomesCriados: data?.nomes_criados || [],
       nomesAmbiguos: data?.nomes_ambiguos || [],
       pedidos: data?.pedidos_analisados || 0,
+      // Itens que o CardapioWeb manda SEM codigo. Ate 30/08/2026 esses
+      // nem eram contados — sumiam antes de chegar aqui, e por isso o
+      // numero de pratos travava por mais que se importasse.
+      semCodigoEncontrados: data?.itens_sem_codigo || 0,
+      semCodigoCriados: data?.sem_codigo_criados || 0,
+      semCodigoJaExistiam: data?.sem_codigo_ja_existiam || 0,
+      nomesSemCodigo: data?.nomes_sem_codigo || [],
     });
     carregarPratos();
   };
@@ -577,10 +588,18 @@ export default function FichasTecnicas() {
                   ? `${resumoImport.criados} prato(s) novo(s) no cadastro.`
                   : "Nenhum prato novo — o cadastro já tinha todos."}
               </b>{" "}
-              Achei <b>{resumoImport.encontrados}</b> itens distintos vendidos nos últimos 90 dias
-              ({resumoImport.pedidos} pedidos): {resumoImport.criados} criados,{" "}
-              {resumoImport.atualizados} que já existiam e receberam o código do CardápioWeb.
-              {resumoImport.criados === 0 && (
+              Achei <b>{resumoImport.encontrados}</b> itens com código do CardápioWeb nos últimos
+              90 dias ({resumoImport.pedidos} pedidos): {resumoImport.criadosComCodigo} criados,{" "}
+              {resumoImport.atualizados} que já existiam e receberam o código.
+              {resumoImport.semCodigoEncontrados > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  E mais <b>{resumoImport.semCodigoEncontrados}</b> itens que o CardápioWeb manda{" "}
+                  <b>sem código nenhum</b> — só com o nome:{" "}
+                  {resumoImport.semCodigoCriados} criados agora,{" "}
+                  {resumoImport.semCodigoJaExistiam} que já estavam no cadastro.
+                </div>
+              )}
+              {resumoImport.criados === 0 && resumoImport.semCodigoEncontrados === 0 && (
                 <div style={{ marginTop: 6 }}>
                   Se ainda tem produto aparecendo como “fora do cadastro” no Dashboard, ele
                   provavelmente <b>não foi vendido nos últimos 90 dias</b> — ou o nome dele
@@ -596,6 +615,16 @@ export default function FichasTecnicas() {
               <b>Criados:</b> {resumoImport.nomesCriados.join(" · ")}
               <div style={{ marginTop: 4, opacity: 0.85 }}>
                 Eles entram <b>sem ficha e sem linha</b> — apareceram agora nos filtros aqui de cima.
+              </div>
+            </div>
+          )}
+
+          {resumoImport.nomesSemCodigo.length > 0 && (
+            <div style={{ fontSize: 11.5, marginTop: 8, lineHeight: 1.6 }}>
+              <b>Entraram só pelo nome:</b> {resumoImport.nomesSemCodigo.join(" · ")}
+              <div style={{ marginTop: 4, opacity: 0.85 }}>
+                Esses ficam <b>sem código do CardápioWeb</b> de propósito — não existe código pra
+                gravar. O Dashboard acha eles pelo nome, então evite renomear sem renomear lá também.
               </div>
             </div>
           )}
