@@ -166,6 +166,12 @@ export default function Dashboard() {
   // desempenho_produtos devolve o NOME do prato, não o id — então o
   // casamento é por nome, que é de onde o nome veio.
   const [pratosCadastro, setPratosCadastro] = useState([]);
+  // Importar pratos DAQUI. Antes a tela dizia "rode o Importar pratos" e
+  // parava por ai: pra obedecer era preciso sair do Dashboard, achar
+  // Fichas tecnicas, achar o botao, voltar. Instrucao sem botao do lado
+  // e so mais um passo pra pessoa carregar sozinha.
+  const [importando, setImportando] = useState(false);
+  const [resumoImport, setResumoImport] = useState(null);
   const [abrirSemLinha, setAbrirSemLinha] = useState(false);
   const [salvandoLinha, setSalvandoLinha] = useState(null);
   const [erroLinha, setErroLinha] = useState("");
@@ -287,6 +293,10 @@ export default function Dashboard() {
       qtd_ant: Number(l.qtd_ant) || 0,
       valor_ant: Number(l.valor_ant) || 0,
       preco_medio: Number(l.preco_medio) || 0,
+      // Migracao 105: diz se o CardapioWeb mandou esse item COM codigo ou
+      // sem. E o que separa "prato que falta cadastrar" de "prato que o
+      // Importar so acha pelo nome".
+      sem_codigo: !!l.sem_codigo,
     })));
     setLinhas((rLinhas.data || []).map((l) => ({
       ...l,
@@ -611,6 +621,13 @@ export default function Dashboard() {
       .sort((a, b) => b.valor_atual - a.valor_atual);
   }, [produtos, pratosCadastro]);
 
+  // Os que nem prato tem. Sao esses — e so esses — que o Importar
+  // resolve; para o resto o seletor de linha ja basta.
+  const foraDoCadastro = React.useMemo(
+    () => semLinhaDetalhe.filter((p) => !p.pratoId),
+    [semLinhaDetalhe]
+  );
+
   // Pra que o aviso la de cima consiga levar a pessoa ate a fatia certa
   // do quadro, em vez de so avisar e deixar ela procurando.
   const refSemLinha = React.useRef(null);
@@ -630,6 +647,42 @@ export default function Dashboard() {
     if (error) { setErroLinha(error.message); return; }
     // Recarrega o desempenho: a linha nova muda o quadro de cima, e ver o
     // número andar é o que diz que valeu a pena preencher.
+    await buscarProdutos(periodo);
+  };
+
+  // ------------------------------------------------------------------
+  // Importar pratos, sem sair daqui
+  //
+  // Os "fora do cadastro" da lista de baixo sao exatamente o que essa
+  // acao resolve. Ate 30/08/2026 nao resolvia: o Importar ignorava item
+  // sem codigo do CardapioWeb, que e justamente o caso da maioria deles
+  // — entao a tela mandava apertar um botao que nao podia atender.
+  // Corrigido no proxy (o item sem codigo agora entra pelo nome) e na
+  // migracao 105 (o Dashboard acha esse prato pelo nome).
+  // ------------------------------------------------------------------
+  const importarPratos = async () => {
+    setImportando(true);
+    setErroLinha("");
+    setResumoImport(null);
+    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
+      body: {
+        acao: "importar_pratos",
+        data_inicio: `${ymd(new Date(Date.now() - 90 * 864e5))}T00:00:00-03:00`,
+        data_fim: `${ymd(new Date())}T23:59:59-03:00`,
+      },
+    });
+    setImportando(false);
+    if (error) { setErroLinha(await extrairErroFuncao(error)); return; }
+    if (data?.error) { setErroLinha(data.error); return; }
+    setResumoImport({
+      criados: (data?.pratos_criados || 0) + (data?.sem_codigo_criados || 0),
+      comCodigo: data?.pratos_criados || 0,
+      semCodigo: data?.sem_codigo_criados || 0,
+      atualizados: data?.pratos_atualizados || 0,
+      ambiguos: data?.nomes_ambiguos || [],
+    });
+    // Recarrega: os pratos novos ja nascem casados e a fatia "Sem linha
+    // definida" encolhe na hora — que e a prova de que valeu o clique.
     await buscarProdutos(periodo);
   };
 
@@ -886,6 +939,50 @@ export default function Dashboard() {
                                 Escolha a linha aqui mesmo — grava na hora e esta fatia encolhe na sua
                                 frente. Ordenados pelo que mais fatura: o primeiro é o que mais muda o resultado.
                               </div>
+
+                              {/* O botao que faltava.
+                                  Os itens em vermelho nao tem prato pra
+                                  receber a linha, entao o seletor deles fica
+                                  vazio. A saida sempre foi o Importar pratos
+                                  — so que ele morava em outra tela, e ate
+                                  30/08/2026 nem funcionava pra esse caso.
+                                  Agora esta aqui, do lado do problema. */}
+                              {foraDoCadastro.length > 0 && (
+                                <div style={{ marginTop: 10 }}>
+                                  <button onClick={importarPratos} disabled={importando}
+                                    style={{ background: importando ? "#E8E2D2" : "#22231F",
+                                             color: importando ? "#8A8778" : "#F3EFE3", border: "none",
+                                             borderRadius: 8, padding: "8px 12px", fontSize: 11.5,
+                                             fontWeight: 700, cursor: importando ? "default" : "pointer",
+                                             fontFamily: "inherit" }}>
+                                    {importando
+                                      ? "Buscando no CardápioWeb…"
+                                      : `Cadastrar os ${foraDoCadastro.length} que estão fora`}
+                                  </button>
+                                  <div style={{ fontSize: 10, color: "#8A8778", marginTop: 4, lineHeight: 1.5 }}>
+                                    Lê os últimos 90 dias de pedidos e cria o prato de cada um. Depois
+                                    disso eles ganham o seletor de linha aqui na lista.
+                                  </div>
+                                </div>
+                              )}
+
+                              {resumoImport && (
+                                <div style={{ marginTop: 8, fontSize: 10.5, lineHeight: 1.6,
+                                              color: resumoImport.criados > 0 ? "#0F6E56" : "#8A8778" }}>
+                                  {resumoImport.criados > 0
+                                    ? `${resumoImport.criados} prato${resumoImport.criados === 1 ? "" : "s"} criado${resumoImport.criados === 1 ? "" : "s"}`
+                                    : "Nenhum prato novo"}
+                                  {resumoImport.semCodigo > 0 && ` (${resumoImport.semCodigo} sem código do CardápioWeb, casado${resumoImport.semCodigo === 1 ? "" : "s"} pelo nome)`}
+                                  {resumoImport.atualizados > 0 && ` · ${resumoImport.atualizados} já existiam e foram atualizados`}
+                                  {resumoImport.ambiguos.length > 0 && (
+                                    <div style={{ color: "#A32D2D", marginTop: 3 }}>
+                                      Nome repetido no cadastro, não dá pra escolher sozinho qual recebe:{" "}
+                                      {resumoImport.ambiguos.slice(0, 6).join(", ")}. Apague a duplicata em
+                                      Fichas técnicas e rode de novo.
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                             {erroLinha && (
                               <div style={{ padding: "9px 12px", fontSize: 12, color: "#A32D2D", borderBottom: "1px solid #F0EBDD" }}>{erroLinha}</div>
@@ -897,7 +994,9 @@ export default function Dashboard() {
                                   <div style={{ fontSize: 12.5, fontWeight: 600, ...nomeStyle }}>{p.produto}</div>
                                   <div style={{ fontSize: 10.5, color: p.pratoId ? "#8A8778" : "#A32D2D", marginTop: 1 }}>
                                     {p.qtd_atual.toLocaleString("pt-BR")} un
-                                    {p.pratoId ? "" : " · fora do cadastro de pratos"}
+                                    {p.pratoId ? "" : (p.sem_codigo
+                                      ? " · vem sem código do CardápioWeb"
+                                      : " · fora do cadastro de pratos")}
                                   </div>
                                 </div>
                                 <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap" }}>{brl(p.valor_atual)}</span>
@@ -911,7 +1010,9 @@ export default function Dashboard() {
                                     {LINHAS_PRODUTO.map((l) => <option key={l} value={l}>{l}</option>)}
                                   </select>
                                 ) : (
-                                  <span style={{ fontSize: 11, color: "#8A8778", minWidth: 150 }}>rode o Importar pratos</span>
+                                  <span style={{ fontSize: 11, color: "#8A8778", minWidth: 150 }}>
+                                    {p.sem_codigo ? "cadastre pelo nome ↑" : "cadastre pelo código ↑"}
+                                  </span>
                                 )}
                               </div>
                             ))}
