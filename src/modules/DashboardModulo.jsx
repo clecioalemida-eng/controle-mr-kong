@@ -1,4 +1,5 @@
-// ===== Dashboard.jsx =====
+// ===== DashboardModulo.jsx =====
+// (é ESTE que o App.jsx importa; o Dashboard.jsx do repositório não é usado)
 import React, { useState, useRef } from "react";
 import { AlertTriangle, Loader2, RefreshCw, TrendingUp, TrendingDown, Trophy, Layers } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
@@ -631,6 +632,35 @@ export default function Dashboard() {
     [pratosCadastro]
   );
 
+  // ------------------------------------------------------------------
+  // Abrir a linha pra ver quem esta dentro dela
+  //
+  // A linha resume, e resumo esconde. "Bebidas +43,3%" pode ser refri
+  // voando e cerveja afundando ao mesmo tempo, e as duas noticias se
+  // cancelam no total — voce ve um numero calmo em cima de duas coisas
+  // que precisam de decisao. Abrir a linha e o unico jeito de saber
+  // QUEM fez o numero.
+  //
+  // Nao precisa de nada novo do banco: o `desempenho_produtos` ja traz
+  // periodo atual e anterior de cada produto. Era so nunca ter sido
+  // mostrado agrupado.
+  // ------------------------------------------------------------------
+  const [linhaAberta, setLinhaAberta] = useState(null);
+  const [produtoAberto, setProdutoAberto] = useState(null);
+
+  const produtosPorLinha = React.useMemo(() => {
+    const m = new Map();
+    (produtos || []).forEach((p) => {
+      const k = String(p.linha || "").trim();
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(p);
+    });
+    // Ordenado pelo faturamento de agora: quem sustenta a linha aparece
+    // primeiro, e o que sumiu cai pro fim — que e onde ele incomoda.
+    m.forEach((lista) => lista.sort((a, b) => b.valor_atual - a.valor_atual));
+    return m;
+  }, [produtos]);
+
   const foraDoCadastro = React.useMemo(
     () => semLinhaDetalhe.filter((p) => !p.pratoId),
     [semLinhaDetalhe]
@@ -910,11 +940,138 @@ export default function Dashboard() {
                             </div>
                             <div style={barraShare}><div style={{ ...barraShareFill, width: `${Math.min(100, share)}%` }} /></div>
                             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, color: "#8A8778" }}>
-                              <span>{share.toFixed(1)}% do total · {l.produtos} {l.produtos === 1 ? "produto" : "produtos"}</span>
+                              <span>
+                                {share.toFixed(1)}% do total ·{" "}
+                                {/* O contador vira porta. Antes ele so informava
+                                    "12 produtos" e deixava voce sem saber QUAIS —
+                                    e uma linha e sempre a media de coisas que
+                                    estao indo em direcoes diferentes. */}
+                                {!ehSemLinha && (produtosPorLinha.get(String(l.linha || "").trim()) || []).length > 0 ? (
+                                  <button
+                                    onClick={() => { setLinhaAberta((v) => v === l.linha ? null : l.linha); setProdutoAberto(null); }}
+                                    style={{ background: "none", border: "none", padding: 0, font: "inherit",
+                                             color: "#8A6A0F", fontWeight: 700, cursor: "pointer" }}>
+                                    {l.produtos} {l.produtos === 1 ? "produto" : "produtos"} {linhaAberta === l.linha ? "▴" : "▾"}
+                                  </button>
+                                ) : (
+                                  <span>{l.produtos} {l.produtos === 1 ? "produto" : "produtos"}</span>
+                                )}
+                              </span>
                               {pct != null
                                 ? <span style={{ color: pct >= 0 ? "#0F6E56" : "#A32D2D", fontWeight: 700 }}>{pct >= 0 ? "+" : ""}{pct.toFixed(1)}%</span>
                                 : <span>sem base anterior</span>}
                             </div>
+
+                            {/* -------- os produtos que fazem a linha -------- */}
+                            {linhaAberta === l.linha && (
+                              <div style={{ marginTop: 9, border: "1px solid #E8E2D2", borderRadius: 10,
+                                            overflow: "hidden", background: "#FFFFFF" }}>
+                                {(produtosPorLinha.get(String(l.linha || "").trim()) || []).map((p, i) => {
+                                  const v = variacao(p.valor_atual, p.valor_ant);
+                                  const aberto = produtoAberto === p.produto;
+                                  const novo = p.valor_ant === 0 && p.valor_atual > 0;
+                                  const sumiu = p.valor_atual === 0 && p.valor_ant > 0;
+                                  const vq = variacao(p.qtd_atual, p.qtd_ant);
+                                  const pmAtual = p.qtd_atual > 0 ? p.valor_atual / p.qtd_atual : null;
+                                  const pmAnt   = p.qtd_ant   > 0 ? p.valor_ant   / p.qtd_ant   : null;
+                                  return (
+                                    <div key={p.produto} style={{ borderTop: i > 0 ? "1px solid #F0EBDD" : "none",
+                                                                  background: aberto ? "#FCFAF4" : "transparent" }}>
+                                      <button
+                                        onClick={() => setProdutoAberto(aberto ? null : p.produto)}
+                                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8,
+                                                 padding: "8px 11px", background: "none", border: "none",
+                                                 font: "inherit", textAlign: "left", cursor: "pointer" }}>
+                                        <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600,
+                                                       color: "#22231F", ...nomeStyle }}>{p.produto}</span>
+                                        <span style={{ fontSize: 12, fontWeight: 700, whiteSpace: "nowrap",
+                                                       fontVariantNumeric: "tabular-nums" }}>{brl(p.valor_atual)}</span>
+                                        <span style={{ fontSize: 10.5, fontWeight: 700, minWidth: 62, textAlign: "right",
+                                                       whiteSpace: "nowrap",
+                                                       color: novo ? "#0F6E56" : sumiu ? "#A32D2D"
+                                                            : v == null ? "#8A8778" : v >= 0 ? "#0F6E56" : "#A32D2D" }}>
+                                          {novo ? "novo" : sumiu ? "sumiu"
+                                            : v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`}
+                                        </span>
+                                      </button>
+
+                                      {aberto && (
+                                        <div style={{ padding: "0 11px 11px" }}>
+                                          <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto",
+                                                        gap: "4px 10px", fontSize: 11,
+                                                        fontVariantNumeric: "tabular-nums" }}>
+                                            <span style={{ color: "#8A8778" }}></span>
+                                            <span style={{ color: "#8A8778", textAlign: "right" }}>antes</span>
+                                            <span style={{ color: "#8A8778", textAlign: "right" }}>agora</span>
+                                            <span style={{ color: "#8A8778", textAlign: "right" }}>var.</span>
+
+                                            <span style={{ color: "#8A8778" }}>Faturamento</span>
+                                            <span style={{ textAlign: "right" }}>{brl(p.valor_ant)}</span>
+                                            <span style={{ textAlign: "right", fontWeight: 700 }}>{brl(p.valor_atual)}</span>
+                                            <span style={{ textAlign: "right", fontWeight: 700,
+                                                           color: v == null ? "#8A8778" : v >= 0 ? "#0F6E56" : "#A32D2D" }}>
+                                              {v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`}
+                                            </span>
+
+                                            <span style={{ color: "#8A8778" }}>Quantidade</span>
+                                            <span style={{ textAlign: "right" }}>{p.qtd_ant.toLocaleString("pt-BR")}</span>
+                                            <span style={{ textAlign: "right", fontWeight: 700 }}>{p.qtd_atual.toLocaleString("pt-BR")}</span>
+                                            <span style={{ textAlign: "right", fontWeight: 700,
+                                                           color: vq == null ? "#8A8778" : vq >= 0 ? "#0F6E56" : "#A32D2D" }}>
+                                              {vq == null ? "—" : `${vq >= 0 ? "+" : ""}${vq.toFixed(1)}%`}
+                                            </span>
+
+                                            <span style={{ color: "#8A8778" }}>Preço médio</span>
+                                            <span style={{ textAlign: "right" }}>{pmAnt == null ? "—" : brl(pmAnt)}</span>
+                                            <span style={{ textAlign: "right", fontWeight: 700 }}>{pmAtual == null ? "—" : brl(pmAtual)}</span>
+                                            <span style={{ textAlign: "right", color: "#8A8778" }}>
+                                              {pmAnt != null && pmAtual != null && pmAnt > 0
+                                                ? `${pmAtual - pmAnt >= 0 ? "+" : ""}${(((pmAtual - pmAnt) / pmAnt) * 100).toFixed(1)}%`
+                                                : "—"}
+                                            </span>
+                                          </div>
+
+                                          {/* A leitura que o numero sozinho nao da.
+                                              Faturamento subindo com quantidade caindo
+                                              e preco, nao demanda — e as duas coisas
+                                              pedem decisoes opostas. */}
+                                          <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 7, lineHeight: 1.55 }}>
+                                            {vq != null && v != null && vq < -2 && v > 2
+                                              ? "Faturou mais vendendo menos: quem segurou foi o preço, não a procura."
+                                              : vq != null && v != null && vq > 2 && v < -2
+                                              ? "Vendeu mais e faturou menos — desconto ou promoção comendo a diferença."
+                                              : novo
+                                              ? "Não tinha venda no período anterior."
+                                              : sumiu
+                                              ? "Vendia antes e parou. Vale conferir se saiu do cardápio ou só sumiu do CardápioWeb."
+                                              : vq != null && v != null && Math.abs(vq - v) < 5
+                                              ? "Quantidade e faturamento andaram juntos — é procura, não preço."
+                                              : ""}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                {/* A linha diz "12 produtos" contando so quem
+                                    vendeu AGORA; a lista mostra tambem quem
+                                    vendia antes e parou. Sem esta nota os dois
+                                    numeros parecem se contradizer — e quem
+                                    parou de vender e justamente o que voce
+                                    precisa ver. */}
+                                {(() => {
+                                  const lista = produtosPorLinha.get(String(l.linha || "").trim()) || [];
+                                  const pararam = lista.filter((p) => p.valor_atual === 0 && p.valor_ant > 0).length;
+                                  return pararam > 0 ? (
+                                    <div style={{ padding: "7px 11px", borderTop: "1px solid #F0EBDD",
+                                                  fontSize: 10.5, color: "#8A8778", lineHeight: 1.5 }}>
+                                      {pararam} {pararam === 1 ? "produto vendia" : "produtos vendiam"} antes e
+                                      {pararam === 1 ? " parou" : " pararam"} — por isso a lista tem mais itens que a contagem da linha.
+                                    </div>
+                                  ) : null;
+                                })()}
+                              </div>
+                            )}
 
                             {/* O botao mora AQUI, na propria fatia "Sem linha
                                 definida", e nao num aviso la em cima que so
