@@ -23,6 +23,13 @@ function somarDias(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); re
 function esperar(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 const JANELA_DIAS = 90;       // histórico usado nas médias e no comparativo
+// Pra comparar os 3 meses anteriores nos MESMOS dias e ainda mostrar o mês
+// fechado de cada um, precisa chegar ao dia 1 de tres meses atras — o que
+// passa de 90 dias em qualquer data. Esta janela maior vale SO pra leitura
+// do historico: o aviso de "dias faltando no cache" continua olhando os 90,
+// senao a tela passaria a cobrar sincronizacao de dia antigo que nao
+// interessa a ninguem.
+const JANELA_HISTORICO = 135;
 const TAMANHO_FATIA = 4;      // dias por chamada da Edge Function
 const SEGUNDOS_POR_DIA = 25;  // estimativa: histórico + detalhe de cada pedido
 const PAUSA_ENTRE_FATIAS = 20000;   // 20s — a função já espera 12s entre dias
@@ -320,22 +327,26 @@ export default function Dashboard() {
 
   const buscarCache = React.useCallback(async () => {
     const dias = listaDaJanela();
+    const inicioHistorico = ymd(somarDias(new Date(), -JANELA_HISTORICO));
     const { data, error } = await supabase
       .from("vendas_diarias")
       .select("dia, faturamento_bruto, atualizado_em")
-      .gte("dia", dias[0])
+      .gte("dia", inicioHistorico)
       .lte("dia", dias[dias.length - 1])
       .order("dia", { ascending: true });
     if (error) { setErro(error.message); return null; }
     const diasCache = data || [];
     const presentes = new Set(diasCache.map((l) => l.dia));
+    // De proposito so os 90: o historico extra serve pro comparativo de
+    // meses, nao pra cobrar sincronizacao.
     const faltando = dias.filter((d) => !presentes.has(d));
+    const dentroDaJanela = diasCache.filter((l) => presentes.has(l.dia) && l.dia >= dias[0]);
     let atualizadoEm = null;
     diasCache.forEach((l) => {
       if (l.atualizado_em && (!atualizadoEm || l.atualizado_em > atualizadoEm)) atualizadoEm = l.atualizado_em;
     });
     setCache({
-      total: diasCache.length,
+      total: dentroDaJanela.length,
       ultimoDia: diasCache.length ? diasCache[diasCache.length - 1].dia : null,
       atualizadoEm,
       faltando,
@@ -414,7 +425,63 @@ export default function Dashboard() {
       if (somaAtual === 0 && somaAnterior === 0 && diaIni > hoje.getDate()) continue;
       semanas.push({ label: `Semana ${semana + 1}`, atual: round2(somaAtual), anterior: round2(somaAnterior) });
     }
+    // ------------------------------------------------------------------
+    // Os 3 meses anteriores, nos MESMOS dias
+    //
+    // Comparar "agosto ate hoje" com "julho inteiro" e a armadilha classica:
+    // no dia 10 voce sempre parece estar afundando, e no dia 30 sempre
+    // parece estar voando. Aqui cada mes anterior e cortado no mesmo dia do
+    // mes em que estamos — 1 a 31 contra 1 a 31.
+    //
+    // Quando o mes anterior tem menos dias que hoje (hoje e 31, junho tem
+    // 30), a janela dele encolhe pro que existe e a tela DIZ isso. Comparar
+    // 31 dias com 30 calados e mentir 3% pra baixo todo mes de 31.
+    //
+    // O mes fechado vem junto, menor: e a outra pergunta que se faz olhando
+    // isso ("quanto deu o mes inteiro?"), e ter que abrir outra tela pra
+    // responder e o que faz ninguem olhar.
+    // ------------------------------------------------------------------
+    const NOMES_MES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho",
+                       "Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+    const somaDoMes = (ano, mes, diaIni, diaFim) => {
+      let soma = 0;
+      let comDado = 0;
+      for (let dia = diaIni; dia <= diaFim; dia++) {
+        const chave = `${ano}-${String(mes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+        if (chave in porDia) { soma += porDia[chave]; comDado += 1; }
+      }
+      return { soma, comDado };
+    };
+
+    const diaDeCorte = hoje.getDate();
+    const meses = [];
+    for (let atras = 1; atras <= 3; atras++) {
+      const idx = mesAtual - atras;
+      const ano = idx < 0 ? anoAtual - 1 : anoAtual;
+      const mes = (idx + 12) % 12;
+      const totalDias = diasNoMes(ano, mes);
+      // o mes anterior pode ser mais curto que o dia de hoje
+      const corte = Math.min(diaDeCorte, totalDias);
+      const mesmos = somaDoMes(ano, mes, 1, corte);
+      const fechado = somaDoMes(ano, mes, 1, totalDias);
+      // Mes sem nenhum dia no cache nao entra: linha zerada parece queda de
+      // 100% e nao e queda nenhuma, e falta de dado.
+      if (mesmos.comDado === 0) continue;
+      meses.push({
+        label: `${NOMES_MES[mes]}${ano !== anoAtual ? ` ${ano}` : ""}`,
+        ate: round2(mesmos.soma),
+        diasComparados: corte,
+        diasComDado: mesmos.comDado,
+        cortadoPorSerCurto: corte < diaDeCorte,
+        fechado: round2(fechado.soma),
+        fechadoCompleto: fechado.comDado === totalDias,
+      });
+    }
+
     setFaturamento({
+      mesAtualLabel: NOMES_MES[mesAtual],
+      diaDeCorte,
+      meses,
       realizadoMes: round2(realizadoMes),
       previstoRestoMes: round2(previstoRestoMes),
       totalMes: round2(realizadoMes + previstoRestoMes),
@@ -800,6 +867,45 @@ export default function Dashboard() {
         <>
           {faturamento && custos && (
             <>
+              {/* O dinheiro que JA ENTROU vem primeiro e vem grande.
+                  Antes o numero em destaque era a previsao, e o realizado
+                  ficava numa linha de 10px embaixo. Previsao e palpite —
+                  bom pra planejar, ruim pra abrir a tela e saber onde voce
+                  esta. O que aconteceu de verdade nao pode ser o rodape do
+                  que talvez aconteca. */}
+              <div style={{ ...cardStyle, marginBottom: 8, background: "#F6F1E7", borderColor: "#E3DCCA" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+                  <div>
+                    <div style={labelStyle}>
+                      Faturamento de {faturamento.mesAtualLabel} até aqui
+                    </div>
+                    <div style={{ fontSize: 27, fontWeight: 800, color: "#22231F",
+                                  fontVariantNumeric: "tabular-nums", lineHeight: 1.15 }}>
+                      {brl(faturamento.realizadoMes)}
+                    </div>
+                    <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2 }}>
+                      dia 1 ao dia {faturamento.diaDeCorte} · dinheiro que já entrou
+                    </div>
+                  </div>
+                  {faturamento.meses.length > 0 && (() => {
+                    const m = faturamento.meses[0];
+                    const pct = m.ate > 0 ? ((faturamento.realizadoMes - m.ate) / m.ate) * 100 : null;
+                    return (
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 10.5, color: "#8A8778" }}>vs {m.label}, mesmos dias</div>
+                        <div style={{ fontSize: 17, fontWeight: 800,
+                                      color: pct == null ? "#8A8778" : pct >= 0 ? "#0F6E56" : "#A32D2D" }}>
+                          {pct == null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
+                        </div>
+                        <div style={{ fontSize: 10.5, color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>
+                          {brl(m.ate)}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
                 <div style={cardStyle}>
                   <div style={labelStyle}>Faturamento previsto (mês)</div>
@@ -854,6 +960,75 @@ export default function Dashboard() {
                 <div style={{ fontSize: 18, fontWeight: 700, color: "#22231F" }}>{brl(faturamento.previstoProxMes)}</div>
                 <div style={{ fontSize: 10, color: "#8A8778" }}>Baseado na média de dia útil ({brl(faturamento.mediaUtil)}) e fim de semana ({brl(faturamento.mediaFds)}) dos últimos 30 dias{faturamento.diasNaMedia < 30 ? ` — só ${faturamento.diasNaMedia} dias disponíveis no cache` : ""}</div>
               </div>
+              {/* --------------------------------------------------------
+                  Mes a mes, nos mesmos dias
+
+                  A regra da tela e uma so: comparar periodo com periodo do
+                  MESMO tamanho. "Agosto ate o dia 20" contra "julho
+                  inteiro" nao e comparacao, e o calendario fingindo queda.
+                  -------------------------------------------------------- */}
+              {faturamento.meses.length > 0 && (
+                <>
+                  <div style={sectionLabel}>
+                    Mês a mês — do dia 1 ao dia {faturamento.diaDeCorte}
+                  </div>
+                  <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden",
+                                background: "#FFFFFF", marginBottom: 16 }}>
+                    <div style={{ padding: "10px 14px", background: "#F6F1E7", borderBottom: "1px solid #E8E2D2",
+                                  display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+                      <span style={{ fontSize: 13, fontWeight: 800 }}>{faturamento.mesAtualLabel}</span>
+                      <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>
+                        {brl(faturamento.realizadoMes)}
+                      </span>
+                    </div>
+                    {faturamento.meses.map((m, idx) => {
+                      const pct = m.ate > 0 ? ((faturamento.realizadoMes - m.ate) / m.ate) * 100 : null;
+                      const maior = Math.max(faturamento.realizadoMes,
+                                             ...faturamento.meses.map((x) => x.ate), 1);
+                      return (
+                        <div key={m.label} style={{ padding: "10px 14px",
+                                                    borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8,
+                                        fontSize: 13, color: "#22231F" }}>
+                            <span>{m.label}</span>
+                            <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{brl(m.ate)}</span>
+                          </div>
+                          <div style={barraShare}>
+                            <div style={{ ...barraShareFill, width: `${Math.min(100, (m.ate / maior) * 100)}%`,
+                                          background: "#B9B2A0" }} />
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8,
+                                        fontSize: 10, color: "#8A8778" }}>
+                            <span>
+                              {/* Sem isto a comparacao mente calada: dia 31
+                                  contra um mes de 30 sempre parece
+                                  crescimento de 3% que nao existe. */}
+                              {m.cortadoPorSerCurto
+                                ? `só tem ${m.diasComparados} dias — comparado 1 a ${m.diasComparados} dos dois lados`
+                                : m.diasComDado < m.diasComparados
+                                ? `${m.diasComDado} de ${m.diasComparados} dias no cache`
+                                : `mês fechado: ${brl(m.fechado)}`}
+                            </span>
+                            {pct != null
+                              ? <span style={{ color: pct >= 0 ? "#0F6E56" : "#A32D2D", fontWeight: 700 }}>
+                                  {pct >= 0 ? "+" : ""}{pct.toFixed(1)}%
+                                </span>
+                              : <span>sem base</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {faturamento.meses.length < 3 && (
+                      <div style={{ padding: "9px 14px", borderTop: "1px solid #F0EBDD",
+                                    fontSize: 10.5, color: "#8A8778", lineHeight: 1.5 }}>
+                        Aparecem {faturamento.meses.length} {faturamento.meses.length === 1 ? "mês" : "meses"} porque
+                        é o que existe de venda no cache. Vai completar três conforme o histórico crescer.
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
               {faturamento.semanas.length > 0 && (
                 <>
                   <div style={sectionLabel}>Semana a semana — mês atual vs mês anterior</div>
