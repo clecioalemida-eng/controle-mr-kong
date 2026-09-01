@@ -2556,9 +2556,7 @@ function CadastroRapidoInsumo({ nomeInicial, onCriado, onCancelar }) {
 }
 
 const campoCM = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 7, border: "1px solid #E8E2D2", fontSize: 13.5, fontFamily: "inherit", background: "#FFFFFF", color: "#22231F" };
-const rotuloCM = { display: "block", fontSize: 10, color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 };
-const rotuloCM = { display: "block", fontSize: 10, color: "#8A8778", marginBottom: 3,
-                   letterSpacing: 0.2, textTransform: "uppercase", fontWeight: 700 };
+const rotuloCM = { display: "block", fontSize: 10, color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3, fontWeight: 700 };
 const campoNumCM = { width: 68, padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13, textAlign: "right", fontFamily: "inherit", fontVariantNumeric: "tabular-nums" };
 const unCM = { border: "1px solid #E8E2D2", background: "#F6F1E7", color: "#55534A", borderRadius: 6, padding: "5px 8px", fontSize: 11.5, fontWeight: 700, minWidth: 32, textAlign: "center", display: "inline-block" };
 const thCM = { background: "#F6F1E7", fontSize: 10, fontWeight: 800, letterSpacing: 0.3, textTransform: "uppercase", color: "#8A8778", padding: "8px 11px", textAlign: "right", borderBottom: "1px solid #E8E2D2", whiteSpace: "nowrap" };
