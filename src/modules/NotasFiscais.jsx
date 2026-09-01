@@ -496,11 +496,70 @@ export default function NotasFiscais() {
     await supabase.storage.from("notas-fiscais").remove([d.arquivo_path]);
     carregar();
   };
-  const enviarArquivo = async (file) => {
-    if (!file) return;
+  // ------------------------------------------------------------------
+  // Encolher a foto antes de mandar
+  //
+  // Descoberto em 01/09/2026 pelos logs da Edge Function:
+  //
+  //   booted 16:38:06  ->  shutdown 16:39:21    75 s
+  //   booted 16:25:40  ->  shutdown 16:26:56    76 s
+  //   booted 16:13:32  ->  shutdown 16:14:47    75 s
+  //
+  // Sempre uns 75 segundos e morre. Nao e erro de codigo — e estouro de
+  // tempo. O processo e morto antes de escrever log e antes de devolver
+  // resposta, e e por isso que a tela mostrava um "toLowerCase" sem
+  // sentido: nao havia resposta pra ler.
+  //
+  // O que estoura o tempo e o TAMANHO. Foto de celular sai com 3 a 6 MB;
+  // a IA gasta a maior parte do tempo so recebendo e decodificando isso.
+  //
+  // 2000px na maior borda e o meio termo: texto de nota continua legivel
+  // (abaixo de ~1500px a IA comeca a errar numero), e o arquivo cai pra
+  // uns 400 KB. Nao e so questao de velocidade — imagem menor e nitida le
+  // MELHOR que imagem enorme, porque o modelo nao precisa reduzir por
+  // conta propria.
+  //
+  // PDF passa direto: ja e texto, nao adianta redimensionar.
+  // ------------------------------------------------------------------
+  const encolherImagem = (file) => new Promise((resolve) => {
+    if (!file.type || !file.type.startsWith("image/")) { resolve(file); return; }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const MAX = 2000;
+        const escala = Math.min(1, MAX / Math.max(img.width, img.height));
+        // Ja e pequena: mexer so pioraria (reencodar JPEG perde nitidez).
+        if (escala === 1 && file.size < 1200000) { URL.revokeObjectURL(url); resolve(file); return; }
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * escala);
+        canvas.height = Math.round(img.height * escala);
+        const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => {
+          URL.revokeObjectURL(url);
+          // Se por algum motivo ficou maior, manda o original.
+          if (!blob || blob.size >= file.size) { resolve(file); return; }
+          resolve(new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" }));
+        }, "image/jpeg", 0.85);
+      } catch {
+        URL.revokeObjectURL(url);
+        resolve(file);
+      }
+    };
+    // Foto que o navegador nao consegue abrir (HEIC em alguns casos) segue
+    // como esta: melhor tentar e falhar la do que barrar aqui.
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+
+  const enviarArquivo = async (fileOriginal) => {
+    if (!fileOriginal) return;
     setEnviando(true);
     setErro("");
     try {
+      const file = await encolherImagem(fileOriginal);
       const { data: userData } = await supabase.auth.getUser();
       const caminho = `${userData?.user?.id || "anon"}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
       const { error: erroUpload } = await supabase.storage.from("notas-fiscais").upload(caminho, file);
@@ -513,7 +572,18 @@ export default function NotasFiscais() {
       const { data: resultado, error: erroFuncao } = await supabase.functions.invoke("processar-documento-compra", {
         body: { documento_id: doc.id },
       });
-      if (erroFuncao) throw new Error(await extrairErroFuncao(erroFuncao));
+      if (erroFuncao) {
+        const msg = await extrairErroFuncao(erroFuncao);
+        // Funcao morta por tempo nao devolve resposta, e a biblioteca do
+        // Supabase quebra tentando ler o cabecalho que nao veio. Dizer
+        // "toLowerCase" pra quem esta subindo uma nota nao ajuda ninguem.
+        throw new Error(
+          /toLowerCase|undefined|Failed to fetch|Load failed/i.test(msg || "")
+            ? "A leitura demorou demais e foi interrompida (a função tem limite de tempo). " +
+              "A nota está salva na lista — abra e lance pelo Compra manual, ou tente de novo com uma foto mais fechada, só da parte dos itens."
+            : msg
+        );
+      }
       if (resultado?.error) throw new Error(resultado.error);
       carregar();
     } catch (e) {
@@ -2365,20 +2435,42 @@ function CompraManual({ onVoltar, onCriada }) {
         </div>
 
         {criando === null ? (
-          <div style={{ display: "flex", gap: 7, padding: "11px 12px", background: "#FCFAF3", borderTop: "1px dashed #DDD5BF", alignItems: "center", flexWrap: "wrap" }}>
-            <BuscaInsumo insumos={insumos} onEscolher={(i) => setEscolhido(i)} onCriar={(texto) => setCriando(texto)} />
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <input value={qtd} onChange={(e) => setQtd(e.target.value)} placeholder="qtd" style={campoNumCM} />
-              <span style={unCM}>{escolhido ? escolhido.unidade : "—"}</span>
-            </span>
-            <input value={valor} onChange={(e) => setValor(e.target.value)} placeholder="R$" style={{ ...campoNumCM, width: 84 }} />
-            <button onClick={adicionar} disabled={!escolhido}
-              style={{ ...btnSecondary, background: escolhido ? "#22231F" : "#F6F1E7", color: escolhido ? "#F3EFE3" : "#B3AC96", borderColor: escolhido ? "#22231F" : "#E8E2D2", display: "flex", alignItems: "center", gap: 5 }}>
-              <Plus size={14} /> Adicionar
-            </button>
+          <div style={{ padding: "11px 12px", background: "#FCFAF3", borderTop: "1px dashed #DDD5BF" }}>
+            {/* O `valor` faltava aqui, e era esse o bug.
+                Sem ele, o BuscaInsumo procurava o escolhido por um id
+                `undefined`, nao achava nada, e o campo aparecia VAZIO
+                depois de voce escolher. O item estava selecionado — o
+                botao acendia — mas a tela dizia o contrario. Campo que
+                mostra o oposto do que aconteceu e pior que campo que
+                nao funciona: voce escolhe de novo, e de novo. */}
+            <div style={{ display: "flex", gap: 7, alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div style={{ flex: "1 1 220px", minWidth: 180 }}>
+                <label style={rotuloCM}>Insumo</label>
+                <BuscaInsumo insumos={insumos} valor={escolhido?.id || null}
+                  onEscolher={(i) => setEscolhido(i)} onCriar={(texto) => setCriando(texto)} />
+              </div>
+              <div style={{ flex: "0 0 auto" }}>
+                <label style={rotuloCM}>Quantidade</label>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <input value={qtd} onChange={(e) => setQtd(e.target.value)}
+                    inputMode="decimal" placeholder="0" style={campoNumCM} />
+                  <span style={unCM}>{escolhido ? escolhido.unidade : "—"}</span>
+                </span>
+              </div>
+              <div style={{ flex: "0 0 auto" }}>
+                <label style={rotuloCM}>Valor pago</label>
+                <input value={valor} onChange={(e) => setValor(e.target.value)}
+                  inputMode="decimal" placeholder="R$" style={{ ...campoNumCM, width: 92 }} />
+              </div>
+              <button onClick={adicionar} disabled={!escolhido}
+                style={{ ...btnSecondary, background: escolhido ? "#22231F" : "#F6F1E7", color: escolhido ? "#F3EFE3" : "#B3AC96", borderColor: escolhido ? "#22231F" : "#E8E2D2", display: "flex", alignItems: "center", gap: 5, flex: "0 0 auto" }}>
+                <Plus size={14} /> Adicionar
+              </button>
+            </div>
             {escolhido && (
-              <div style={{ width: "100%", fontSize: 11, color: "#8A8778" }}>
-                Escolhido: <strong>{escolhido.nome}</strong> · comprado em <strong>{escolhido.unidade}</strong>
+              <div style={{ fontSize: 11, color: "#8A8778", marginTop: 7 }}>
+                <strong>{escolhido.nome}</strong> · comprado em <strong>{escolhido.unidade}</strong>
+                {" — "}digite a quantidade e o valor, e clique em Adicionar.
               </div>
             )}
           </div>
@@ -2465,6 +2557,8 @@ function CadastroRapidoInsumo({ nomeInicial, onCriado, onCancelar }) {
 
 const campoCM = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 7, border: "1px solid #E8E2D2", fontSize: 13.5, fontFamily: "inherit", background: "#FFFFFF", color: "#22231F" };
 const rotuloCM = { display: "block", fontSize: 10, color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 };
+const rotuloCM = { display: "block", fontSize: 10, color: "#8A8778", marginBottom: 3,
+                   letterSpacing: 0.2, textTransform: "uppercase", fontWeight: 700 };
 const campoNumCM = { width: 68, padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13, textAlign: "right", fontFamily: "inherit", fontVariantNumeric: "tabular-nums" };
 const unCM = { border: "1px solid #E8E2D2", background: "#F6F1E7", color: "#55534A", borderRadius: 6, padding: "5px 8px", fontSize: 11.5, fontWeight: 700, minWidth: 32, textAlign: "center", display: "inline-block" };
 const thCM = { background: "#F6F1E7", fontSize: 10, fontWeight: 800, letterSpacing: 0.3, textTransform: "uppercase", color: "#8A8778", padding: "8px 11px", textAlign: "right", borderBottom: "1px solid #E8E2D2", whiteSpace: "nowrap" };
