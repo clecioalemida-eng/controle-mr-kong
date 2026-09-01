@@ -28,6 +28,65 @@ async function buscarFormasPagamento() {
 }
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
+// ---------------------------------------------------------------------
+// Data lida x competencia
+//
+// A IA le a data do papel; as vezes le errado. Estas duas funcoes sao a
+// unica defesa que existe entre um "04/07/2024" mal lido e uma despesa de
+// agosto contada em 2024 — onde ninguem mais vai olhar.
+//
+// A regra e curta de proposito: FUTURO nao existe, e mais de 120 dias
+// antes da entrada merece conferencia (nota atrasada acontece, entao e
+// aviso, nao veredito). Regra demais vira alarme que ninguem le.
+// ---------------------------------------------------------------------
+function mesDe(d) {
+  if (!d) return "";
+  const s = String(d).slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(s) ? s : "";
+}
+
+function dataSuspeita(documento) {
+  if (!documento) return null;
+  const nota = documento.data_documento;
+  if (!nota) return "sem data";
+  const hoje = new Date().toISOString().slice(0, 10);
+  if (String(nota) > hoje) return "futuro";
+  const entrada = String(documento.criado_em || hoje).slice(0, 10);
+  const limite = new Date(entrada + "T12:00:00Z");
+  limite.setUTCDate(limite.getUTCDate() - 120);
+  if (String(nota) < limite.toISOString().slice(0, 10)) return "muito antiga";
+  return null;
+}
+
+function mesSugerido(documento) {
+  if (!documento) return "";
+  const suspeita = dataSuspeita(documento);
+  const base = suspeita ? documento.criado_em : documento.data_documento;
+  return mesDe(base) || mesDe(documento.criado_em);
+}
+
+function rotuloMes(ym) {
+  if (!ym) return "";
+  const NOMES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho",
+                 "Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+  const [ano, mes] = ym.split("-");
+  const i = Number(mes) - 1;
+  return NOMES[i] ? `${NOMES[i]} / ${ano}` : ym;
+}
+
+// Os 15 meses em volta de hoje. Chega e sobra pra qualquer nota atrasada,
+// e evita o campo de data solto, onde da pra digitar 2019 sem perceber.
+function mesesEscolhiveis(extra) {
+  const hoje = new Date();
+  const lista = [];
+  for (let i = 12; i >= -2; i--) {
+    const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+    lista.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  if (extra && !lista.includes(extra)) lista.push(extra);
+  return lista.sort().reverse();
+}
+
 function fmtData(d) { if (!d) return ""; return new Date(d).toLocaleDateString("pt-BR"); }
 // Data com hora: a entrada de nota acontece várias vezes no mesmo dia, e
 // saber a ordem ajuda quando dois lançamentos parecem o mesmo.
@@ -281,6 +340,15 @@ function useIsAdmin() {
 export default function NotasFiscais() {
   const [tela, setTela] = useState("lista"); // lista | conferencia
   const [documentos, setDocumentos] = useState([]);
+  // O mutirao: notas ja confirmadas cuja competencia ninguem carimbou.
+  // Enquanto elas existirem, o mes delas no DRE esta apoiado numa data
+  // que a IA leu do papel e ninguem conferiu.
+  const [aConfirmar, setAConfirmar] = useState([]);
+  const [marcados, setMarcados] = useState(() => new Set());
+  const [mesLote, setMesLote] = useState("");
+  const [salvandoLote, setSalvandoLote] = useState(false);
+  const [abrirLote, setAbrirLote] = useState(false);
+  const [resultadoLote, setResultadoLote] = useState("");
   const [carregando, setCarregando] = useState(true);
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState("");
@@ -293,12 +361,54 @@ export default function NotasFiscais() {
 
   const carregar = useCallback(async () => {
     setCarregando(true);
+    {
+      // Sem a migracao 108 a funcao nao existe. Nao e erro pra mostrar:
+      // o painel simplesmente nao aparece.
+      const { data: fila, error: erroFila } = await supabase.rpc("documentos_sem_competencia", { p_dias: 60 });
+      if (erroFila) {
+        setAConfirmar([]);
+      } else {
+        const lista = fila || [];
+        setAConfirmar(lista);
+        setMarcados(new Set(lista.map((l) => l.documento_id)));
+        // O mes ja vem escolhido: o mais sugerido da fila. Numa remessa de
+        // vinte notas de agosto, e agosto — e sobra so o clique.
+        const contagem = {};
+        lista.forEach((l) => {
+          const m = String(l.sugestao || "").slice(0, 7);
+          if (m) contagem[m] = (contagem[m] || 0) + 1;
+        });
+        const maisComum = Object.entries(contagem).sort((a, b) => b[1] - a[1])[0];
+        setMesLote(maisComum ? maisComum[0] : "");
+      }
+    }
     const { data, error } = await supabase.from("documentos_compra").select("*").order("criado_em", { ascending: false }).limit(30);
     if (error) setErro(error.message);
     setDocumentos(data || []);
     setCarregando(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
+
+  const confirmarLote = async () => {
+    if (marcados.size === 0 || !mesLote) return;
+    setSalvandoLote(true);
+    setResultadoLote("");
+    const { data, error } = await supabase.rpc("competencia_em_lote", {
+      p_documentos: Array.from(marcados),
+      p_competencia: `${mesLote}-01`,
+    });
+    setSalvandoLote(false);
+    if (error) {
+      setResultadoLote(
+        /does not exist|schema cache/i.test(error.message || "")
+          ? "Falta rodar a migração 108 no banco."
+          : error.message
+      );
+      return;
+    }
+    setResultadoLote(`${data} lançamento${data === 1 ? "" : "s"} carimbado${data === 1 ? "" : "s"} em ${rotuloMes(mesLote)}.`);
+    await carregar();
+  };
   // Reverte uma nota já confirmada. Tudo acontece dentro de uma função do
   // banco, numa transação só — ou desfaz estoque, conta a pagar e status
   // juntos, ou não desfaz nada. Desfazer pela metade seria pior que não
@@ -420,6 +530,131 @@ export default function NotasFiscais() {
             style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px 9px 34px", borderRadius: 8, border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF" }} />
         </div>
       )}
+      {/* --------------------------------------------------------------
+          Mutirao da competencia
+
+          O caso que gerou isto: em 01/09/2026 entraram ~20 notas de
+          agosto. Seis tinham a data lida errada pela IA — uma em
+          28/09/2026, que ainda nao aconteceu. Como o DRE decide o mes
+          pela data lida, essas compras de agosto foram parar em
+          julho/2024, outubro/2024, novembro/2025 e setembro/2026. Tres
+          delas tao longe que nem apareciam na janela do DRE: sumiram do
+          resultado, sem erro em tela nenhuma.
+
+          Confirmar uma por uma e onde a pessoa desiste na setima e deixa
+          as outras treze como estavam. Por isso o lote.
+          -------------------------------------------------------------- */}
+      {aConfirmar.length > 0 && (
+        <div style={{ border: "1px solid #E8D48A", background: "#FDF6EC", borderRadius: 12,
+                      marginBottom: 14, overflow: "hidden" }}>
+          <div style={{ padding: "11px 14px", display: "flex", gap: 10, alignItems: "center",
+                        flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 210, fontSize: 12.5, lineHeight: 1.6, color: "#7A6A1E" }}>
+              <b>{aConfirmar.length} {aConfirmar.length === 1 ? "nota lançada sem confirmar" : "notas lançadas sem confirmar"} o mês.</b>{" "}
+              {(() => {
+                const s = aConfirmar.filter((l) => l.suspeita).length;
+                return s > 0
+                  ? `${s} ${s === 1 ? "tem data suspeita" : "têm data suspeita"} — o DRE está usando essa data pra escolher o mês.`
+                  : "O DRE está usando a data lida da nota pra escolher o mês.";
+              })()}
+            </div>
+            <button onClick={() => setAbrirLote((v) => !v)} style={{ ...linkBtn, fontSize: 12 }}>
+              {abrirLote ? "esconder" : "revisar"}
+            </button>
+          </div>
+
+          {abrirLote && (
+            <>
+              <div style={{ padding: "10px 14px", background: "#FFFFFF", borderTop: "1px solid #EFE2C0",
+                            borderBottom: "1px solid #EFE2C0", display: "flex", gap: 9,
+                            alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  onClick={() => setMarcados(marcados.size === aConfirmar.length
+                    ? new Set()
+                    : new Set(aConfirmar.map((l) => l.documento_id)))}
+                  style={{ ...linkBtn, fontSize: 11.5 }}>
+                  {marcados.size === aConfirmar.length ? "desmarcar todas" : "marcar todas"}
+                </button>
+                <span style={{ fontSize: 12, fontWeight: 700 }}>
+                  {marcados.size} selecionada{marcados.size === 1 ? "" : "s"} ·{" "}
+                  {brl(aConfirmar.filter((l) => marcados.has(l.documento_id))
+                                 .reduce((t, l) => t + (Number(l.valor) || 0), 0))}
+                </span>
+                <span style={{ flex: 1 }} />
+                <span style={{ fontSize: 11.5, color: "#6B685C" }}>competência</span>
+                <select value={mesLote} onChange={(e) => setMesLote(e.target.value)}
+                  style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #E8E2D2",
+                           fontSize: 12.5, fontWeight: 700, fontFamily: "inherit",
+                           background: "#FFFFFF", color: "#22231F" }}>
+                  {mesesEscolhiveis(mesLote).map((m) => (
+                    <option key={m} value={m}>{rotuloMes(m)}</option>
+                  ))}
+                </select>
+                <button onClick={confirmarLote} disabled={salvandoLote || marcados.size === 0 || !mesLote}
+                  style={{ background: salvandoLote || marcados.size === 0 ? "#E8E2D2" : "#22231F",
+                           color: salvandoLote || marcados.size === 0 ? "#A9A395" : "#F3EFE3",
+                           border: "none", borderRadius: 8, padding: "8px 13px", fontSize: 12,
+                           fontWeight: 700, fontFamily: "inherit",
+                           cursor: marcados.size === 0 ? "default" : "pointer" }}>
+                  {salvandoLote ? "gravando…" : `Confirmar ${marcados.size}`}
+                </button>
+              </div>
+
+              {resultadoLote && (
+                <div style={{ padding: "9px 14px", fontSize: 12, background: "#FFFFFF",
+                              borderBottom: "1px solid #EFE2C0",
+                              color: /migração|Falta/.test(resultadoLote) ? "#A32D2D" : "#0F6E56" }}>
+                  {resultadoLote}
+                </div>
+              )}
+
+              {aConfirmar.map((l, idx) => {
+                const on = marcados.has(l.documento_id);
+                const cor = l.suspeita === "futuro" ? "#A32D2D"
+                          : l.suspeita ? "#7A6A1E" : "#8A8778";
+                return (
+                  <div key={l.documento_id}
+                       onClick={() => setMarcados((prev) => {
+                         const novo = new Set(prev);
+                         if (novo.has(l.documento_id)) novo.delete(l.documento_id);
+                         else novo.add(l.documento_id);
+                         return novo;
+                       })}
+                       style={{ display: "flex", alignItems: "center", gap: 11, padding: "9px 14px",
+                                background: l.suspeita ? "#FDF7F5" : "#FFFFFF",
+                                borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", cursor: "pointer" }}>
+                    <span style={{ width: 17, height: 17, borderRadius: 4, flex: "none",
+                                   border: on ? "1.5px solid #22231F" : "1.5px solid #C4BCA8",
+                                   background: on ? "#22231F" : "#FFFFFF", color: "#F3EFE3",
+                                   fontSize: 11, lineHeight: "15px", textAlign: "center" }}>
+                      {on ? "✓" : ""}
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, overflow: "hidden",
+                                    textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.fornecedor}</div>
+                      <div style={{ fontSize: 10.5, color: cor, marginTop: 2 }}>
+                        {l.data_documento ? `nota de ${fmtData(l.data_documento)}` : "sem data na nota"}
+                        {" · "}entrada {fmtData(l.entrada_em)}
+                        {l.suspeita === "futuro" && " · data no futuro"}
+                        {l.suspeita === "muito antiga" && " · muito antiga, confira"}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap",
+                                   fontVariantNumeric: "tabular-nums" }}>{brl(Number(l.valor) || 0)}</span>
+                  </div>
+                );
+              })}
+
+              <div style={{ padding: "9px 14px", fontSize: 10.5, color: "#7A6A1E", lineHeight: 1.6,
+                            borderTop: "1px solid #EFE2C0" }}>
+                O mês já vem escolhido a partir das notas da mesma remessa cuja data passou no teste —
+                não é chute. Se nenhuma passar, ele cai pro mês da entrada, e aí a decisão é sua.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={{ ...sectionLabel, marginBottom: 0 }}>Documentos recebidos</div>
         <button onClick={() => setTela("regras")} style={{ ...linkBtn, fontSize: 12 }}>Regras de produto</button>
@@ -658,6 +893,25 @@ function Conferencia({ documento, onVoltar }) {
   // pra frente sem ninguém pedir. E o boleto tem uma data impressa nele;
   // digitar essa data é mais curto que calcular quantos dias faltam.
   const [vencimentoBoleto, setVencimentoBoleto] = useState("");
+  // A que MES esta despesa pertence.
+  //
+  // Ate 01/09/2026 nao existia esse campo, e o DRE decidia o mes pela data
+  // que a IA leu do papel. Naquele dia entraram notas de agosto lidas como
+  // 04/07/2024, 01/10/2024, 03/11/2025 e 28/09/2026 — uma delas no futuro.
+  // Cada uma dessas foi parar num mes diferente, calada, e agosto ficou
+  // barato demais.
+  //
+  // Data lida e PALPITE de OCR. Competencia e DECISAO. Sao campos
+  // diferentes porque sao coisas diferentes.
+  const [competencia, setCompetencia] = useState("");
+
+  // Preenche sozinho com o mes da nota. Quando a data lida nao e
+  // plausivel — futuro, ou mais de 120 dias antes da entrada — cai pro
+  // mes da entrada, que e o unico fato que sobra.
+  useEffect(() => {
+    if (!documento) return;
+    setCompetencia(mesSugerido(documento));
+  }, [documento]);
   const [prazoAprendido, setPrazoAprendido] = useState(null); // { dias, de }
   const [erro, setErro] = useState("");
   const [editandoId, setEditandoId] = useState(null);
@@ -1052,6 +1306,9 @@ function Conferencia({ documento, onVoltar }) {
         centro_custo: "insumos",
         data_compra: documento.data_documento || new Date().toISOString().slice(0, 10),
         data_vencimento: vencimento,
+        // Sempre dia 1: guardar 20/08 e 31/08 como competencias diferentes
+        // criaria dois "agostos" que nao somam juntos em lugar nenhum.
+        competencia: competencia ? `${competencia}-01` : null,
         criado_por: userData?.user?.id,
       });
     }
@@ -1430,6 +1687,62 @@ function Conferencia({ documento, onVoltar }) {
           {itens.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum item lido nesse documento.</div>}
         </div>
       )}
+      {/* ------------------------------------------------------------
+          A que mes esta despesa pertence
+
+          Vem preenchido e quase nunca precisa mudar. Existe pro caso em
+          que muda: mercadoria recebida em 31/08 e faturada em 01/09
+          pertence a agosto, porque foi em agosto que ela virou custo.
+
+          E, principalmente, existe pra quando a IA erra a data — ai o
+          campo e a unica coisa entre a leitura errada e o DRE.
+          ------------------------------------------------------------ */}
+      <div style={{ ...cardStyle, marginBottom: 14, border: "1px dashed #37A0E5", background: "#FAFCFE" }}>
+        <label style={{ fontSize: 11, color: "#185FA5", display: "block", marginBottom: 5 }}>
+          Esta despesa pertence a que mês?
+        </label>
+        <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={competencia} onChange={(e) => setCompetencia(e.target.value)}
+            style={{ padding: "7px 9px", borderRadius: 7, border: "1px solid #37A0E5", fontSize: 13,
+                     fontWeight: 700, fontFamily: "inherit", background: "#FFFFFF", color: "#22231F",
+                     minWidth: 170 }}>
+            {mesesEscolhiveis(competencia).map((m) => (
+              <option key={m} value={m}>{rotuloMes(m)}</option>
+            ))}
+          </select>
+          {(() => {
+            const suspeita = dataSuspeita(documento);
+            if (suspeita === "futuro") return (
+              <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999,
+                             background: "#FBE9E9", color: "#A32D2D", border: "1px solid #E9C4C4" }}>
+                a IA leu {fmtData(documento.data_documento)} — data no futuro
+              </span>
+            );
+            if (suspeita === "muito antiga") return (
+              <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999,
+                             background: "#FDF3DE", color: "#7A6A1E", border: "1px solid #E8D48A" }}>
+                a IA leu {fmtData(documento.data_documento)} — confira
+              </span>
+            );
+            if (suspeita === "sem data") return (
+              <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999,
+                             background: "#F1EEE6", color: "#6B685C", border: "1px solid #DDD6C6" }}>
+                a IA não achou data na nota
+              </span>
+            );
+            return mesDe(documento.data_documento) === competencia ? (
+              <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999,
+                             background: "#EDF7F2", color: "#14503F", border: "1px solid #B6DDCC" }}>
+                igual à data da nota
+              </span>
+            ) : null;
+          })()}
+        </div>
+        <div style={{ fontSize: 10, color: "#6B685C", marginTop: 7, lineHeight: 1.6 }}>
+          É este mês que manda no DRE — acima da data lida da nota, que é palpite da IA.
+        </div>
+      </div>
+
       <div style={{ ...cardStyle, marginBottom: 14 }}>
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Forma de pagamento</label>
         <select value={formaPagamento} onChange={(e) => setFormaPagamento(e.target.value)}
