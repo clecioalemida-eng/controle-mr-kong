@@ -349,6 +349,14 @@ export default function NotasFiscais() {
   const [salvandoLote, setSalvandoLote] = useState(false);
   const [abrirLote, setAbrirLote] = useState(false);
   const [resultadoLote, setResultadoLote] = useState("");
+  // O segundo balde: conta lançada direto, sem nota fiscal atras — aluguel,
+  // energia, internet. Medido em 01/09/2026: 28 lançamentos, R$ 17.050,48,
+  // 42% de tudo que estava sem mes decidido. O painel das notas nunca ia
+  // alcançar essas, porque ele procura por DOCUMENTO e elas nao tem um.
+  const [contasSemNota, setContasSemNota] = useState([]);
+  const [marcadasContas, setMarcadasContas] = useState(() => new Set());
+  const [mesContas, setMesContas] = useState("");
+  const [balde, setBalde] = useState("notas");
   const [carregando, setCarregando] = useState(true);
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState("");
@@ -370,16 +378,47 @@ export default function NotasFiscais() {
       } else {
         const lista = fila || [];
         setAConfirmar(lista);
-        setMarcados(new Set(lista.map((l) => l.documento_id)));
-        // O mes ja vem escolhido: o mais sugerido da fila. Numa remessa de
-        // vinte notas de agosto, e agosto — e sobra so o clique.
+        // O mes ja vem escolhido: o mais sugerido da fila.
         const contagem = {};
         lista.forEach((l) => {
           const m = String(l.sugestao || "").slice(0, 7);
           if (m) contagem[m] = (contagem[m] || 0) + 1;
         });
         const maisComum = Object.entries(contagem).sort((a, b) => b[1] - a[1])[0];
-        setMesLote(maisComum ? maisComum[0] : "");
+        const mes = maisComum ? maisComum[0] : "";
+        setMesLote(mes);
+        // E a selecao segue o mes, nao a lista inteira.
+        //
+        // Com seis notas todas de agosto, marcar tudo era seguro. Com 66,
+        // vindas de dias diferentes, marcar tudo e escolher um mes joga as
+        // de julho dentro de agosto — e ai o mutirao piora o que veio
+        // consertar. Marcado por padrao e so quem o proprio banco sugeriu
+        // pra aquele mes; o resto voce marca a mao se quiser.
+        setMarcados(new Set(
+          lista.filter((l) => String(l.sugestao || "").slice(0, 7) === mes)
+               .map((l) => l.documento_id)
+        ));
+      }
+    }
+    {
+      const { data: cSem, error: erroC } = await supabase.rpc("contas_sem_competencia", { p_dias: 180 });
+      if (erroC) {
+        setContasSemNota([]);
+      } else {
+        const lista = cSem || [];
+        setContasSemNota(lista);
+        const contagem = {};
+        lista.forEach((l) => {
+          const m = String(l.sugestao || "").slice(0, 7);
+          if (m) contagem[m] = (contagem[m] || 0) + 1;
+        });
+        const maisComum = Object.entries(contagem).sort((a, b) => b[1] - a[1])[0];
+        const mes = maisComum ? maisComum[0] : "";
+        setMesContas(mes);
+        setMarcadasContas(new Set(
+          lista.filter((l) => String(l.sugestao || "").slice(0, 7) === mes)
+               .map((l) => l.conta_id)
+        ));
       }
     }
     const { data, error } = await supabase.from("documentos_compra").select("*").order("criado_em", { ascending: false }).limit(30);
@@ -388,6 +427,27 @@ export default function NotasFiscais() {
     setCarregando(false);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
+
+  const confirmarContas = async () => {
+    if (marcadasContas.size === 0 || !mesContas) return;
+    setSalvandoLote(true);
+    setResultadoLote("");
+    const { data, error } = await supabase.rpc("competencia_de_contas_em_lote", {
+      p_contas: Array.from(marcadasContas),
+      p_competencia: `${mesContas}-01`,
+    });
+    setSalvandoLote(false);
+    if (error) {
+      setResultadoLote(
+        /does not exist|schema cache/i.test(error.message || "")
+          ? "Falta rodar a migração 109 no banco."
+          : error.message
+      );
+      return;
+    }
+    setResultadoLote(`${data} conta${data === 1 ? "" : "s"} carimbada${data === 1 ? "" : "s"} em ${rotuloMes(mesContas)}.`);
+    await carregar();
+  };
 
   const confirmarLote = async () => {
     if (marcados.size === 0 || !mesLote) return;
@@ -544,19 +604,20 @@ export default function NotasFiscais() {
           Confirmar uma por uma e onde a pessoa desiste na setima e deixa
           as outras treze como estavam. Por isso o lote.
           -------------------------------------------------------------- */}
-      {aConfirmar.length > 0 && (
+      {(aConfirmar.length > 0 || contasSemNota.length > 0) && (
         <div style={{ border: "1px solid #E8D48A", background: "#FDF6EC", borderRadius: 12,
                       marginBottom: 14, overflow: "hidden" }}>
           <div style={{ padding: "11px 14px", display: "flex", gap: 10, alignItems: "center",
                         flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 210, fontSize: 12.5, lineHeight: 1.6, color: "#7A6A1E" }}>
-              <b>{aConfirmar.length} {aConfirmar.length === 1 ? "nota lançada sem confirmar" : "notas lançadas sem confirmar"} o mês.</b>{" "}
-              {(() => {
-                const s = aConfirmar.filter((l) => l.suspeita).length;
-                return s > 0
-                  ? `${s} ${s === 1 ? "tem data suspeita" : "têm data suspeita"} — o DRE está usando essa data pra escolher o mês.`
-                  : "O DRE está usando a data lida da nota pra escolher o mês.";
-              })()}
+              <b>
+                {aConfirmar.length + contasSemNota.length} lançamentos sem o mês confirmado
+                {" · "}
+                {brl(aConfirmar.reduce((t, l) => t + (Number(l.valor) || 0), 0)
+                   + contasSemNota.reduce((t, l) => t + (Number(l.valor) || 0), 0))}
+              </b>{" "}
+              Enquanto ninguém decide, o DRE escolhe o mês pela data que a IA leu da nota
+              ou pela data de vencimento — e nenhuma das duas é a mesma coisa que competência.
             </div>
             <button onClick={() => setAbrirLote((v) => !v)} style={{ ...linkBtn, fontSize: 12 }}>
               {abrirLote ? "esconder" : "revisar"}
@@ -565,15 +626,153 @@ export default function NotasFiscais() {
 
           {abrirLote && (
             <>
+              {/* Dois baldes, porque sao dois problemas diferentes com a
+                  mesma consequencia. Nota tem data lida por IA (que erra);
+                  conta sem nota tem vencimento (que nunca foi competencia).
+                  Juntar os dois numa lista so faria a sugestao de um
+                  parecer que vale pro outro. */}
+              <div style={{ display: "flex", gap: 6, padding: "10px 14px", background: "#FFFFFF",
+                            borderTop: "1px solid #EFE2C0", flexWrap: "wrap" }}>
+                {[
+                  { chave: "notas",  rotulo: `Com nota (${aConfirmar.length})`,
+                    valor: aConfirmar.reduce((t, l) => t + (Number(l.valor) || 0), 0) },
+                  { chave: "contas", rotulo: `Sem nota (${contasSemNota.length})`,
+                    valor: contasSemNota.reduce((t, l) => t + (Number(l.valor) || 0), 0) },
+                ].map((b) => (
+                  <button key={b.chave} onClick={() => { setBalde(b.chave); setResultadoLote(""); }}
+                    style={{ padding: "7px 13px", borderRadius: 999, fontSize: 11.5, fontWeight: 700,
+                             fontFamily: "inherit", cursor: "pointer",
+                             border: balde === b.chave ? "none" : "1px solid #E8E2D2",
+                             background: balde === b.chave ? "#22231F" : "#FFFFFF",
+                             color: balde === b.chave ? "#F3EFE3" : "#6B685C" }}>
+                    {b.rotulo} · {brl(b.valor)}
+                  </button>
+                ))}
+              </div>
+
+              {balde === "contas" ? (
+                <>
+                  <div style={{ padding: "10px 14px", background: "#FFFFFF", borderTop: "1px solid #EFE2C0",
+                                borderBottom: "1px solid #EFE2C0", display: "flex", gap: 9,
+                                alignItems: "center", flexWrap: "wrap" }}>
+                    <button
+                      onClick={() => setMarcadasContas(marcadasContas.size > 0
+                        ? new Set()
+                        : new Set(contasSemNota.filter((l) => String(l.sugestao || "").slice(0, 7) === mesContas)
+                                                .map((l) => l.conta_id)))}
+                      style={{ ...linkBtn, fontSize: 11.5 }}>
+                      {marcadasContas.size > 0 ? "desmarcar" : `marcar as de ${rotuloMes(mesContas)}`}
+                    </button>
+                    <span style={{ fontSize: 12, fontWeight: 700 }}>
+                      {marcadasContas.size} selecionada{marcadasContas.size === 1 ? "" : "s"} ·{" "}
+                      {brl(contasSemNota.filter((l) => marcadasContas.has(l.conta_id))
+                                        .reduce((t, l) => t + (Number(l.valor) || 0), 0))}
+                    </span>
+                    <span style={{ flex: 1 }} />
+                    <span style={{ fontSize: 11.5, color: "#6B685C" }}>competência</span>
+                    <select value={mesContas}
+                      onChange={(e) => {
+                        const m = e.target.value;
+                        setMesContas(m);
+                        setMarcadasContas(new Set(
+                          contasSemNota.filter((l) => String(l.sugestao || "").slice(0, 7) === m)
+                                       .map((l) => l.conta_id)));
+                      }}
+                      style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #E8E2D2",
+                               fontSize: 12.5, fontWeight: 700, fontFamily: "inherit",
+                               background: "#FFFFFF", color: "#22231F" }}>
+                      {mesesEscolhiveis(mesContas).map((m) => (
+                        <option key={m} value={m}>{rotuloMes(m)}</option>
+                      ))}
+                    </select>
+                    <button onClick={confirmarContas}
+                      disabled={salvandoLote || marcadasContas.size === 0 || !mesContas}
+                      style={{ background: salvandoLote || marcadasContas.size === 0 ? "#E8E2D2" : "#22231F",
+                               color: salvandoLote || marcadasContas.size === 0 ? "#A9A395" : "#F3EFE3",
+                               border: "none", borderRadius: 8, padding: "8px 13px", fontSize: 12,
+                               fontWeight: 700, fontFamily: "inherit",
+                               cursor: marcadasContas.size === 0 ? "default" : "pointer" }}>
+                      {salvandoLote ? "gravando…" : `Confirmar ${marcadasContas.size}`}
+                    </button>
+                  </div>
+
+                  {resultadoLote && (
+                    <div style={{ padding: "9px 14px", fontSize: 12, background: "#FFFFFF",
+                                  borderBottom: "1px solid #EFE2C0",
+                                  color: /migração|Falta/.test(resultadoLote) ? "#A32D2D" : "#0F6E56" }}>
+                      {resultadoLote}
+                    </div>
+                  )}
+
+                  {contasSemNota.map((l, idx) => {
+                    const on = marcadasContas.has(l.conta_id);
+                    const bate = String(l.sugestao || "").slice(0, 7) === mesContas;
+                    return (
+                      <div key={l.conta_id}
+                           onClick={() => setMarcadasContas((prev) => {
+                             const novo = new Set(prev);
+                             if (novo.has(l.conta_id)) novo.delete(l.conta_id);
+                             else novo.add(l.conta_id);
+                             return novo;
+                           })}
+                           style={{ display: "flex", alignItems: "center", gap: 11, padding: "9px 14px",
+                                    background: "#FFFFFF",
+                                    borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", cursor: "pointer" }}>
+                        <span style={{ width: 17, height: 17, borderRadius: 4, flex: "none",
+                                       border: on ? "1.5px solid #22231F" : "1.5px solid #C4BCA8",
+                                       background: on ? "#22231F" : "#FFFFFF", color: "#F3EFE3",
+                                       fontSize: 11, lineHeight: "15px", textAlign: "center" }}>
+                          {on ? "✓" : ""}
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 700, overflow: "hidden",
+                                        textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {l.descricao}
+                            {l.fornecedor && l.fornecedor !== "—" && (
+                              <span style={{ fontWeight: 400, color: "#8A8778" }}> · {l.fornecedor}</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2 }}>
+                            {l.data_vencimento ? `vence ${fmtData(l.data_vencimento)}` : "sem vencimento"}
+                            {l.data_compra ? ` · compra ${fmtData(l.data_compra)}` : ""}
+                          </div>
+                          {/* A BASE da sugestao, escrita. Uma conta de consumo
+                              vai pro mes ANTERIOR ao vencimento, e isso e
+                              surpreendente o bastante pra precisar dizer por
+                              que — senao parece erro. */}
+                          <div style={{ fontSize: 10, color: "#8A8778", marginTop: 1 }}>
+                            sugerido: <b style={{ color: bate ? "#0F6E56" : "#A32D2D" }}>
+                              {rotuloMes(String(l.sugestao || "").slice(0, 7))}
+                            </b>
+                            {" — "}{l.base_sugestao}
+                          </div>
+                        </div>
+                        <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap",
+                                       fontVariantNumeric: "tabular-nums" }}>{brl(Number(l.valor) || 0)}</span>
+                      </div>
+                    );
+                  })}
+
+                  <div style={{ padding: "9px 14px", fontSize: 10.5, color: "#7A6A1E", lineHeight: 1.6,
+                                borderTop: "1px solid #EFE2C0" }}>
+                    Energia, água, gás e internet vão pro <b>mês anterior ao vencimento</b>: o consumo
+                    de agosto vence em setembro. Contadas pelo vencimento, agosto fica barato e setembro
+                    caro — todo mês, no mesmo tamanho, o que faz o erro passar despercebido justamente
+                    por ser constante.
+                  </div>
+                </>
+              ) : (
+              <>
               <div style={{ padding: "10px 14px", background: "#FFFFFF", borderTop: "1px solid #EFE2C0",
                             borderBottom: "1px solid #EFE2C0", display: "flex", gap: 9,
                             alignItems: "center", flexWrap: "wrap" }}>
                 <button
-                  onClick={() => setMarcados(marcados.size === aConfirmar.length
+                  onClick={() => setMarcados(marcados.size > 0
                     ? new Set()
-                    : new Set(aConfirmar.map((l) => l.documento_id)))}
+                    : new Set(aConfirmar.filter((l) => String(l.sugestao || "").slice(0, 7) === mesLote)
+                                        .map((l) => l.documento_id)))}
                   style={{ ...linkBtn, fontSize: 11.5 }}>
-                  {marcados.size === aConfirmar.length ? "desmarcar todas" : "marcar todas"}
+                  {marcados.size > 0 ? "desmarcar" : `marcar as de ${rotuloMes(mesLote)}`}
                 </button>
                 <span style={{ fontSize: 12, fontWeight: 700 }}>
                   {marcados.size} selecionada{marcados.size === 1 ? "" : "s"} ·{" "}
@@ -582,7 +781,19 @@ export default function NotasFiscais() {
                 </span>
                 <span style={{ flex: 1 }} />
                 <span style={{ fontSize: 11.5, color: "#6B685C" }}>competência</span>
-                <select value={mesLote} onChange={(e) => setMesLote(e.target.value)}
+                <select value={mesLote}
+                  onChange={(e) => {
+                    const m = e.target.value;
+                    setMesLote(m);
+                    // Trocar o mes troca a selecao junto. Sem isto, escolher
+                    // "julho" com as de agosto marcadas carimbaria agosto
+                    // como julho — exatamente o erro que a tela existe pra
+                    // impedir.
+                    setMarcados(new Set(
+                      aConfirmar.filter((l) => String(l.sugestao || "").slice(0, 7) === m)
+                                .map((l) => l.documento_id)
+                    ));
+                  }}
                   style={{ padding: "6px 8px", borderRadius: 7, border: "1px solid #E8E2D2",
                            fontSize: 12.5, fontWeight: 700, fontFamily: "inherit",
                            background: "#FFFFFF", color: "#22231F" }}>
@@ -638,6 +849,14 @@ export default function NotasFiscais() {
                         {l.suspeita === "futuro" && " · data no futuro"}
                         {l.suspeita === "muito antiga" && " · muito antiga, confira"}
                       </div>
+                      {/* O mes sugerido em cada linha. Sem isso, numa lista
+                          de 66 nao da pra ver que tem julho no meio de
+                          agosto — e a pessoa carimba tudo junto sem saber. */}
+                      <div style={{ fontSize: 10, color: "#8A8778", marginTop: 1 }}>
+                        sugerido: <b style={{
+                          color: String(l.sugestao || "").slice(0, 7) === mesLote ? "#0F6E56" : "#A32D2D"
+                        }}>{rotuloMes(String(l.sugestao || "").slice(0, 7))}</b>
+                      </div>
                     </div>
                     <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap",
                                    fontVariantNumeric: "tabular-nums" }}>{brl(Number(l.valor) || 0)}</span>
@@ -647,9 +866,26 @@ export default function NotasFiscais() {
 
               <div style={{ padding: "9px 14px", fontSize: 10.5, color: "#7A6A1E", lineHeight: 1.6,
                             borderTop: "1px solid #EFE2C0" }}>
+                {(() => {
+                  const meses = {};
+                  aConfirmar.forEach((l) => {
+                    const m = String(l.sugestao || "").slice(0, 7);
+                    if (m) meses[m] = (meses[m] || 0) + 1;
+                  });
+                  const lista = Object.entries(meses).sort();
+                  return lista.length > 1 ? (
+                    <div style={{ marginBottom: 6, color: "#7A2222" }}>
+                      <b>Esta fila tem notas de {lista.length} meses diferentes:</b>{" "}
+                      {lista.map(([m, n]) => `${rotuloMes(m)} (${n})`).join(" · ")}. Marcadas estão só
+                      as de {rotuloMes(mesLote)} — troque o mês no seletor pra fazer as outras depois.
+                    </div>
+                  ) : null;
+                })()}
                 O mês já vem escolhido a partir das notas da mesma remessa cuja data passou no teste —
                 não é chute. Se nenhuma passar, ele cai pro mês da entrada, e aí a decisão é sua.
               </div>
+              </>
+              )}
             </>
           )}
         </div>
