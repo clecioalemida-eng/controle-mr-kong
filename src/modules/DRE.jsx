@@ -287,6 +287,18 @@ function FolhaDRE({ mes, linhas, receitaBruta, lucro, pctCobertura, semFicha, se
 function Demonstrativo({ irPara }) {
   const [mes, setMes] = useState(mesAtual());
   const [linhas, setLinhas] = useState(null);
+  // Abrir a linha do DRE.
+  //
+  // O numero sozinho e verdadeiro e inutil ao mesmo tempo: "1.9 Vendas nao
+  // classificadas R$ 138.137,82" nao diz QUAIS canais estao ali dentro,
+  // entao nao da pra fazer nada a respeito. Sem poder abrir, o balde
+  // continua enchendo pra sempre.
+  const [linhaAberta, setLinhaAberta] = useState(null);
+  const [origem, setOrigem] = useState(null);
+  const [carregandoOrigem, setCarregandoOrigem] = useState(false);
+  const [erroOrigem, setErroOrigem] = useState("");
+  const [planoContas, setPlanoContas] = useState([]);
+  const [movendo, setMovendo] = useState(null);
   const [cobertura, setCobertura] = useState(null);
   const [semClassificar, setSemClassificar] = useState(0);
   const [carregando, setCarregando] = useState(false);
@@ -312,11 +324,90 @@ function Demonstrativo({ irPara }) {
   // a caixa de impressão às vezes abre com a folha ainda em branco.
   const imprimir = () => { setTimeout(() => window.print(), 60); };
 
+  // ------------------------------------------------------------------
+  // De onde saiu esse numero
+  //
+  // Cada linha do DRE vem de um lugar diferente, e isso nao e detalhe:
+  //
+  //   receita  -> canal do pedido, mapeado pela tabela dre_canais
+  //   custo    -> lançamentos de contas a pagar naquele plano de conta
+  //   formula  -> percentual sobre a receita (Simples, embalagens)
+  //
+  // Mostrar "a origem" sem respeitar essa diferenca daria uma lista vazia
+  // pras linhas de formula e a impressao de que ha algo quebrado. Onde nao
+  // ha o que abrir, a tela DIZ que e formula e mostra qual — e mais util
+  // que um painel em branco.
+  // ------------------------------------------------------------------
+  const tipoDaLinha = (codigo) => {
+    const c = String(codigo || "");
+    if (c === "2.1" || c === "3.2") return "formula";
+    if (c.startsWith("1.")) return "receita";
+    if (c === "3.1") return "cmv";
+    if (c === "3.3") return "perdas";
+    if (c === "2.5") return "servico";
+    if (c === "2.2" || c === "2.3") return "taxas";
+    if (c === "10.1") return "depreciacao";
+    return "despesa";
+  };
+
+  const abrirLinha = async (l) => {
+    if (linhaAberta === l.codigo) { setLinhaAberta(null); setOrigem(null); return; }
+    setLinhaAberta(l.codigo);
+    setOrigem(null);
+    setErroOrigem("");
+    const tipo = tipoDaLinha(l.codigo);
+    if (tipo !== "receita" && tipo !== "despesa") return;
+    setCarregandoOrigem(true);
+    const fn = tipo === "receita" ? "dre_origem_receita" : "dre_origem_despesa";
+    const { data, error } = await supabase.rpc(fn, { p_mes: mes, p_conta: l.codigo });
+    setCarregandoOrigem(false);
+    if (error) {
+      setErroOrigem(
+        /does not exist|schema cache/i.test(error.message || "")
+          ? "Falta rodar a migração 111 no banco."
+          : error.message
+      );
+      return;
+    }
+    setOrigem({ tipo, itens: data || [] });
+  };
+
+  const moverCanal = async (canal, conta) => {
+    if (!conta) return;
+    setMovendo(canal);
+    setErroOrigem("");
+    const { error } = await supabase.rpc("dre_mover_canal", { p_canal: canal, p_conta: conta, p_rotulo: null });
+    setMovendo(null);
+    if (error) { setErroOrigem(error.message); return; }
+    // Recalcula tudo: mover um canal muda DUAS linhas ao mesmo tempo — a
+    // que perdeu e a que ganhou — e ver as duas andarem juntas e o que
+    // prova que o dinheiro nao sumiu no caminho.
+    await calcular();
+    setLinhaAberta(null);
+    setOrigem(null);
+  };
+
+  const moverConta = async (contaPagarId, plano) => {
+    if (!plano) return;
+    setMovendo(contaPagarId);
+    setErroOrigem("");
+    const { error } = await supabase.rpc("dre_mover_conta", { p_conta_pagar: contaPagarId, p_plano_conta: plano });
+    setMovendo(null);
+    if (error) { setErroOrigem(error.message); return; }
+    await calcular();
+    setLinhaAberta(null);
+    setOrigem(null);
+  };
+
   const calcular = useCallback(async () => {
     setCarregando(true);
     setErro("");
     const [ini, fim] = limitesDoMes(mes);
 
+    if (planoContas.length === 0) {
+      const { data: pc } = await supabase.rpc("plano_para_seletor");
+      setPlanoContas(pc || []);
+    }
     const { data, error } = await supabase.rpc("dre_mensal", { p_mes: mes });
     if (error) {
       setErro(error.message || "Não deu para calcular o DRE.");
@@ -431,10 +522,13 @@ function Demonstrativo({ irPara }) {
                   const ehGrupo = l.nivel === 0 && !ehSubtotal;
                   const negativo = Number(l.valor) < 0;
                   const zerado = Number(l.valor) === 0;
+                  const aberta = linhaAberta === l.codigo;
+                  const tipo = tipoDaLinha(l.codigo);
                   return (
-                    <tr key={`${l.codigo}-${l.ordem}`} style={{
+                    <React.Fragment key={`${l.codigo}-${l.ordem}`}>
+                    <tr style={{
                       borderTop: "1px solid #F0EBDD",
-                      background: ehSubtotal ? "#F6F1E7" : "#FFFFFF",
+                      background: aberta ? "#FCFAF4" : ehSubtotal ? "#F6F1E7" : "#FFFFFF",
                     }}>
                       <td style={{
                         padding: ehGrupo || ehSubtotal ? "11px 12px" : "8px 12px",
@@ -448,7 +542,21 @@ function Demonstrativo({ irPara }) {
                             color: "#B4AF9E", marginRight: 8,
                           }}>{l.codigo}</span>
                         )}
-                        {ehSubtotal ? `= ${l.nome}` : l.nome}
+                        {/* So linha de detalhe abre. Grupo e subtotal sao
+                            somas de outras linhas — abrir eles seria
+                            repetir o que ja esta na tela logo abaixo. */}
+                        {ehSubtotal || ehGrupo ? (
+                          ehSubtotal ? `= ${l.nome}` : l.nome
+                        ) : (
+                          <button onClick={() => abrirLinha(l)}
+                            style={{ background: "none", border: "none", padding: 0, font: "inherit",
+                                     color: "inherit", cursor: "pointer", textAlign: "left" }}>
+                            {l.nome}
+                            <span style={{ color: "#B4AF9E", marginLeft: 6, fontSize: 11 }}>
+                              {linhaAberta === l.codigo ? "▴" : "▾"}
+                            </span>
+                          </button>
+                        )}
                       </td>
                       <td style={{
                         padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap",
@@ -466,6 +574,151 @@ function Demonstrativo({ irPara }) {
                         {ehGrupo || ehSubtotal ? pct(l.valor, receitaBruta) : ""}
                       </td>
                     </tr>
+
+                    {aberta && (
+                      <tr style={{ background: "#FCFAF4" }}>
+                        <td colSpan={3} style={{ padding: "0 12px 12px 30px" }}>
+                          {carregandoOrigem && (
+                            <div style={{ fontSize: 12, color: "#8A8778", padding: "8px 0" }}>abrindo…</div>
+                          )}
+                          {erroOrigem && (
+                            <div style={{ fontSize: 12, color: "#A32D2D", padding: "8px 0" }}>{erroOrigem}</div>
+                          )}
+
+                          {/* Linha de formula: nao ha lista, e dizer isso e a
+                              resposta certa — nao um painel vazio. */}
+                          {!carregandoOrigem && !erroOrigem && tipo !== "receita" && tipo !== "despesa" && (
+                            <div style={{ fontSize: 11.5, color: "#6B685C", lineHeight: 1.7,
+                                          background: "#FFFFFF", border: "1px solid #E8E2D2",
+                                          borderRadius: 9, padding: "10px 12px" }}>
+                              {tipo === "formula" && (
+                                <>Esta linha é <b>calculada por fórmula</b>, não por lançamento: é um
+                                percentual sobre a receita bruta, definido na aba <b>Configuração</b>.
+                                Não há o que reclassificar aqui — o que muda o valor é a receita ou o
+                                percentual.</>
+                              )}
+                              {tipo === "cmv" && (
+                                <>Vem das <b>fichas técnicas</b>: para cada prato vendido no mês, a
+                                quantidade de cada insumo vezes o custo dele. Quem muda esse número é a
+                                ficha ou o custo do insumo — os dois em Supply Chain.</>
+                              )}
+                              {tipo === "perdas" && (
+                                <>Vem das <b>movimentações de estoque do tipo perda</b> no mês, valorizadas
+                                pelo custo médio do insumo.</>
+                              )}
+                              {tipo === "servico" && (
+                                <>É a <b>taxa de serviço</b> dos pedidos do mês, repassada à equipe.
+                                Entra como dedução porque esse dinheiro passa por você mas não é seu.</>
+                              )}
+                              {tipo === "taxas" && (
+                                <>Vem das <b>formas de pagamento dos pedidos</b>, cada uma com o percentual
+                                cadastrado na aba Configuração.</>
+                              )}
+                              {tipo === "depreciacao" && (
+                                <>Vem do <b>imobilizado</b>: o valor de cada bem dividido pela vida útil em
+                                meses, enquanto o bem estiver dentro do prazo.</>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Receita: os canais que formaram a linha */}
+                          {!carregandoOrigem && origem?.tipo === "receita" && (
+                            <div style={{ background: "#FFFFFF", border: "1px solid #E8E2D2",
+                                          borderRadius: 9, overflow: "hidden" }}>
+                              <div style={{ padding: "9px 12px", background: "#F6F1E7",
+                                            borderBottom: "1px solid #E8E2D2", fontSize: 11,
+                                            color: "#6B685C", lineHeight: 1.6 }}>
+                                Receita separada pelo <b>canal do pedido</b>. Mudar o canal de linha vale
+                                para todos os meses, inclusive os passados — o canal sempre foi o que é;
+                                o que estava errado era o mapa.
+                              </div>
+                              {origem.itens.length === 0 && (
+                                <div style={{ padding: "10px 12px", fontSize: 12, color: "#8A8778" }}>
+                                  Nenhum pedido caiu nesta linha neste mês.
+                                </div>
+                              )}
+                              {origem.itens.map((it, i) => (
+                                <div key={it.canal} style={{ display: "flex", alignItems: "center", gap: 10,
+                                                             flexWrap: "wrap", padding: "9px 12px",
+                                                             borderTop: i > 0 ? "1px solid #F0EBDD" : "none" }}>
+                                  <div style={{ flex: 1, minWidth: 150 }}>
+                                    <div style={{ fontSize: 12.5, fontWeight: 700 }}>{it.rotulo}</div>
+                                    <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 1 }}>
+                                      <span style={{ fontFamily: "ui-monospace, monospace" }}>{it.canal}</span>
+                                      {" · "}{it.pedidos} {it.pedidos === 1 ? "pedido" : "pedidos"}
+                                    </div>
+                                  </div>
+                                  <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap",
+                                                 fontVariantNumeric: "tabular-nums" }}>{brl(it.valor)}</span>
+                                  <select defaultValue="" disabled={movendo === it.canal}
+                                    onChange={(e) => moverCanal(it.canal, e.target.value)}
+                                    style={{ padding: "6px 8px", fontSize: 11.5, border: "1px solid #E8E2D2",
+                                             borderRadius: 7, background: "#FFFFFF", fontFamily: "inherit",
+                                             color: "#22231F", minWidth: 175 }}>
+                                    <option value="">{movendo === it.canal ? "movendo…" : "Mover para…"}</option>
+                                    {planoContas.filter((c) => String(c.codigo).startsWith("1."))
+                                                .filter((c) => c.codigo !== l.codigo)
+                                                .map((c) => (
+                                      <option key={c.codigo} value={c.codigo}>{c.codigo} · {c.nome}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Despesa: os lançamentos que formaram a linha */}
+                          {!carregandoOrigem && origem?.tipo === "despesa" && (
+                            <div style={{ background: "#FFFFFF", border: "1px solid #E8E2D2",
+                                          borderRadius: 9, overflow: "hidden" }}>
+                              {origem.itens.length === 0 && (
+                                <div style={{ padding: "10px 12px", fontSize: 12, color: "#8A8778" }}>
+                                  Nenhum lançamento nesta conta neste mês.
+                                </div>
+                              )}
+                              {origem.itens.slice(0, 60).map((it, i) => (
+                                <div key={it.conta_id} style={{ display: "flex", alignItems: "center", gap: 10,
+                                                                flexWrap: "wrap", padding: "9px 12px",
+                                                                borderTop: i > 0 ? "1px solid #F0EBDD" : "none" }}>
+                                  <div style={{ flex: 1, minWidth: 150 }}>
+                                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>{it.descricao}</div>
+                                    <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 1 }}>
+                                      {it.fornecedor !== "—" ? `${it.fornecedor} · ` : ""}
+                                      {/* Por que ESTE lançamento caiu NESTE mes. E a
+                                          pergunta que se faz ao ver algo estranho na
+                                          lista, e responder aqui evita a viagem ate
+                                          a tela de notas pra descobrir. */}
+                                      caiu em {mes} pela <b>{it.mes_por}</b>
+                                    </div>
+                                  </div>
+                                  <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap",
+                                                 fontVariantNumeric: "tabular-nums" }}>{brl(it.valor)}</span>
+                                  <select defaultValue="" disabled={movendo === it.conta_id}
+                                    onChange={(e) => moverConta(it.conta_id, e.target.value)}
+                                    style={{ padding: "6px 8px", fontSize: 11.5, border: "1px solid #E8E2D2",
+                                             borderRadius: 7, background: "#FFFFFF", fontFamily: "inherit",
+                                             color: "#22231F", minWidth: 175 }}>
+                                    <option value="">{movendo === it.conta_id ? "movendo…" : "Reclassificar…"}</option>
+                                    {planoContas.filter((c) => !String(c.codigo).startsWith("1."))
+                                                .filter((c) => c.codigo !== l.codigo)
+                                                .map((c) => (
+                                      <option key={c.codigo} value={c.codigo}>{c.codigo} · {c.nome}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              ))}
+                              {origem.itens.length > 60 && (
+                                <div style={{ padding: "9px 12px", borderTop: "1px solid #F0EBDD",
+                                              fontSize: 10.5, color: "#8A8778" }}>
+                                  Mostrando os 60 maiores, de {origem.itens.length}.
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
