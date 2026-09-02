@@ -56,11 +56,43 @@ function brl(v) {
   return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
+// ---------------------------------------------------------------------
+// Modo tablet
+//
+// O KDS nao e uma tela que a pessoa "visita": e um tablet que fica ligado
+// na chapa a noite inteira. Ate aqui a estacao escolhida era estado de
+// tela comum — recarregou, dormiu, alguem fechou a aba sem querer, e quem
+// esta com a mao na chapa tinha que navegar de novo ate a Chapa.
+//
+// A escolha agora fica no APARELHO. Cada tablet lembra a estacao dele, e
+// abre direto nela. O tablet do bar abre no bar; o da chapa, na chapa.
+//
+// Fica no aparelho de proposito, e nao no cadastro do usuario: o login
+// costuma ser o mesmo em todos os tablets, entao guardar por usuario
+// faria um tablet mudar o outro. E se o navegador nao deixar guardar
+// (aba privada, armazenamento cheio), a tela volta a se comportar como
+// antes em vez de quebrar.
+// ---------------------------------------------------------------------
+const CHAVE_ESTACAO = "mrkong.kds.estacao";
+
+function lerEstacaoFixada() {
+  try { return window.localStorage.getItem(CHAVE_ESTACAO) || null; } catch { return null; }
+}
+function gravarEstacaoFixada(chave) {
+  try {
+    if (chave) window.localStorage.setItem(CHAVE_ESTACAO, chave);
+    else window.localStorage.removeItem(CHAVE_ESTACAO);
+    return true;
+  } catch { return false; }
+}
+
 export default function Desempenho({ perfil, permissoes, onVoltar }) {
   const editarProdutos = podeEditar(permissoes, "desempenho.produtos") || perfil?.is_admin;
   const [aba, setAba] = useState("agora");
   const [setores, setSetores] = useState([]);
   const [setorAberto, setSetorAberto] = useState(null);
+  const [fixada, setFixada] = useState(() => lerEstacaoFixada());
+  const [semMemoria, setSemMemoria] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
 
@@ -75,8 +107,18 @@ export default function Desempenho({ perfil, permissoes, onVoltar }) {
         .eq("ativo", true).eq("estacao", true).order("ordem");
       if (!vivo) return;
       if (error) setErro(error.message);
-      setSetores(data || []);
+      const lista = data || [];
+      setSetores(lista);
       setCarregando(false);
+      // Abre direto na estacao fixada, se ela ainda existir. Estacao
+      // apagada do cadastro nao pode prender o tablet numa tela vazia.
+      const guardada = lerEstacaoFixada();
+      if (guardada && lista.some((x) => x.chave === guardada)) {
+        setSetorAberto(guardada);
+      } else if (guardada) {
+        gravarEstacaoFixada(null);
+        setFixada(null);
+      }
     })();
     return () => { vivo = false; };
   }, []);
@@ -88,7 +130,21 @@ export default function Desempenho({ perfil, permissoes, onVoltar }) {
         setor={setorAberto}
         label={s?.label || setorAberto}
         setores={setores}
-        onTrocar={(k) => setSetorAberto(k)}
+        fixada={fixada}
+        semMemoria={semMemoria}
+        onFixar={(k) => {
+          const ok = gravarEstacaoFixada(k);
+          if (!ok) { setSemMemoria(true); return; }
+          setSemMemoria(false);
+          setFixada(k);
+        }}
+        onTrocar={(k) => {
+          setSetorAberto(k);
+          // Tablet fixado que troca de estacao passa a lembrar da nova.
+          // Senao, na proxima abertura ele voltaria pra antiga e a pessoa
+          // trocaria de novo, todo dia.
+          if (fixada) { gravarEstacaoFixada(k); setFixada(k); }
+        }}
         onVoltar={() => setSetorAberto(null)}
       />
     );
@@ -245,7 +301,12 @@ function Agora({ setores, aoAbrirSetor }) {
 // =====================================================================
 // ESTAÇÃO — a tela de quem produz
 // =====================================================================
-function Estacao({ setor, label, setores, onTrocar, onVoltar }) {
+function Estacao({ setor, label, setores, fixada, semMemoria, onFixar, onTrocar, onVoltar }) {
+  // Trocar de estacao num tablet fixado tem que ser deliberado. Num
+  // aparelho de cozinha, com mao suja e pressa, um toque errado no chip
+  // manda a chapa pro bar — e a fila da chapa some da vista no meio do
+  // sabado. Por isso, fixado, os chips ficam atras de um segundo toque.
+  const [trocando, setTrocando] = useState(false);
   const [fila, setFila] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
@@ -306,15 +367,60 @@ function Estacao({ setor, label, setores, onTrocar, onVoltar }) {
 
   return (
     <Shell titulo={`${label} · Estação`} subtitulo="Peguei e terminei, e só" onVoltar={onVoltar}>
-      {setores.length > 1 && (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
-          <span style={{ fontSize: 11, color: "#8A8778" }}>Estação:</span>
-          {setores.map((s) => (
-            <button key={s.chave} onClick={() => s.chave !== setor && onTrocar(s.chave)}
-              style={{ ...chip, ...(s.chave === setor ? chipAtivo : {}) }}>
-              {s.label}
+      {/* -------- modo tablet -------- */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+        <button
+          onClick={() => onFixar(fixada === setor ? null : setor)}
+          style={{ display: "flex", alignItems: "center", gap: 6, borderRadius: 999,
+                   padding: "7px 13px", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                   cursor: "pointer",
+                   border: fixada === setor ? "none" : "1px solid #E8E2D2",
+                   background: fixada === setor ? "#0F6E56" : "#FFFFFF",
+                   color: fixada === setor ? "#EAF6F1" : "#6B685C" }}>
+          {fixada === setor ? "📌 Este tablet abre no " + label : "Fixar este tablet no " + label}
+        </button>
+
+        {setores.length > 1 && (
+          fixada === setor && !trocando ? (
+            <button onClick={() => setTrocando(true)}
+              style={{ background: "none", border: "none", color: "#8A6A0F", fontSize: 11.5,
+                       fontWeight: 600, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
+              trocar de estação
             </button>
-          ))}
+          ) : (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "#8A8778" }}>Estação:</span>
+              {setores.map((s) => (
+                <button key={s.chave}
+                  onClick={() => { if (s.chave !== setor) onTrocar(s.chave); setTrocando(false); }}
+                  style={{ ...chip, ...(s.chave === setor ? chipAtivo : {}) }}>
+                  {s.label}
+                </button>
+              ))}
+              {fixada === setor && (
+                <button onClick={() => setTrocando(false)}
+                  style={{ background: "none", border: "none", color: "#8A8778", fontSize: 11,
+                           cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
+                  cancelar
+                </button>
+              )}
+            </div>
+          )
+        )}
+      </div>
+
+      {fixada === setor && (
+        <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: -6, marginBottom: 12, lineHeight: 1.55 }}>
+          Ao abrir o painel neste aparelho, o Desempenho vai direto para o {label}. Vale só
+          para este tablet — cada um guarda a estação dele.
+        </div>
+      )}
+
+      {semMemoria && (
+        <div style={{ ...avisoErro, marginBottom: 12 }}>
+          <AlertTriangle size={16} />
+          Este navegador não deixou guardar a estação (aba privada ou armazenamento bloqueado).
+          A tela funciona igual, mas não vai abrir sozinha aqui.
         </div>
       )}
 

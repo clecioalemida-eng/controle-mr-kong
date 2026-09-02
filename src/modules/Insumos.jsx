@@ -97,12 +97,18 @@ export default function Insumos({ permissoes }) {
   const [substituindo, setSubstituindo] = useState(null); // insumo que a lixeira quer excluir
   const [trocandoUnidade, setTrocandoUnidade] = useState(null); // { insumo, nova }
   const [calculandoPreco, setCalculandoPreco] = useState(null); // id do insumo
+  // Insumo composto: o que ENTRA na cozinha e o que SAI dela sao coisas
+  // diferentes. Compro laranja em quilo e vendo suco em litro; um saco de
+  // 20 kg rende 8 litros. Sem isso, ou o custo do suco e digitado a mao
+  // (e envelhece calado) ou a ficha do copo consome laranja em kg, e ai
+  // nao da pra saber quanto custa o litro.
+  const [editandoComposto, setEditandoComposto] = useState(null); // id do insumo
 
   const carregar = useCallback(async () => {
     setCarregando(true);
     const [{ data: ins, error: e1 }, { data: pi }, { data: st }, { data: se }] = await Promise.all([
       supabase.from("insumos")
-        .select("id, nome, unidade, custo_medio_atual, estoque_atual, estoque_minimo, composto")
+        .select("id, nome, unidade, custo_medio_atual, estoque_atual, estoque_minimo, composto, rendimento")
         .order("nome"),
       supabase.from("prato_insumos").select("insumo_id"),
       supabase.from("insumo_setores").select("insumo_id, setor"),
@@ -371,10 +377,40 @@ export default function Insumos({ permissoes }) {
                   )}
                 </div>
 
+                {i.composto && (
+                  <span style={{ fontSize: 9.5, fontWeight: 800, padding: "2px 7px", borderRadius: 999,
+                                 background: "#EEF4FF", color: "#2C4C8F", border: "1px solid #C9D8F2",
+                                 whiteSpace: "nowrap" }}>
+                    calculado
+                  </span>
+                )}
+
+                {editar && (
+                  <button onClick={() => setEditandoComposto(editandoComposto === i.id ? null : i.id)}
+                    title="Este insumo é feito a partir de outros"
+                    style={{ border: "1px solid " + (i.composto ? "#C9D8F2" : "#E8E2D2"),
+                             background: i.composto ? "#EEF4FF" : "#FFFFFF",
+                             color: i.composto ? "#2C4C8F" : "#8A8778",
+                             borderRadius: 6, padding: "3px 7px", fontSize: 10, fontWeight: 700,
+                             cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
+                    receita
+                  </button>
+                )}
+
                 {editar && (
                   <button onClick={() => remover(i)} style={iconBtnPeq} title="Excluir insumo">
                     <Trash2 size={13} />
                   </button>
+                )}
+
+                {editandoComposto === i.id && (
+                  <ReceitaDoComposto
+                    insumo={i}
+                    insumos={insumos}
+                    onFechar={() => setEditandoComposto(null)}
+                    onPronto={() => { setEditandoComposto(null); carregar(); }}
+                    onErro={setErro}
+                  />
                 )}
 
                 {calculandoPreco === i.id && (
@@ -1187,6 +1223,342 @@ function TrocarUnidade({ insumo, nova, fichas, onFechar, onPronto, onErro }) {
 // cabeça é onde entra número errado — e são 193 insumos a zero esperando
 // preço.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Receita do insumo composto — a laranja que vira suco
+//
+// O caso que gerou isto: compro laranja em QUILO e vendo suco em LITRO.
+// Um saco de 20 kg rende 8 litros. Sem um lugar pra dizer isso, sobram
+// duas saidas ruins: digitar o custo do litro na mao (e ele envelhece
+// calado, porque a laranja muda de preco toda semana), ou pendurar a
+// ficha do copo direto na laranja em kg — e ai ninguem consegue responder
+// quanto custa o litro de suco.
+//
+// Aqui o litro passa a ser CALCULADO: soma dos ingredientes dividida pelo
+// rendimento. Laranja subiu na nota? O litro sobe junto, e toda bebida
+// que leva suco recalcula. Voce nunca digita o custo do suco.
+//
+// O rendimento fixo mente um pouco por definicao — laranja boa rende
+// mais. Por isso o painel de baixo: ele pega as duas contagens de estoque
+// e diz quanto a sua laranja rendeu DE VERDADE no periodo. O numero fixo
+// vira uma aposta auditada, e nao um chute que ninguem mais confere.
+// ---------------------------------------------------------------------------
+function ReceitaDoComposto({ insumo, insumos, onFechar, onPronto, onErro }) {
+  const [rendimento, setRendimento] = useState(String(insumo.rendimento || ""));
+  const [linhas, setLinhas] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [salvando, setSalvando] = useState(false);
+  const [escolhido, setEscolhido] = useState("");
+  const [erroLocal, setErroLocal] = useState("");
+  const [real, setReal] = useState(null);
+  const [periodo, setPeriodo] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    const { data, error } = await supabase.rpc("receita_do_composto", { p_insumo: insumo.id });
+    if (error) {
+      setErroLocal(/does not exist|schema cache/i.test(error.message || "")
+        ? "Falta rodar a migração 107 no banco." : error.message);
+      setLinhas([]);
+    } else {
+      setLinhas((data || []).map((l) => ({
+        insumo_id: l.insumo_filho_id, nome: l.nome, unidade: l.unidade,
+        custo: Number(l.custo_unitario) || 0, quantidade: String(l.quantidade ?? ""),
+      })));
+      setErroLocal("");
+    }
+    setCarregando(false);
+  }, [insumo.id]);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  // So insumo SIMPLES pode entrar na receita: composto dentro de composto
+  // e onde esse tipo de conta vira laco infinito, e nenhuma cozinha
+  // precisa disso pra fazer suco.
+  const candidatos = useMemo(
+    () => insumos.filter((x) => x.id !== insumo.id && !x.composto)
+                 .filter((x) => !linhas.some((l) => l.insumo_id === x.id)),
+    [insumos, insumo.id, linhas]
+  );
+
+  const custoReceita = linhas.reduce(
+    (t, l) => t + (parseFloat(String(l.quantidade).replace(",", ".")) || 0) * l.custo, 0);
+  const rend = parseFloat(String(rendimento).replace(",", ".")) || 0;
+  const custoUnidade = rend > 0 ? custoReceita / rend : 0;
+
+  const salvar = async () => {
+    if (rend <= 0) { setErroLocal("O rendimento precisa ser maior que zero — é ele que divide o custo."); return; }
+    setSalvando(true);
+    setErroLocal("");
+    const filhos = linhas
+      .map((l) => ({ insumo_id: l.insumo_id, quantidade: parseFloat(String(l.quantidade).replace(",", ".")) || 0 }))
+      .filter((f) => f.quantidade > 0);
+    const { error } = await supabase.rpc("gravar_composto", {
+      p_insumo: insumo.id, p_rendimento: rend, p_filhos: filhos,
+    });
+    setSalvando(false);
+    if (error) { setErroLocal(error.message); return; }
+    onPronto();
+  };
+
+  const desfazer = async () => {
+    if (!window.confirm(
+      `Deixar de calcular o custo de "${insumo.nome}"?\n\n` +
+      "O custo volta a ser digitado à mão, e para de acompanhar o preço dos ingredientes."
+    )) return;
+    setSalvando(true);
+    const { error } = await supabase.rpc("desfazer_composto", { p_insumo: insumo.id });
+    setSalvando(false);
+    if (error) { setErroLocal(error.message); return; }
+    onPronto();
+  };
+
+  const conferirReal = async () => {
+    const [ano, mes] = periodo.split("-").map(Number);
+    const ini = `${periodo}-01`;
+    const fim = new Date(ano, mes, 0).toISOString().slice(0, 10);
+    const { data, error } = await supabase.rpc("rendimento_real", {
+      p_composto: insumo.id, p_inicio: ini, p_fim: fim,
+    });
+    if (error) { setErroLocal(error.message); return; }
+    setReal(data || []);
+  };
+
+  return (
+    <div style={{ width: "100%", marginTop: 10, border: "1px dashed #37A0E5", borderRadius: 10,
+                  background: "#FAFCFE", padding: "12px 13px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, color: "#185FA5", fontWeight: 700 }}>
+          Receita de {insumo.nome}
+        </div>
+        <button onClick={onFechar} style={{ background: "none", border: "none", color: "#8A8778",
+                fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>fechar</button>
+      </div>
+
+      <div style={{ fontSize: 10.5, color: "#6B685C", marginTop: 5, lineHeight: 1.6 }}>
+        Use quando o que <b>entra</b> na cozinha é diferente do que <b>sai</b> dela — laranja em kg
+        virando suco em litro. O custo do {insumo.unidade} passa a ser calculado e acompanha o preço
+        dos ingredientes sozinho.
+      </div>
+
+      {carregando ? (
+        <div style={{ fontSize: 12, color: "#8A8778", padding: "10px 0" }}>abrindo…</div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 9, alignItems: "flex-end", flexWrap: "wrap", margin: "12px 0" }}>
+            <div>
+              <label style={{ display: "block", fontSize: 10, color: "#8A8778", marginBottom: 3,
+                              textTransform: "uppercase", letterSpacing: 0.2, fontWeight: 700 }}>
+                Esta receita rende
+              </label>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                <input value={rendimento} onChange={(e) => setRendimento(e.target.value)}
+                  inputMode="decimal" placeholder="0"
+                  style={{ width: 80, padding: "6px 8px", borderRadius: 6, border: "1px solid #37A0E5",
+                           fontSize: 13, textAlign: "right", fontFamily: "inherit",
+                           fontVariantNumeric: "tabular-nums" }} />
+                <span style={{ border: "1px solid #E8E2D2", background: "#F6F1E7", color: "#55534A",
+                               borderRadius: 6, padding: "5px 9px", fontSize: 11.5, fontWeight: 700 }}>
+                  {insumo.unidade}
+                </span>
+              </span>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead>
+              <tr>
+                <th style={thR}>Ingrediente</th>
+                <th style={{ ...thR, textAlign: "right" }}>Custo</th>
+                <th style={{ ...thR, textAlign: "right" }}>Quanto entra</th>
+                <th style={{ ...thR, textAlign: "right" }}>Total</th>
+                <th style={{ ...thR, width: 26 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {linhas.map((l, idx) => {
+                const q = parseFloat(String(l.quantidade).replace(",", ".")) || 0;
+                return (
+                  <tr key={l.insumo_id}>
+                    <td style={tdR}>
+                      <div style={{ fontWeight: 600 }}>{l.nome}</div>
+                      <div style={{ fontSize: 10.5, color: "#8A8778" }}>{l.unidade}</div>
+                    </td>
+                    <td style={{ ...tdR, textAlign: "right", whiteSpace: "nowrap" }}>{brl(l.custo)}</td>
+                    <td style={{ ...tdR, textAlign: "right" }}>
+                      <input value={l.quantidade} inputMode="decimal"
+                        onChange={(e) => setLinhas((prev) => prev.map((x, i) =>
+                          i === idx ? { ...x, quantidade: e.target.value } : x))}
+                        style={{ width: 78, padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2",
+                                 fontSize: 12.5, textAlign: "right", fontFamily: "inherit",
+                                 fontVariantNumeric: "tabular-nums" }} />
+                    </td>
+                    <td style={{ ...tdR, textAlign: "right", fontWeight: 700, whiteSpace: "nowrap" }}>
+                      {brl(q * l.custo)}
+                    </td>
+                    <td style={{ ...tdR, textAlign: "right" }}>
+                      <button onClick={() => setLinhas((prev) => prev.filter((_, i) => i !== idx))}
+                        style={{ background: "none", border: "none", color: "#A32D2D", cursor: "pointer",
+                                 fontSize: 13, fontFamily: "inherit", padding: 0 }}>✕</button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {linhas.length === 0 && (
+                <tr><td colSpan={5} style={{ ...tdR, color: "#8A8778", textAlign: "center" }}>
+                  Nenhum ingrediente ainda.
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+
+          <div style={{ display: "flex", gap: 7, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+            <select value={escolhido} onChange={(e) => setEscolhido(e.target.value)}
+              style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12,
+                       fontFamily: "inherit", background: "#FFFFFF", minWidth: 190 }}>
+              <option value="">Adicionar ingrediente…</option>
+              {candidatos.map((c) => (
+                <option key={c.id} value={c.id}>{c.nome} ({c.unidade})</option>
+              ))}
+            </select>
+            <button
+              onClick={() => {
+                const c = insumos.find((x) => x.id === escolhido);
+                if (!c) return;
+                setLinhas((prev) => [...prev, {
+                  insumo_id: c.id, nome: c.nome, unidade: c.unidade,
+                  custo: Number(c.custo_medio_atual) || 0, quantidade: "",
+                }]);
+                setEscolhido("");
+              }}
+              disabled={!escolhido}
+              style={{ border: "none", borderRadius: 7, padding: "7px 12px", fontSize: 11.5,
+                       fontWeight: 700, fontFamily: "inherit",
+                       background: escolhido ? "#22231F" : "#E8E2D2",
+                       color: escolhido ? "#F3EFE3" : "#A9A395",
+                       cursor: escolhido ? "pointer" : "default" }}>
+              Adicionar
+            </button>
+          </div>
+
+          <div style={{ background: "#F6F1E7", border: "1px solid #E3DCCA", borderRadius: 9,
+                        padding: "11px 13px", marginTop: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0" }}>
+              <span>Custo da receita inteira</span><span>{brl(custoReceita)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0" }}>
+              <span>Rende</span><span>{rend || 0} {insumo.unidade}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 800,
+                          borderTop: "1px solid #E3DCCA", marginTop: 6, paddingTop: 8 }}>
+              <span>Custo do {insumo.unidade}</span><span>{brl(custoUnidade)}</span>
+            </div>
+            <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 7, lineHeight: 1.6 }}>
+              Quando um ingrediente subir na nota, este número sobe sozinho — e toda ficha que leva
+              {" "}{insumo.nome.toLowerCase()} recalcula junto. Você não digita esse valor em lugar nenhum.
+            </div>
+          </div>
+
+          {erroLocal && (
+            <div style={{ fontSize: 12, color: "#A32D2D", marginTop: 9 }}>{erroLocal}</div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", alignItems: "center" }}>
+            <button onClick={salvar} disabled={salvando}
+              style={{ border: "none", borderRadius: 8, padding: "8px 13px", fontSize: 12, fontWeight: 700,
+                       fontFamily: "inherit", background: "#22231F", color: "#F3EFE3", cursor: "pointer" }}>
+              {salvando ? "Salvando…" : "Salvar a receita"}
+            </button>
+            {insumo.composto && (
+              <button onClick={desfazer} disabled={salvando}
+                style={{ background: "none", border: "none", color: "#8A6A0F", fontSize: 11.5,
+                         fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                deixar de ser calculado
+              </button>
+            )}
+          </div>
+
+          {/* -------- o rendimento que aconteceu de verdade -------- */}
+          {insumo.composto && (
+            <div style={{ marginTop: 14, borderTop: "1px solid #DCE9F5", paddingTop: 11 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: "#185FA5" }}>
+                  Rendimento real
+                </span>
+                <input type="month" value={periodo} onChange={(e) => setPeriodo(e.target.value)}
+                  style={{ padding: "5px 7px", borderRadius: 6, border: "1px solid #E8E2D2",
+                           fontSize: 12, fontFamily: "inherit" }} />
+                <button onClick={conferirReal}
+                  style={{ border: "1px solid #E8E2D2", background: "#FFFFFF", borderRadius: 7,
+                           padding: "6px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
+                           fontFamily: "inherit" }}>
+                  Conferir
+                </button>
+              </div>
+
+              {real && real.length === 0 && (
+                <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8 }}>
+                  Sem ingredientes na receita ainda.
+                </div>
+              )}
+
+              {real && real.map((r) => (
+                <div key={r.filho} style={{ marginTop: 9, fontSize: 11.5, lineHeight: 1.7, color: "#22231F" }}>
+                  {!r.contagens_ok ? (
+                    /* Sem duas contagens nao existe "quanto foi consumido" —
+                       existe "quanto foi comprado", que e outra coisa. Melhor
+                       dizer isso que mostrar um numero que parece medido. */
+                    <div style={{ color: "#8A8778" }}>
+                      Precisa de <b>duas contagens de estoque fechadas</b> nesse mês para medir o
+                      consumo de {r.filho}. Sem uma no começo e outra no fim, dá pra saber quanto
+                      foi comprado, mas não quanto foi usado.
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span>Consumido de {r.filho}</span>
+                        <span style={{ fontWeight: 700 }}>{Number(r.consumido).toLocaleString("pt-BR")} {r.unidade_filho}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span>Cadastrado</span>
+                        <span>{Number(r.rendimento_fixo)} {insumo.unidade} por receita</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span>Rendeu de verdade</span>
+                        <span style={{ fontWeight: 800,
+                                       color: r.rendimento_medio == null ? "#8A8778"
+                                            : Number(r.rendimento_medio) >= Number(r.rendimento_fixo) ? "#0F6E56" : "#A32D2D" }}>
+                          {r.rendimento_medio == null ? "sem venda no período"
+                            : `${Number(r.rendimento_medio).toLocaleString("pt-BR")} ${insumo.unidade}`}
+                        </span>
+                      </div>
+                      {r.rendimento_medio != null && (
+                        <button
+                          onClick={() => setRendimento(String(r.rendimento_medio))}
+                          style={{ background: "none", border: "none", color: "#8A6A0F", fontSize: 11,
+                                   fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                   padding: 0, marginTop: 4 }}>
+                          usar {Number(r.rendimento_medio).toLocaleString("pt-BR")} como rendimento
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+const thR = { textAlign: "left", fontSize: 10, letterSpacing: 0.06, textTransform: "uppercase",
+              color: "#8A8778", fontWeight: 700, padding: "0 0 6px" };
+const tdR = { padding: "7px 0", borderTop: "1px solid #E7EEF6", verticalAlign: "middle" };
+
 function CalcularPreco({ insumo, onFechar, onSalvo, onErro }) {
   const [pago, setPago] = useState("");
   const [quanto, setQuanto] = useState("");
