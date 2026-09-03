@@ -75,6 +75,26 @@ function brl(v) {
 // ---------------------------------------------------------------------
 const CHAVE_ESTACAO = "mrkong.kds.estacao";
 
+// ---------------------------------------------------------------------
+// Entrega — estação de DESPACHO, não de produção
+//
+// O Kong Duplo vai pra chapa do mesmo jeito, seja delivery ou mesa 12.
+// Quem produz não muda nada; o que muda é o destino depois de pronto.
+// Por isso a Entrega não está no cadastro de setores: ela não pode
+// aparecer como destino na aba Produtos, nem virar setor de contagem de
+// estoque. Ela existe só aqui, como um chip a mais no tablet.
+//
+// A tela dela olha PEDIDO, não item — é a única que faz isso.
+// ---------------------------------------------------------------------
+const ENTREGA = { chave: "entrega", label: "Entrega", despacho: true };
+
+const DESTINO_ROTULO = {
+  entrega: "vai de entrega",
+  balcao: "cliente retira",
+  salao: "é do salão",
+  indefinido: "sem canal",
+};
+
 function lerEstacaoFixada() {
   try { return window.localStorage.getItem(CHAVE_ESTACAO) || null; } catch { return null; }
 }
@@ -113,7 +133,8 @@ export default function Desempenho({ perfil, permissoes, onVoltar }) {
       // Abre direto na estacao fixada, se ela ainda existir. Estacao
       // apagada do cadastro nao pode prender o tablet numa tela vazia.
       const guardada = lerEstacaoFixada();
-      if (guardada && lista.some((x) => x.chave === guardada)) {
+      // A Entrega vale como estação fixável mesmo não estando no cadastro.
+      if (guardada && (guardada === ENTREGA.chave || lista.some((x) => x.chave === guardada))) {
         setSetorAberto(guardada);
       } else if (guardada) {
         gravarEstacaoFixada(null);
@@ -123,13 +144,39 @@ export default function Desempenho({ perfil, permissoes, onVoltar }) {
     return () => { vivo = false; };
   }, []);
 
+  // Chips do tablet: as estações de produção mais a Entrega. A lista
+  // `setores` (só produção) continua sendo a que Produtos e Ajustes
+  // enxergam — prato nenhum pode apontar pra Entrega.
+  const estacoes = [...setores, ENTREGA];
+
+  if (setorAberto === ENTREGA.chave) {
+    return (
+      <Despacho
+        setores={estacoes}
+        fixada={fixada}
+        semMemoria={semMemoria}
+        onFixar={(k) => {
+          const ok = gravarEstacaoFixada(k);
+          if (!ok) { setSemMemoria(true); return; }
+          setSemMemoria(false);
+          setFixada(k);
+        }}
+        onTrocar={(k) => {
+          setSetorAberto(k);
+          if (fixada) { gravarEstacaoFixada(k); setFixada(k); }
+        }}
+        onVoltar={() => setSetorAberto(null)}
+      />
+    );
+  }
+
   if (setorAberto) {
     const s = setores.find((x) => x.chave === setorAberto);
     return (
       <Estacao
         setor={setorAberto}
         label={s?.label || setorAberto}
-        setores={setores}
+        setores={estacoes}
         fixada={fixada}
         semMemoria={semMemoria}
         onFixar={(k) => {
@@ -176,7 +223,7 @@ export default function Desempenho({ perfil, permissoes, onVoltar }) {
           </div>
         </div>
       ) : aba === "agora" ? (
-        <Agora setores={setores} aoAbrirSetor={setSetorAberto} />
+        <Agora setores={estacoes} aoAbrirSetor={setSetorAberto} />
       ) : aba === "hoje" ? (
         <Hoje />
       ) : aba === "produtos" ? (
@@ -194,19 +241,32 @@ export default function Desempenho({ perfil, permissoes, onVoltar }) {
 function Agora({ setores, aoAbrirSetor }) {
   const [resumo, setResumo] = useState(null);
   const [porSetor, setPorSetor] = useState({});
+  // A porta nao tem item: ela tem pedido. Conta separado.
+  const [naPorta, setNaPorta] = useState({ esperando: 0, na_rua: 0 });
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
 
   const carregar = useCallback(async () => {
     setErro("");
-    const [{ data: r, error: e1 }, { data: itens, error: e2 }] = await Promise.all([
-      supabase.rpc("desempenho_agora"),
-      supabase.from("producao_itens")
-        .select("setor, pedido_id, pego_em")
-        .is("pronto_em", null),
-    ]);
+    const [{ data: r, error: e1 }, { data: itens, error: e2 }, { data: porta, error: e3 }] =
+      await Promise.all([
+        supabase.rpc("desempenho_agora"),
+        supabase.from("producao_itens")
+          .select("setor, pedido_id, pego_em")
+          .is("pronto_em", null),
+        supabase.rpc("fila_despacho"),
+      ]);
     if (e1) setErro(e1.message);
     if (e2) setErro(e2.message);
+    // Se a 115 ainda nao rodou, a funcao nao existe. A tela nao pode
+    // quebrar por causa disso — a Entrega so aparece zerada.
+    if (!e3) {
+      const lista = porta || [];
+      setNaPorta({
+        esperando: lista.filter((x) => !x.saiu).length,
+        na_rua: lista.filter((x) => x.saiu).length,
+      });
+    }
     setResumo(Array.isArray(r) ? r[0] : r);
 
     const mapa = {};
@@ -265,16 +325,23 @@ function Agora({ setores, aoAbrirSetor }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {setores.map((s) => {
-          const info = porSetor[s.chave] || { pedidos: 0, pegos: 0 };
+          const porta = !!s.despacho;
+          const info = porta
+            ? { pedidos: naPorta.esperando, pegos: naPorta.na_rua }
+            : (porSetor[s.chave] || { pedidos: 0, pegos: 0 });
           return (
             <button key={s.chave} onClick={() => aoAbrirSetor(s.chave)}
               style={{ ...linha, cursor: "pointer", textAlign: "left" }}>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700, fontSize: 15 }}>{s.label}</div>
                 <div style={{ fontSize: 11.5, color: "#8A8778" }}>
-                  {info.pedidos === 0
-                    ? "sem pedido na fila"
-                    : `${info.pedidos} pedido${info.pedidos > 1 ? "s" : ""} · ${info.pegos} em produção`}
+                  {porta
+                    ? (info.pedidos === 0 && info.pegos === 0
+                        ? "nada esperando na porta"
+                        : `${info.pedidos} pronto${info.pedidos === 1 ? "" : "s"} esperando · ${info.pegos} na rua`)
+                    : info.pedidos === 0
+                      ? "sem pedido na fila"
+                      : `${info.pedidos} pedido${info.pedidos > 1 ? "s" : ""} · ${info.pegos} em produção`}
                 </div>
               </div>
               <div style={{
@@ -299,14 +366,85 @@ function Agora({ setores, aoAbrirSetor }) {
 }
 
 // =====================================================================
+// CABEÇALHO DO TABLET — fixar, e trocar de estação
+//
+// Trocar de estação num tablet fixado tem que ser deliberado. Num
+// aparelho de cozinha, com mão suja e pressa, um toque errado no chip
+// manda a chapa pro bar — e a fila da chapa some da vista no meio do
+// sábado. Por isso, fixado, os chips ficam atrás de um segundo toque.
+//
+// Mora aqui, num lugar só, porque a Estação e o Despacho precisam se
+// comportar igual: dois cabeçalhos parecidos viram dois cabeçalhos
+// diferentes na terceira alteração.
+// =====================================================================
+function CabecalhoEstacao({ setor, label, setores, fixada, semMemoria, onFixar, onTrocar }) {
+  const [trocando, setTrocando] = useState(false);
+  return (
+    <>
+      {/* -------- modo tablet -------- */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+        <button
+          onClick={() => onFixar(fixada === setor ? null : setor)}
+          style={{ display: "flex", alignItems: "center", gap: 6, borderRadius: 999,
+                   padding: "7px 13px", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                   cursor: "pointer",
+                   border: fixada === setor ? "none" : "1px solid #E8E2D2",
+                   background: fixada === setor ? "#0F6E56" : "#FFFFFF",
+                   color: fixada === setor ? "#EAF6F1" : "#6B685C" }}>
+          {fixada === setor ? "📌 Este tablet abre no " + label : "Fixar este tablet no " + label}
+        </button>
+
+        {setores.length > 1 && (
+          fixada === setor && !trocando ? (
+            <button onClick={() => setTrocando(true)}
+              style={{ background: "none", border: "none", color: "#8A6A0F", fontSize: 11.5,
+                       fontWeight: 600, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
+              trocar de estação
+            </button>
+          ) : (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "#8A8778" }}>Estação:</span>
+              {setores.map((s) => (
+                <button key={s.chave}
+                  onClick={() => { if (s.chave !== setor) onTrocar(s.chave); setTrocando(false); }}
+                  style={{ ...chip, ...(s.chave === setor ? chipAtivo : {}) }}>
+                  {s.label}
+                </button>
+              ))}
+              {fixada === setor && (
+                <button onClick={() => setTrocando(false)}
+                  style={{ background: "none", border: "none", color: "#8A8778", fontSize: 11,
+                           cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
+                  cancelar
+                </button>
+              )}
+            </div>
+          )
+        )}
+      </div>
+
+      {fixada === setor && (
+        <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: -6, marginBottom: 12, lineHeight: 1.55 }}>
+          Ao abrir o painel neste aparelho, o Desempenho vai direto para o {label}. Vale só
+          para este tablet — cada um guarda a estação dele.
+        </div>
+      )}
+
+      {semMemoria && (
+        <div style={{ ...avisoErro, marginBottom: 12 }}>
+          <AlertTriangle size={16} />
+          Este navegador não deixou guardar a estação (aba privada ou armazenamento bloqueado).
+          A tela funciona igual, mas não vai abrir sozinha aqui.
+        </div>
+      )}
+    </>
+  );
+}
+
+// =====================================================================
 // ESTAÇÃO — a tela de quem produz
 // =====================================================================
 function Estacao({ setor, label, setores, fixada, semMemoria, onFixar, onTrocar, onVoltar }) {
-  // Trocar de estacao num tablet fixado tem que ser deliberado. Num
-  // aparelho de cozinha, com mao suja e pressa, um toque errado no chip
-  // manda a chapa pro bar — e a fila da chapa some da vista no meio do
-  // sabado. Por isso, fixado, os chips ficam atras de um segundo toque.
-  const [trocando, setTrocando] = useState(false);
   const [fila, setFila] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
@@ -367,62 +505,10 @@ function Estacao({ setor, label, setores, fixada, semMemoria, onFixar, onTrocar,
 
   return (
     <Shell titulo={`${label} · Estação`} subtitulo="Peguei e terminei, e só" onVoltar={onVoltar}>
-      {/* -------- modo tablet -------- */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
-        <button
-          onClick={() => onFixar(fixada === setor ? null : setor)}
-          style={{ display: "flex", alignItems: "center", gap: 6, borderRadius: 999,
-                   padding: "7px 13px", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
-                   cursor: "pointer",
-                   border: fixada === setor ? "none" : "1px solid #E8E2D2",
-                   background: fixada === setor ? "#0F6E56" : "#FFFFFF",
-                   color: fixada === setor ? "#EAF6F1" : "#6B685C" }}>
-          {fixada === setor ? "📌 Este tablet abre no " + label : "Fixar este tablet no " + label}
-        </button>
-
-        {setores.length > 1 && (
-          fixada === setor && !trocando ? (
-            <button onClick={() => setTrocando(true)}
-              style={{ background: "none", border: "none", color: "#8A6A0F", fontSize: 11.5,
-                       fontWeight: 600, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
-              trocar de estação
-            </button>
-          ) : (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={{ fontSize: 11, color: "#8A8778" }}>Estação:</span>
-              {setores.map((s) => (
-                <button key={s.chave}
-                  onClick={() => { if (s.chave !== setor) onTrocar(s.chave); setTrocando(false); }}
-                  style={{ ...chip, ...(s.chave === setor ? chipAtivo : {}) }}>
-                  {s.label}
-                </button>
-              ))}
-              {fixada === setor && (
-                <button onClick={() => setTrocando(false)}
-                  style={{ background: "none", border: "none", color: "#8A8778", fontSize: 11,
-                           cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
-                  cancelar
-                </button>
-              )}
-            </div>
-          )
-        )}
-      </div>
-
-      {fixada === setor && (
-        <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: -6, marginBottom: 12, lineHeight: 1.55 }}>
-          Ao abrir o painel neste aparelho, o Desempenho vai direto para o {label}. Vale só
-          para este tablet — cada um guarda a estação dele.
-        </div>
-      )}
-
-      {semMemoria && (
-        <div style={{ ...avisoErro, marginBottom: 12 }}>
-          <AlertTriangle size={16} />
-          Este navegador não deixou guardar a estação (aba privada ou armazenamento bloqueado).
-          A tela funciona igual, mas não vai abrir sozinha aqui.
-        </div>
-      )}
+      <CabecalhoEstacao
+        setor={setor} label={label} setores={setores}
+        fixada={fixada} semMemoria={semMemoria}
+        onFixar={onFixar} onTrocar={onTrocar} />
 
       {erro && <div style={avisoErro}><AlertTriangle size={16} /> {erro}</div>}
       {msg && <div style={avisoVerde}><CheckCircle2 size={16} /> {msg}</div>}
@@ -543,6 +629,211 @@ function Estacao({ setor, label, setores, fixada, semMemoria, onFixar, onTrocar,
             );
           })}
         </div>
+      )}
+    </Shell>
+  );
+}
+
+// =====================================================================
+// DESPACHO — a porta
+//
+// Todas as outras telas medem até o lanche ficar PRONTO. Esta mede o
+// pedaço que ninguém media: quanto tempo ele ficou pronto parado no
+// balcão esperando alguém levar.
+//
+// É onde mora a briga mais cara da operação. A chapa entrega em 7
+// minutos e está certa. O cliente recebe 40 minutos depois e também
+// está certo. A conta some no meio — e quem não enxerga esse pedaço
+// contrata mais gente pra chapa quando o que falta é moto.
+//
+// Diferente de todas as outras estações, esta olha PEDIDO, não item.
+// Um pedido só chega aqui quando nenhuma estação está mais devendo.
+// =====================================================================
+function Despacho({ setores, fixada, semMemoria, onFixar, onTrocar, onVoltar }) {
+  const [fila, setFila] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [ocupado, setOcupado] = useState(null);
+  const [agora, setAgora] = useState(Date.now());
+  const [buscadoEm, setBuscadoEm] = useState(Date.now());
+
+  const carregar = useCallback(async () => {
+    const { data, error } = await supabase.rpc("fila_despacho");
+    if (error) setErro(error.message); else setErro("");
+    setFila(data || []);
+    setBuscadoEm(Date.now());
+    setCarregando(false);
+  }, []);
+
+  useEffect(() => { setCarregando(true); carregar(); }, [carregar]);
+  useEffect(() => {
+    const t = setInterval(carregar, 15000);
+    return () => clearInterval(t);
+  }, [carregar]);
+  // O relógio anda sozinho entre uma busca e outra, senão o número
+  // congela na tela e a pessoa acha que travou.
+  useEffect(() => {
+    const t = setInterval(() => setAgora(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const marcar = async (pedidoId, acao) => {
+    setOcupado(pedidoId + acao);
+    setErro("");
+    const { error } = await supabase.rpc("marcar_despacho", {
+      p_pedido: pedidoId, p_acao: acao,
+    });
+    setOcupado(null);
+    if (error) { setErro(error.message); return; }
+    carregar();
+  };
+
+  // Três filas, e a ordem importa: o que sai pela porta primeiro, o que
+  // já está na rua por último.
+  const vaiSair = fila.filter((p) => !p.saiu && p.destino === "entrega");
+  const aqui    = fila.filter((p) => !p.saiu && p.destino !== "entrega");
+  const naRua   = fila.filter((p) => p.saiu);
+
+  const Cartao = ({ p, acoes }) => {
+    const base = Number(p.segundos) || 0;
+    const seg = base + Math.floor((agora - buscadoEm) / 1000);
+    const amarelo = Number(p.amarelo_min || 5) * 60;
+    const vermelho = Number(p.vermelho_min || 10) * 60;
+    const cor = seg >= vermelho ? "#C4432B" : seg >= amarelo ? "#B3701A" : "#8A8778";
+    const borda = seg >= vermelho ? "#F0C0B8" : seg >= amarelo ? "#E8C489" : "#E8E2D2";
+    const itens = Array.isArray(p.itens) ? p.itens : [];
+
+    return (
+      <div style={{ ...cardStyle, borderColor: borda, padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                      padding: "10px 13px", background: "#FCFAF6", borderBottom: "1px solid " + borda }}>
+          <div style={{ fontWeight: 800, fontSize: 15 }}>
+            {p.referencia}
+            <span style={selo}>{DESTINO_ROTULO[p.destino] || p.destino}</span>
+          </div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: cor, fontVariantNumeric: "tabular-nums" }}>
+            {relogio(seg)}
+          </div>
+        </div>
+
+        <div style={{ padding: "10px 13px", fontSize: 13.5 }}>
+          {itens.length === 0 ? (
+            <span style={{ color: "#8A8778" }}>sem detalhe de itens</span>
+          ) : (
+            itens.map((i, n) => (
+              <div key={n} style={{ padding: "2px 0" }}>
+                {Number(i.quantidade) > 1 ? `${i.quantidade}× ` : ""}{i.nome}
+              </div>
+            ))
+          )}
+        </div>
+
+        {p.saiu && !p.saiu_no_dedo && (
+          <div style={{ padding: "7px 13px", borderTop: "1px dashed #EFE7D9",
+                        fontSize: 11, color: "#8A8778" }}>
+            saída marcada no CardápioWeb, não no tablet — o horário pode estar atrasado
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, padding: "10px 13px", borderTop: "1px solid #F3EDE2" }}>
+          {acoes}
+        </div>
+      </div>
+    );
+  };
+
+  const Bloco = ({ titulo, ajuda, lista, children }) => (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6,
+                    color: "#8A8778", fontWeight: 800, marginBottom: 4 }}>
+        {titulo} {lista.length > 0 && <span style={{ color: "#C72B2E" }}>· {lista.length}</span>}
+      </div>
+      {ajuda && (
+        <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8, lineHeight: 1.55 }}>
+          {ajuda}
+        </div>
+      )}
+      {lista.length === 0 ? (
+        <div style={{ ...cardStyle, textAlign: "center", color: "#8A8778",
+                      fontSize: 12.5, padding: 16 }}>
+          nada aqui
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{children}</div>
+      )}
+    </div>
+  );
+
+  return (
+    <Shell titulo="Entrega · Despacho" subtitulo="Saiu comigo, e entreguei" onVoltar={onVoltar}>
+      <CabecalhoEstacao
+        setor={ENTREGA.chave} label={ENTREGA.label} setores={setores}
+        fixada={fixada} semMemoria={semMemoria}
+        onFixar={onFixar} onTrocar={onTrocar} />
+
+      {erro && <div style={avisoErro}><AlertTriangle size={16} /> {erro}</div>}
+
+      <div style={{ fontSize: 11.5, color: "#8A8778", marginBottom: 14, lineHeight: 1.6 }}>
+        O relógio aqui conta desde que o pedido ficou <b>pronto</b> — não desde que
+        entrou. Cada minuto nesta tela é comida esfriando em cima do balcão.
+      </div>
+
+      {carregando ? (
+        <div style={vazio}><Loader2 size={16} /> Carregando…</div>
+      ) : (
+        <>
+          <Bloco titulo="Vai sair" lista={vaiSair}
+                 ajuda="Pronto e esperando o entregador pegar.">
+            {vaiSair.map((p) => (
+              <Cartao key={p.pedido_id} p={p} acoes={
+                <button onClick={() => marcar(p.pedido_id, "saiu")}
+                  disabled={ocupado === p.pedido_id + "saiu"}
+                  style={{ ...btnPri, flex: 1 }}>
+                  Saiu comigo
+                </button>
+              } />
+            ))}
+          </Bloco>
+
+          <Bloco titulo="É daqui" lista={aqui}
+                 ajuda="Mesa e balcão. Não sai pela porta — está aqui só pra ninguém levar embora o que é do salão.">
+            {aqui.map((p) => (
+              <Cartao key={p.pedido_id} p={p} acoes={
+                <button onClick={() => marcar(p.pedido_id, "entregue")}
+                  disabled={ocupado === p.pedido_id + "entregue"}
+                  style={{ ...btnEscuro, flex: 1 }}>
+                  <Check size={15} /> Entregue
+                </button>
+              } />
+            ))}
+          </Bloco>
+
+          <Bloco titulo="Na rua" lista={naRua}
+                 ajuda="Já saiu com o entregador e ainda não voltou como entregue.">
+            {naRua.map((p) => (
+              <Cartao key={p.pedido_id} p={p} acoes={
+                <>
+                  <button onClick={() => marcar(p.pedido_id, "entregue")}
+                    disabled={ocupado === p.pedido_id + "entregue"}
+                    style={{ ...btnEscuro, flex: 1 }}>
+                    <Check size={15} /> Entreguei
+                  </button>
+                  <button onClick={() => marcar(p.pedido_id, "desfazer")}
+                    style={{ ...btnSec, width: 110 }}>
+                    Desfazer
+                  </button>
+                </>
+              } />
+            ))}
+          </Bloco>
+
+          <button onClick={carregar} style={{ ...btnSec, width: "100%" }}>
+            <RefreshCw size={14} /> Atualizar
+          </button>
+          <div style={{ fontSize: 11, color: "#B9B2A4", textAlign: "center", marginTop: 6 }}>
+            atualiza sozinho a cada 15 segundos
+          </div>
+        </>
       )}
     </Shell>
   );
