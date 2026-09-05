@@ -4,6 +4,7 @@ import {
   CheckCircle2, XCircle, Clock, AlertTriangle, ChevronLeft,
   LayoutDashboard, Flame, Wine, CircleDollarSign, Utensils, ClipboardList,
   ShieldCheck, Loader2, Pencil, Trash2, Plus, Check, Truck, Trophy,
+  GripVertical,
 } from "lucide-react";
 import { supabase, TABELA_CHECKLIST } from "../lib/supabaseClient";
 // ---------------------------------------------------------------------------
@@ -476,6 +477,30 @@ function EditarChecklist({ onBack }) {
     if (error) { setErro(error.message); return; }
     carregar();
   };
+  // Ordem nova: a tela ja mostrou o resultado, agora o banco confirma.
+  // Uma chamada so pro grupo inteiro — ver o comentario da 117.
+  const reordenar = async (ids) => {
+    const antes = itens;
+    // Mostra na hora. Esperar o banco pra so entao mover o item faz o
+    // dedo achar que o arrasto nao pegou, e a pessoa arrasta de novo.
+    const porId = new Map(itens.map((i) => [i.id, i]));
+    const movidos = ids.map((id, n) => ({ ...porId.get(id), ordem: n + 1 }));
+    const resto = itens.filter((i) => !ids.includes(i.id));
+    setItens([...resto, ...movidos].sort((a, b) =>
+      a.departamento.localeCompare(b.departamento) ||
+      a.turno.localeCompare(b.turno) ||
+      a.ordem - b.ordem));
+    const { error } = await supabase.rpc("reordenar_checklist", { p_ids: ids });
+    if (error) {
+      // Voltar visivelmente e' melhor que deixar a tela mentindo.
+      setItens(antes);
+      setErro(error.message);
+      return;
+    }
+    setErro("");
+    carregar();
+  };
+
   const adicionar = async (departamento, turno) => {
     const chave = `${departamento}:${turno}`;
     const texto = (novoTexto[chave] || "").trim();
@@ -528,10 +553,20 @@ function EditarChecklist({ onBack }) {
                   <div key={turno} style={{ marginBottom: 14 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "#8A8778", textTransform: "uppercase", marginBottom: 6 }}>
                       {turno === "abertura" ? "Abertura" : "Fechamento"}
+                      {itensDoGrupo.length > 1 && (
+                        <span style={{ textTransform: "none", fontWeight: 500, color: "#B9B2A4", marginLeft: 8 }}>
+                          · segure nas bolinhas e arraste pra mudar a ordem
+                        </span>
+                      )}
                     </div>
                     <div style={{ border: "1px solid #E8E2D2", borderRadius: 10, overflow: "hidden", background: "#FFFFFF", marginBottom: 6 }}>
-                      {itensDoGrupo.map((item, idx) => (
-                        <div key={item.id} style={{ padding: "8px 12px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", display: "flex", alignItems: "center", gap: 8 }}>
+                      <GrupoArrastavel
+                        itens={itensDoGrupo}
+                        podeArrastar={editandoId === null}
+                        onReordenar={reordenar}
+                      >
+                        {(item) => (
+                          <>
                           {editandoId === item.id ? (
                             <>
                               <input value={textoEdicao} onChange={(e) => setTextoEdicao(e.target.value)} autoFocus
@@ -546,8 +581,9 @@ function EditarChecklist({ onBack }) {
                               <button onClick={() => excluir(item)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Excluir item"><Trash2 size={14} /></button>
                             </>
                           )}
-                        </div>
-                      ))}
+                          </>
+                        )}
+                      </GrupoArrastavel>
                       {itensDoGrupo.length === 0 && <div style={{ padding: 12, fontSize: 12, color: "#8A8778" }}>Nenhum item ainda.</div>}
                     </div>
                     <div style={{ display: "flex", gap: 6 }}>
@@ -568,6 +604,170 @@ function EditarChecklist({ onBack }) {
     </div>
   );
 }
+// ---------------------------------------------------------------------------
+// Arrastar para reordenar
+//
+// POR QUE NAO O DRAG NATIVO DO HTML:
+// `draggable` + ondragstart simplesmente NAO dispara no Safari do iPhone
+// nem do iPad. Como o checklist e' editado no celular, o drag nativo
+// seria um recurso que funciona so na demonstracao. Aqui e' Pointer
+// Events, que e' o mesmo codigo pro dedo e pro mouse.
+//
+// POR QUE UMA ALCA, E NAO A LINHA INTEIRA:
+// se a linha inteira arrastasse, cada tentativa de ROLAR a lista viraria
+// um arrasto. Numa lista de 21 itens isso e' insuportavel. A alca (as
+// seis bolinhas) e' o unico ponto que segura; o resto da linha continua
+// rolando normal. E ela leva `touch-action: none` pra que, ao segurar
+// ali, o navegador entregue o gesto pra gente em vez de rolar a pagina.
+//
+// POR QUE GRAVAR A LISTA INTEIRA NO FIM:
+// mover um item empurra todos os outros. Se cada empurrao fosse um
+// UPDATE, uma falha de rede no meio deixaria dois itens na posicao 4 e
+// nenhum na 7 — e ninguem descobriria ate a lista sair torta na mao do
+// funcionario. A tela mostra a ordem nova na hora (que e' o que o dedo
+// espera), e o banco recebe tudo de uma vez. Se o banco recusar, a lista
+// volta pro que era: melhor voltar visivelmente do que mentir.
+// ---------------------------------------------------------------------------
+function GrupoArrastavel({ itens, podeArrastar, onReordenar, children }) {
+  const refs = React.useRef(new Map());
+  const estado = React.useRef(null);
+  const [arrasto, setArrasto] = useState(null); // { id, de, para, dy, altura }
+  const rolagem = React.useRef({ v: 0, raf: 0 });
+
+  // Rolagem automatica quando o dedo chega perto da borda. Sem isso,
+  // mover um item pro topo de uma lista longa e' impossivel: a tela nao
+  // acompanha e o dedo bate no fim do vidro.
+  const pararRolagem = () => {
+    rolagem.current.v = 0;
+    if (rolagem.current.raf) cancelAnimationFrame(rolagem.current.raf);
+    rolagem.current.raf = 0;
+  };
+  const girarRolagem = () => {
+    if (!rolagem.current.v) { rolagem.current.raf = 0; return; }
+    window.scrollBy(0, rolagem.current.v);
+    if (estado.current) recalcular(estado.current.ultimoY);
+    rolagem.current.raf = requestAnimationFrame(girarRolagem);
+  };
+
+  const recalcular = (clientY) => {
+    const e = estado.current;
+    if (!e) return;
+    e.ultimoY = clientY;
+    const dy = clientY - e.y0;
+    // Centro do item enquanto ele e' arrastado.
+    const centro = e.medidas[e.de].top + e.medidas[e.de].altura / 2 + dy;
+    let para = e.de;
+    for (let i = 0; i < e.medidas.length; i++) {
+      if (i === e.de) continue;
+      const m = e.medidas[i];
+      const meio = m.top + m.altura / 2;
+      if (i < e.de && centro < meio) { para = Math.min(para, i); }
+      if (i > e.de && centro > meio) { para = Math.max(para, i); }
+    }
+    setArrasto({ id: e.id, de: e.de, para, dy, altura: e.medidas[e.de].altura });
+  };
+
+  const aoPegar = (ev, indice, id) => {
+    if (!podeArrastar || itens.length < 2) return;
+    ev.preventDefault();
+    const medidas = itens.map((it) => {
+      const el = refs.current.get(it.id);
+      const r = el ? el.getBoundingClientRect() : { top: 0, height: 0 };
+      return { top: r.top + window.scrollY, altura: r.height };
+    });
+    estado.current = { id, de: indice, y0: ev.clientY, ultimoY: ev.clientY, medidas };
+    setArrasto({ id, de: indice, para: indice, dy: 0, altura: medidas[indice].altura });
+    try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch { /* navegador antigo */ }
+  };
+
+  const aoMover = (ev) => {
+    if (!estado.current) return;
+    ev.preventDefault();
+    const margem = 90;
+    const alturaTela = window.innerHeight;
+    if (ev.clientY < margem) rolagem.current.v = -Math.ceil((margem - ev.clientY) / 6);
+    else if (ev.clientY > alturaTela - margem) rolagem.current.v = Math.ceil((ev.clientY - (alturaTela - margem)) / 6);
+    else rolagem.current.v = 0;
+    if (rolagem.current.v && !rolagem.current.raf) rolagem.current.raf = requestAnimationFrame(girarRolagem);
+    if (!rolagem.current.v) pararRolagem();
+    recalcular(ev.clientY);
+  };
+
+  const aoSoltar = () => {
+    pararRolagem();
+    const e = estado.current;
+    const a = arrasto;
+    estado.current = null;
+    setArrasto(null);
+    if (!e || !a || a.para === a.de) return;
+    const nova = itens.slice();
+    const [movido] = nova.splice(a.de, 1);
+    nova.splice(a.para, 0, movido);
+    onReordenar(nova.map((i) => i.id));
+  };
+
+  React.useEffect(() => pararRolagem, []);
+
+  // Quanto cada linha se desloca pra abrir espaco pra que esta vindo.
+  const deslocamento = (i) => {
+    if (!arrasto) return 0;
+    const { de, para, altura } = arrasto;
+    if (i === de) return arrasto.dy;
+    if (de < para && i > de && i <= para) return -altura;
+    if (de > para && i < de && i >= para) return altura;
+    return 0;
+  };
+
+  return (
+    <>
+      {itens.map((item, idx) => {
+        const sendoArrastado = arrasto && arrasto.id === item.id;
+        return (
+          <div
+            key={item.id}
+            ref={(el) => { if (el) refs.current.set(item.id, el); else refs.current.delete(item.id); }}
+            style={{
+              padding: "8px 12px",
+              borderTop: idx > 0 ? "1px solid #F0EBDD" : "none",
+              display: "flex", alignItems: "center", gap: 8,
+              background: sendoArrastado ? "#FFFDF7" : "#FFFFFF",
+              transform: `translateY(${deslocamento(idx)}px)`,
+              transition: sendoArrastado ? "none" : "transform 140ms ease",
+              boxShadow: sendoArrastado ? "0 6px 18px rgba(0,0,0,0.14)" : "none",
+              position: "relative",
+              zIndex: sendoArrastado ? 5 : 1,
+              borderRadius: sendoArrastado ? 8 : 0,
+            }}
+          >
+            {podeArrastar && itens.length > 1 && (
+              <button
+                onPointerDown={(ev) => aoPegar(ev, idx, item.id)}
+                onPointerMove={aoMover}
+                onPointerUp={aoSoltar}
+                onPointerCancel={aoSoltar}
+                aria-label="Arrastar para reordenar"
+                title="Arraste para mudar a ordem"
+                style={{
+                  // touchAction none: segurando aqui, o gesto e' nosso —
+                  // sem isso o iPhone rola a pagina e o item nao sai do lugar.
+                  touchAction: "none",
+                  cursor: sendoArrastado ? "grabbing" : "grab",
+                  background: "none", border: "none", padding: "6px 2px",
+                  margin: "-6px 0", color: "#B9B2A4", display: "flex",
+                  alignItems: "center", flex: "none",
+                }}
+              >
+                <GripVertical size={16} />
+              </button>
+            )}
+            {children(item, idx)}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Shell / layout comum
 // ---------------------------------------------------------------------------
