@@ -554,6 +554,41 @@ export default function NotasFiscais() {
     img.src = url;
   });
 
+  // Pergunta o status da leitura ate ela terminar. Recarrega a lista a
+  // cada volta, entao o "Lendo com IA" vira o resultado sozinho na tela.
+  //
+  // Desistir de PERGUNTAR nao e' desistir da LEITURA: ela continua no
+  // servidor e o resultado aparece no proximo Atualizar. Por isso a
+  // mensagem do fim nao fala em erro.
+  const acompanharLeitura = async (documentoId) => {
+    const ESPERA_MS = 2500;
+    const TENTATIVAS = 72; // ~3 minutos
+    for (let i = 0; i < TENTATIVAS; i++) {
+      await new Promise((r) => setTimeout(r, ESPERA_MS));
+      const { data: d, error } = await supabase
+        .from("documentos_compra")
+        .select("id, status, erro_mensagem")
+        .eq("id", documentoId)
+        .maybeSingle();
+      if (error) continue;           // rede tropecou; tenta de novo
+      if (!d) return;                // documento sumiu (apagado por alguem)
+      if (d.status === "erro") {
+        carregar();
+        throw new Error(d.erro_mensagem || "A leitura falhou.");
+      }
+      if (d.status !== "processando") {
+        carregar();
+        return;
+      }
+      if (i % 4 === 3) carregar();   // de vez em quando, atualiza a lista
+    }
+    carregar();
+    throw new Error(
+      "A leitura está demorando mais que o normal. Ela continua rodando no servidor — " +
+      "toque em Atualizar daqui a pouco para ver o resultado."
+    );
+  };
+
   const enviarArquivo = async (fileOriginal) => {
     if (!fileOriginal) return;
     setEnviando(true);
@@ -574,18 +609,23 @@ export default function NotasFiscais() {
       });
       if (erroFuncao) {
         const msg = await extrairErroFuncao(erroFuncao);
-        // Funcao morta por tempo nao devolve resposta, e a biblioteca do
-        // Supabase quebra tentando ler o cabecalho que nao veio. Dizer
-        // "toLowerCase" pra quem esta subindo uma nota nao ajuda ninguem.
         throw new Error(
           /toLowerCase|undefined|Failed to fetch|Load failed/i.test(msg || "")
-            ? "A leitura demorou demais e foi interrompida (a função tem limite de tempo). " +
-              "A nota está salva na lista — abra e lance pelo Compra manual, ou tente de novo com uma foto mais fechada, só da parte dos itens."
+            ? "Não consegui falar com o servidor de leitura. A nota está salva na lista — " +
+              "abra daqui a pouco, ou lance pelo Compra manual."
             : msg
         );
       }
       if (resultado?.error) throw new Error(resultado.error);
-      carregar();
+
+      // A funcao agora responde na hora e continua lendo por tras. Quem
+      // espera e' esta tela, perguntando o status ao banco.
+      //
+      // Isso e' melhor que esperar a resposta HTTP por um motivo pratico:
+      // o status fica no BANCO. Se voce bloquear o celular, fechar a aba
+      // ou o 4G cair no meio, a leitura termina do mesmo jeito e o
+      // resultado esta la quando voltar. A resposta HTTP se perderia.
+      await acompanharLeitura(doc.id);
     } catch (e) {
       setErro(e.message || String(e));
     } finally {
