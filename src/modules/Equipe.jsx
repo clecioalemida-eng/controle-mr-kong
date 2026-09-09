@@ -18,7 +18,23 @@ function porNome(a, b) {
   return String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR", { sensitivity: "base" });
 }
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
-function hoje() { return new Date().toISOString().slice(0, 10); }
+// ---------------------------------------------------------------------------
+// Que dia e' hoje
+//
+// toISOString() devolve a data em UTC, nao no relogio de quem esta
+// olhando. Em Rio Verde (UTC-3), das 21h em diante o UTC ja virou o dia
+// seguinte — ou seja, exatamente no meio do movimento a tela passava a
+// perguntar pelo dia de amanha e nao achava nada do que a equipe tinha
+// acabado de fazer.
+//
+// Uma data SEM HORA e' sempre a data de quem esta lendo. Entao ela sai
+// do relogio local, nunca de toISOString().
+// ---------------------------------------------------------------------------
+function hoje() {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
 async function abrirDocumento(path) {
   if (!path) return;
   const { data, error } = await supabase.storage.from("documentos-pessoas").createSignedUrl(path, 300);
