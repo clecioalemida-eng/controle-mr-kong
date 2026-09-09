@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  Bell, LogOut, Loader2, Clock, LayoutGrid, ShieldCheck,
+  Bell, LogOut, Loader2, Clock, LayoutGrid, ShieldCheck, KeyRound, CheckCircle2,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 import { carregarPermissoes, podeVer } from "./lib/permissoes";
@@ -33,6 +33,22 @@ const COMPONENTES_MODULO = {
 export default function App() {
   const [carregandoAuth, setCarregandoAuth] = useState(true);
   const [sessao, setSessao] = useState(null);
+  // Voltando do e-mail de "esqueci minha senha".
+  //
+  // O link do e-mail JA LOGA a pessoa. Sem esta trava, ela cairia direto
+  // no painel e nunca trocaria a senha — continuaria trancada fora na
+  // proxima vez, sem entender por que.
+  //
+  // A deteccao e' dupla de proposito: o evento PASSWORD_RECOVERY as
+  // vezes dispara antes do listener existir, entao o endereco tambem e'
+  // lido na abertura. Perder esse sinal significa prender a pessoa num
+  // painel que ela nao pediu.
+  const [trocandoSenha, setTrocandoSenha] = useState(
+    () => {
+      try { return /type=recovery/.test(window.location.hash || ""); }
+      catch { return false; }
+    }
+  );
   const [perfil, setPerfil] = useState(null);
   const [permissoes, setPermissoes] = useState(null); // { admin, mapa }
   const [tela, setTela] = useState("login"); // login | aguardando | home | permissoes | <chave do módulo>
@@ -46,7 +62,8 @@ export default function App() {
       setSessao(data.session);
       setCarregandoAuth(false);
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, novaSessao) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((evento, novaSessao) => {
+      if (evento === "PASSWORD_RECOVERY") setTrocandoSenha(true);
       setSessao(novaSessao);
     });
     return () => listener.subscription.unsubscribe();
@@ -110,6 +127,13 @@ export default function App() {
     setTela("login");
   };
   // ---- roteamento por tela --------------------------------------------------
+  // Antes de qualquer outra tela. Quem chegou pelo link do e-mail tem
+  // uma sessao valida — se a gente deixasse o roteamento normal rodar,
+  // ela iria pro painel e a senha continuaria a antiga.
+  if (trocandoSenha) {
+    return <TelaNovaSenha aoConcluir={() => setTrocandoSenha(false)} />;
+  }
+
   if (carregandoAuth) {
     return <TelaCarregando />;
   }
@@ -188,6 +212,82 @@ function TelaSemPermissao({ onVoltar }) {
   );
 }
 // ---------------------------------------------------------------------------
+// Nova senha — depois de clicar no link do e-mail
+//
+// O link de recuperacao do Supabase JA abre uma sessao. Por isso esta
+// tela nao pede a senha antiga: quem chegou aqui provou que tem acesso
+// ao e-mail cadastrado, e isso e' a prova.
+//
+// Pede a senha DUAS VEZES porque o campo e' mascarado. Errar a digitacao
+// numa senha que voce nao consegue ler, e so descobrir no proximo login,
+// e' voltar ao começo do problema — e a pessoa ja estava trancada fora.
+// ---------------------------------------------------------------------------
+function TelaNovaSenha({ aoConcluir }) {
+  const [senha, setSenha] = useState("");
+  const [repetir, setRepetir] = useState("");
+  const [carregando, setCarregando] = useState(false);
+  const [erro, setErro] = useState("");
+  const [pronto, setPronto] = useState(false);
+
+  const salvar = async () => {
+    setErro("");
+    if (senha.length < 6) { setErro("A senha precisa ter pelo menos 6 caracteres."); return; }
+    if (senha !== repetir) { setErro("As duas senhas não são iguais."); return; }
+    setCarregando(true);
+    const { error } = await supabase.auth.updateUser({ password: senha });
+    setCarregando(false);
+    if (error) { setErro(traduzErro(error.message)); return; }
+    // Limpa o endereço: o token de recuperação não precisa ficar na
+    // barra do navegador, nem no histórico, nem num print de tela.
+    try { window.history.replaceState(null, "", window.location.pathname); } catch { /* ignora */ }
+    setPronto(true);
+  };
+
+  if (pronto) {
+    return (
+      <div style={{ ...pageStyle, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <div style={{ maxWidth: 340, width: "100%", textAlign: "center" }}>
+          <CheckCircle2 size={32} color="#2F8F5B" style={{ marginBottom: 12 }} />
+          <div style={{ fontWeight: 800, fontSize: 18, color: "#231A18", marginBottom: 6 }}>Senha trocada</div>
+          <div style={{ fontSize: 13, color: "#8A8778", marginBottom: 18, lineHeight: 1.6 }}>
+            Você já está entrando com a senha nova. Guarde ela.
+          </div>
+          <button onClick={aoConcluir} style={{ ...btnPrimary, width: "100%", justifyContent: "center" }}>
+            Ir para o painel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...pageStyle, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ maxWidth: 340, width: "100%" }}>
+        <div style={{ textAlign: "center", marginBottom: 20 }}>
+          <KeyRound size={30} color="#C9A227" style={{ marginBottom: 10 }} />
+          <div style={{ fontWeight: 800, fontSize: 18, color: "#231A18" }}>Criar nova senha</div>
+          <div style={{ fontSize: 12.5, color: "#8A8778", marginTop: 4, lineHeight: 1.6 }}>
+            Escolha uma senha nova. Ela vale a partir de agora.
+          </div>
+        </div>
+        <div style={{ display: "grid", gap: 10 }}>
+          <input value={senha} onChange={(e) => setSenha(e.target.value)} type="password" autoFocus
+            placeholder="Nova senha (mínimo 6)" style={inputStyle} />
+          <input value={repetir} onChange={(e) => setRepetir(e.target.value)} type="password"
+            placeholder="Repita a nova senha"
+            onKeyDown={(e) => e.key === "Enter" && salvar()} style={inputStyle} />
+        </div>
+        {erro && <div style={{ color: "#C4432B", fontSize: 13, marginTop: 10 }}>{erro}</div>}
+        <button onClick={salvar} disabled={carregando}
+          style={{ ...btnPrimary, width: "100%", marginTop: 16, justifyContent: "center" }}>
+          {carregando ? <Loader2 size={16} /> : null} Salvar senha
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Login / criação de conta
 // ---------------------------------------------------------------------------
 function TelaLogin() {
@@ -207,6 +307,29 @@ function TelaLogin() {
     if (error) setErro(traduzErro(error.message));
     setCarregando(false);
   };
+  // Manda o link de recuperacao.
+  //
+  // A mensagem de sucesso e' DELIBERADAMENTE vaga: "se existir uma conta
+  // com esse e-mail". Dizer "esse e-mail nao esta cadastrado" entrega
+  // pra qualquer pessoa na internet quais e-mails tem conta aqui — e a
+  // lista de quem trabalha na casa nao e' informacao publica.
+  const recuperar = async () => {
+    setErro(""); setMensagem("");
+    if (!email.trim()) { setErro("Digite o e-mail da sua conta."); return; }
+    setCarregando(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      // Volta pro proprio painel. O Supabase acrescenta o token no
+      // endereco, e o App detecta e abre a tela de nova senha.
+      redirectTo: window.location.origin,
+    });
+    setCarregando(false);
+    if (error) { setErro(traduzErro(error.message)); return; }
+    setMensagem(
+      "Se existir uma conta com esse e-mail, o link para criar uma senha nova já foi enviado. " +
+      "Olhe também o lixo eletrônico — o link vale por 1 hora."
+    );
+  };
+
   const criarConta = async () => {
     setErro(""); setMensagem("");
     if (nome.trim().length < 2) { setErro("Digite seu nome."); return; }
@@ -227,12 +350,14 @@ function TelaLogin() {
           <img src="/icons/logo.svg" alt="Mr. Kong Fast Food" style={{ width: "100%", maxWidth: 260, height: "auto", margin: "0 auto 12px", display: "block" }} />
           <div style={{ fontSize: 13, color: "#8A8778" }}>Acesso da equipe</div>
         </div>
+        {modo !== "esqueci" && (
         <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
           <button onClick={() => { setModo("entrar"); setErro(""); setMensagem(""); }}
             style={{ ...tabBtn, ...(modo === "entrar" ? tabBtnAtivo : {}) }}>Entrar</button>
           <button onClick={() => { setModo("criar"); setErro(""); setMensagem(""); }}
             style={{ ...tabBtn, ...(modo === "criar" ? tabBtnAtivo : {}) }}>Criar conta</button>
         </div>
+        )}
         <div style={{ display: "grid", gap: 10 }}>
           {modo === "criar" && (
             <>
@@ -245,18 +370,46 @@ function TelaLogin() {
               </div>
             </>
           )}
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="E-mail" type="email" style={inputStyle} />
-          <input value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="Senha" type="password"
-            onKeyDown={(e) => e.key === "Enter" && (modo === "entrar" ? entrar() : criarConta())}
+          {modo === "esqueci" && (
+            <div style={{ fontSize: 12.5, color: "#8A8778", lineHeight: 1.6, marginBottom: 2 }}>
+              Digite o e-mail com que você entra. Vamos mandar um link para você
+              criar uma senha nova.
+            </div>
+          )}
+          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="E-mail" type="email"
+            onKeyDown={(e) => e.key === "Enter" && modo === "esqueci" && recuperar()}
             style={inputStyle} />
+          {modo !== "esqueci" && (
+            <input value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="Senha" type="password"
+              onKeyDown={(e) => e.key === "Enter" && (modo === "entrar" ? entrar() : criarConta())}
+              style={inputStyle} />
+          )}
         </div>
         {erro && <div style={{ color: "#C4432B", fontSize: 13, marginTop: 10 }}>{erro}</div>}
         {mensagem && <div style={{ color: "#2F8F5B", fontSize: 13, marginTop: 10 }}>{mensagem}</div>}
-        <button onClick={modo === "entrar" ? entrar : criarConta} disabled={carregando}
+        <button
+          onClick={modo === "entrar" ? entrar : modo === "criar" ? criarConta : recuperar}
+          disabled={carregando}
           style={{ ...btnPrimary, width: "100%", marginTop: 16, justifyContent: "center" }}>
           {carregando ? <Loader2 size={16} /> : null}
-          {modo === "entrar" ? "Entrar" : "Criar conta"}
+          {modo === "entrar" ? "Entrar" : modo === "criar" ? "Criar conta" : "Enviar link por e-mail"}
         </button>
+
+        {modo === "entrar" && (
+          <button onClick={() => { setModo("esqueci"); setErro(""); setMensagem(""); }}
+            style={{ background: "none", border: "none", color: "#8A6A0F", fontSize: 12.5,
+                     fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                     width: "100%", padding: "12px 0 0" }}>
+            Esqueci minha senha
+          </button>
+        )}
+        {modo === "esqueci" && (
+          <button onClick={() => { setModo("entrar"); setErro(""); setMensagem(""); }}
+            style={{ background: "none", border: "none", color: "#8A8778", fontSize: 12.5,
+                     cursor: "pointer", fontFamily: "inherit", width: "100%", padding: "12px 0 0" }}>
+            Voltar para entrar
+          </button>
+        )}
       </div>
     </div>
   );
@@ -274,6 +427,11 @@ function traduzErro(msg) {
   if (/invalid login credentials/i.test(msg)) return "E-mail ou senha incorretos.";
   if (/user already registered/i.test(msg)) return "Já existe uma conta com este e-mail.";
   if (/email not confirmed/i.test(msg)) return "Confirme seu e-mail antes de entrar (verifique sua caixa de entrada).";
+  if (/rate limit|too many requests|for security purposes/i.test(msg))
+    return "Muitas tentativas seguidas. Espere um minuto e tente de novo.";
+  if (/same.*password|should be different/i.test(msg))
+    return "A senha nova precisa ser diferente da antiga.";
+  if (/password should be at least/i.test(msg)) return "A senha precisa ter pelo menos 6 caracteres.";
   return msg;
 }
 // ---------------------------------------------------------------------------
