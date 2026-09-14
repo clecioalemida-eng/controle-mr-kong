@@ -31,19 +31,34 @@ const TIPOS = [
   { v: "video", n: "Vídeo" },
 ];
 
+// Datas em horário de Brasília, nunca em UTC.
+//
+// Aqui morava um bug que zerava a Pista inteira. `new Date("2026-09-14")` é
+// lido como meia-noite UTC, que em Brasília é 21h do dia 13 — um domingo.
+// Então segundaDa("2026-09-14") devolvia 08/09, a tela pedia ao banco uma
+// semana que não existe (as linhas começam sempre numa segunda) e todos os
+// contadores apareciam em zero, como se nada tivesse sido publicado.
+//
+// isoLocal lê ano, mês e dia do relógio local em vez de converter para UTC,
+// e "T12:00:00" ancora a leitura no meio do dia, longe de qualquer virada
+// de fuso ou horário de verão.
+function isoLocal(d) {
+  const dois = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${dois(d.getMonth() + 1)}-${dois(d.getDate())}`;
+}
 // Segunda-feira da semana de uma data (o banco usa date_trunc('week'),
 // que no Postgres também começa na segunda).
 function segundaDa(data) {
-  const d = new Date(data);
+  const d = new Date(data + "T12:00:00");
   const dia = (d.getDay() + 6) % 7;
   d.setDate(d.getDate() - dia);
-  return d.toISOString().slice(0, 10);
+  return isoLocal(d);
 }
-function hoje() { return new Date().toISOString().slice(0, 10); }
+function hoje() { return isoLocal(new Date()); }
 function somaDias(iso, n) {
   const d = new Date(iso + "T12:00:00");
   d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  return isoLocal(d);
 }
 function dataBR(iso) {
   if (!iso) return "—";
@@ -119,10 +134,15 @@ function Pista() {
     { nome: "Stories", feito: semana?.stories_feitos || 0, meta: cfg.meta_stories, naMao: true },
     { nome: "Seguidores", feito: semana?.seguidores_ganhos || 0, meta: cfg.meta_seguidores },
   ];
-  if (cfg.janela_dia != null && cfg.janela_hora != null) {
+  // A janela deixou de ser um sim/não da semana inteira (043). Agora cada
+  // cartão do calendário é medido contra a própria hora_prevista, então o
+  // que aparece aqui é quantos saíram dentro da janela, de quantos contam.
+  if (semana?.base_esforco) {
     metas.splice(3, 0, {
-      nome: `${DIAS_CURTO[cfg.janela_dia]} ${String(cfg.janela_hora).padStart(2, "0")}h`,
-      feito: semana?.janela_cumprida ? 1 : 0, meta: 1,
+      nome: "No horário",
+      feito: semana?.no_horario || 0,
+      meta: semana.base_esforco,
+      dica: `Até ${cfg.janela_tolerancia_min ?? 15} min para mais ou para menos da hora marcada no cartão.`,
     });
   }
 
@@ -169,7 +189,7 @@ function Pista() {
           return (
             <div key={m.nome} style={{ display: "grid", gridTemplateColumns: "82px 1fr 54px", gap: 8, alignItems: "center", fontSize: 11.5 }}>
               <span style={{ color: "#22231F", display: "flex", alignItems: "center", gap: 4 }}>
-                {m.nome}
+                <span title={m.dica || undefined}>{m.nome}</span>
                 {m.naMao && <span style={seloMao} title="Registrado na mão — não vale bônus">mão</span>}
               </span>
               <span style={{ height: 8, borderRadius: 999, background: "#E8E2D2", overflow: "hidden" }}>
@@ -554,6 +574,8 @@ function Placar({ ehAdmin }) {
         </div>
       </div>
 
+      <ComoAContaEFeita cfg={cfg} />
+
       {/* -------------------------------------------------- semanas */}
       <div style={sectionLabel}>Semanas</div>
       <div className="list-grid">
@@ -604,16 +626,164 @@ function Placar({ ehAdmin }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// COMO A CONTA É FEITA
+//
+// Mora aqui, na página da avaliação, e não num documento à parte, porque
+// quem é avaliado tem que conseguir conferir a própria nota sem pedir
+// explicação a ninguém. Todos os números saem da config — se o admin mudar
+// um peso, este texto muda junto. Texto fixo envelheceria e viraria mentira.
+// ---------------------------------------------------------------------------
+function ComoAContaEFeita({ cfg }) {
+  const pe = Number(cfg?.peso_esforco ?? 0.7);
+  const pr = Number(cfg?.peso_resultado ?? 0.3);
+  const w1 = Number(cfg?.peso_publicou ?? 50);
+  const w2 = Number(cfg?.peso_no_dia ?? 30);
+  const w3 = Number(cfg?.peso_no_horario ?? 20);
+  const soma = w1 + w2 + w3 || 1;
+  const tol = cfg?.janela_tolerancia_min ?? 15;
+
+  // Quanto cada degrau vale dos 100 pontos da semana, já com o peso do esforço.
+  const pts = (w) => Math.round(pe * 100 * (w / soma) * 10) / 10;
+  const degraus = [
+    { n: 1, txt: "Publicou o que planejou", val: pts(w1), cor: "#22231F" },
+    { n: 2, txt: "Publicou no dia certo", val: pts(w2), cor: "#8A8778" },
+    { n: 3, txt: `Publicou dentro da janela (±${tol} min)`, val: pts(w3), cor: "#C9A227" },
+  ];
+  const faixas = [...(Array.isArray(cfg?.faixas_bonus) ? cfg.faixas_bonus : [])]
+    .sort((a, b) => a.pontos - b.pontos);
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={sectionLabel}>Como a nota é feita</div>
+      <div style={{ ...cardStyle, display: "grid", gap: 11 }}>
+
+        <div style={{ fontSize: 11.5, color: "#22231F", lineHeight: 1.5 }}>
+          A semana vale 100 pontos, divididos em duas metades:{" "}
+          <b>{Math.round(pe * 100)} de esforço</b>, que depende só de você, e{" "}
+          <b>{Math.round(pr * 100)} de resultado</b>, que depende do público.
+        </div>
+
+        {/* a escada */}
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#8A8778" }}>
+            Os {Math.round(pe * 100)} pontos de esforço, degrau a degrau
+          </div>
+          {degraus.map((d) => (
+            <div key={d.n} style={{
+              display: "grid", gridTemplateColumns: "18px 1fr auto", gap: 9, alignItems: "center",
+              padding: "7px 9px", background: "#F6F1E7", borderLeft: `3px solid ${d.cor}`,
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>{d.n}</span>
+              <span style={{ fontSize: 11.5, color: d.val > 0 ? "#22231F" : "#8A8778", lineHeight: 1.35 }}>{d.txt}</span>
+              {d.val > 0
+                ? <b style={{ fontSize: 13, color: "#22231F", fontVariantNumeric: "tabular-nums" }}>{d.val}</b>
+                : <span style={{ fontSize: 10, color: "#8A8778" }}>não vale ponto</span>}
+            </div>
+          ))}
+          <div style={{ fontSize: 10.5, color: "#8A8778", lineHeight: 1.45 }}>
+            Cada degrau só conta para o cartão que já contou no degrau de baixo.
+            {w3 > 0
+              ? <> Publicar tudo no dia certo mas fora de hora dá{" "}
+                  <b>{Math.round(pts(w1) + pts(w2))}</b> dos {Math.round(pe * 100)}, não {Math.round(pe * 100)}.</>
+              : <> A janela está fora do bônus: aparece na tela, mas não muda a nota.</>}
+          </div>
+        </div>
+
+        {/* resultado */}
+        <div style={{ display: "grid", gap: 5 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#8A8778" }}>
+            Os {Math.round(pr * 100)} pontos de resultado
+          </div>
+          <div style={{ fontSize: 10.5, color: "#8A8778", lineHeight: 1.45 }}>
+            Metade compara nosso engajamento com o da praça, metade compara nosso
+            crescimento de seguidores com o dela. Empatar com a praça já vale a
+            metade; o dobro dela é o teto. Só a praça sobe a régua — mês fraco
+            para todo mundo não derruba a sua nota.
+          </div>
+        </div>
+
+        {/* faixas */}
+        {faixas.length > 0 && (
+          <div style={{ display: "grid", gap: 5 }}>
+            <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#8A8778" }}>
+              O que cada faixa paga
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {faixas.map((f, i) => (
+                <span key={i} style={{
+                  fontSize: 11, padding: "3px 8px", background: "#F6F1E7",
+                  border: "1px solid #E8E2D2", color: "#22231F", fontVariantNumeric: "tabular-nums",
+                }}>
+                  <b>{f.pontos}</b> pts → R$ {f.valor}
+                </span>
+              ))}
+            </div>
+            <div style={{ fontSize: 10.5, color: "#8A8778", lineHeight: 1.45 }}>
+              Vale a média das semanas fechadas no mês, não a melhor semana.
+            </div>
+          </div>
+        )}
+
+        {/* as três letras miúdas que mudam dinheiro */}
+        <div style={{ display: "grid", gap: 6, paddingTop: 3, borderTop: "1px solid #E8E2D2" }}>
+          <Miuda texto={`O divisor nunca fica menor que a meta da semana (${cfg?.meta_posts ?? 0} posts). Uma semana com 2 cartões não vira nota cheia só porque o calendário estava curto.`} />
+          <Miuda texto="Marcar 'publiquei' na mão ganha o degrau 1, mas não o 2 nem o 3 — dia e hora vêm da conferência do robô, que lê a data real do post." />
+          <Miuda texto="Semana fechada congela. Coleta nova, meta nova ou peso novo não mexem em bônus já apurado." />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Miuda({ texto }) {
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+      <Info size={11} color="#8A8778" style={{ flexShrink: 0, marginTop: 2.5 }} />
+      <span style={{ fontSize: 10.5, color: "#8A8778", lineHeight: 1.45 }}>{texto}</span>
+    </div>
+  );
+}
+
+// Os três pesos podem somar qualquer coisa — a conta no banco divide pela
+// soma. Mas 50/30/20 é legível e 40/25/20 não é, então a tela mostra o que
+// cada número virou de verdade.
+function SomaPesos({ cfg }) {
+  const w1 = Number(cfg?.peso_publicou) || 0;
+  const w2 = Number(cfg?.peso_no_dia) || 0;
+  const w3 = Number(cfg?.peso_no_horario) || 0;
+  const soma = w1 + w2 + w3;
+
+  if (soma === 0) {
+    return (
+      <div style={{ fontSize: 10.5, color: "#C4432B", lineHeight: 1.45 }}>
+        Os três pesos estão zerados. Pelo menos um precisa ser maior que zero,
+        ou o esforço não pode ser calculado.
+      </div>
+    );
+  }
+  const pct = (w) => (Math.round((w / soma) * 1000) / 10).toLocaleString("pt-BR");
+  return (
+    <div style={{ fontSize: 10.5, color: soma === 100 ? "#8A8778" : "#C9A227", lineHeight: 1.45 }}>
+      {soma === 100
+        ? "Somam 100 — cada número já é a porcentagem do esforço."
+        : `Somam ${soma}. A conta funciona assim mesmo (divide pela soma), mas valem ${pct(w1)} / ${pct(w2)} / ${pct(w3)}. Ajuste para somar 100 e o número na tela vira a porcentagem.`}
+      {" "}Zerar o terceiro tira a janela do bônus sem tirá-la da tela.
+    </div>
+  );
+}
+
 function DetalheSemana({ semana, onVoltar }) {
   const linhas = [
     ["Postagens planejadas", semana.planejadas ?? 0],
-    ["Publicadas", semana.publicadas ?? 0],
+    ["Base do esforço (nunca menor que a meta)", semana.base_esforco ?? "—"],
+    ["1 · Publicadas", semana.publicadas ?? 0],
     ["— destas, conferidas pelo robô", semana.confirmadas_robo ?? "—"],
-    ["No dia planejado", semana.no_dia ?? 0],
+    ["2 · No dia planejado", semana.no_dia ?? 0],
+    ["3 · Dentro da janela", semana.no_horario ?? 0],
     ["Reels", semana.reels_feitos ?? 0],
     ["Posts no feed", semana.posts_feitos ?? 0],
     ["Stories (na mão, fora do bônus)", semana.stories_feitos ?? 0],
-    ["Janela alvo cumprida", semana.janela_cumprida ? "sim" : "não"],
     ["Seguidores ganhos", `+${semana.seguidores_ganhos ?? 0}`],
     ["Nosso engajamento", semana.eng_nosso != null ? `${semana.eng_nosso}%` : "—"],
     ["Engajamento da praça", semana.eng_praca != null ? `${semana.eng_praca}%` : "—"],
@@ -661,9 +831,10 @@ function DetalheSemana({ semana, onVoltar }) {
       </div>
 
       <div style={{ fontSize: 11, color: "#8A8778", marginTop: 12, lineHeight: 1.5 }}>
-        Esforço vem do que foi planejado e cumprido — 60% publicar, 40% publicar
-        no dia. Resultado compara nosso engajamento e crescimento com a praça,
-        limitado a 2× para um pico isolado não distorcer o bônus.
+        Esforço é a escada de três degraus, e cada degrau só conta para o cartão
+        que já contou no degrau de baixo. Resultado compara nosso engajamento e
+        crescimento com a praça, limitado a 2× para um pico isolado não
+        distorcer o bônus. A explicação inteira está no topo do Placar.
       </div>
     </div>
   );
@@ -698,6 +869,11 @@ function Config() {
       meta_seguidores: Number(cfg.meta_seguidores) || 0,
       janela_dia: cfg.janela_dia === "" ? null : Number(cfg.janela_dia),
       janela_hora: cfg.janela_hora === "" ? null : Number(cfg.janela_hora),
+      janela_minuto: Number(cfg.janela_minuto) || 0,
+      janela_tolerancia_min: Number(cfg.janela_tolerancia_min) || 0,
+      peso_publicou: Number(cfg.peso_publicou) || 0,
+      peso_no_dia: Number(cfg.peso_no_dia) || 0,
+      peso_no_horario: Number(cfg.peso_no_horario) || 0,
       peso_esforco: Number(cfg.peso_esforco),
       peso_resultado: Number(cfg.peso_resultado),
       piso_qualidade: Number(cfg.piso_qualidade),
@@ -725,15 +901,39 @@ function Config() {
         <Campo rotulo="Novos seguidores" valor={cfg.meta_seguidores} onChange={(v) => campo("meta_seguidores", v)} />
       </div>
 
-      <div style={sectionLabel}>Janela alvo</div>
-      <div style={{ ...cardStyle, display: "flex", gap: 8, marginBottom: 14, alignItems: "center" }}>
-        <select value={cfg.janela_dia ?? ""} onChange={(e) => campo("janela_dia", e.target.value)} style={{ ...inputStyle, flex: 1 }}>
-          <option value="">sem janela</option>
-          {DIAS_CURTO.map((d, i) => <option key={i} value={i}>{d}</option>)}
-        </select>
-        <input type="number" min="0" max="23" value={cfg.janela_hora ?? ""}
-          onChange={(e) => campo("janela_hora", e.target.value)}
-          placeholder="hora" style={{ ...inputStyle, width: 78 }} />
+      <div style={sectionLabel}>Janela de postagem</div>
+      <div style={{ ...cardStyle, display: "grid", gap: 9, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select value={cfg.janela_dia ?? ""} onChange={(e) => campo("janela_dia", e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+            <option value="">sem padrão</option>
+            {DIAS_CURTO.map((d, i) => <option key={i} value={i}>{d}</option>)}
+          </select>
+          <input type="number" min="0" max="23" value={cfg.janela_hora ?? ""}
+            onChange={(e) => campo("janela_hora", e.target.value)}
+            placeholder="hora" style={{ ...inputStyle, width: 64 }} />
+          <input type="number" min="0" max="59" value={cfg.janela_minuto ?? 0}
+            onChange={(e) => campo("janela_minuto", e.target.value)}
+            placeholder="min" style={{ ...inputStyle, width: 64 }} />
+        </div>
+        <Campo rotulo="Tolerância (minutos)" valor={cfg.janela_tolerancia_min}
+          onChange={(v) => campo("janela_tolerancia_min", v)} />
+        <div style={{ fontSize: 10.5, color: "#8A8778", lineHeight: 1.45 }}>
+          Este dia e esta hora são só o <b>padrão de cartão novo</b>. Quem manda
+          na pontuação é a hora marcada em cada cartão do calendário. A tolerância
+          vale para todos: com 15, um cartão das 18:00 conta se sair entre 17:45
+          e 18:15.
+        </div>
+      </div>
+
+      <div style={sectionLabel}>Escada do esforço</div>
+      <div style={{ ...cardStyle, display: "grid", gap: 9, marginBottom: 14 }}>
+        <Campo rotulo="1 · Publicou o que planejou" valor={cfg.peso_publicou}
+          onChange={(v) => campo("peso_publicou", v)} />
+        <Campo rotulo="2 · Publicou no dia certo" valor={cfg.peso_no_dia}
+          onChange={(v) => campo("peso_no_dia", v)} />
+        <Campo rotulo="3 · Publicou dentro da janela" valor={cfg.peso_no_horario}
+          onChange={(v) => campo("peso_no_horario", v)} />
+        <SomaPesos cfg={cfg} />
       </div>
 
       <div style={sectionLabel}>Pesos do bônus</div>
@@ -745,8 +945,10 @@ function Config() {
         <Campo rotulo="Piso de qualidade" valor={cfg.piso_qualidade} passo="0.05"
           onChange={(v) => campo("piso_qualidade", v)} />
         <div style={{ fontSize: 10.5, color: "#8A8778", lineHeight: 1.45 }}>
-          Os dois pesos devem somar 1. O piso é a fração da nossa média de
-          engajamento abaixo da qual um post não conta como cumprido.
+          Estes dois dividem a nota final entre o que ela controla (esforço) e
+          o que depende do público (resultado), e devem somar 1. O piso é a
+          fração da nossa média de engajamento abaixo da qual um post não conta
+          como cumprido.
         </div>
       </div>
 
