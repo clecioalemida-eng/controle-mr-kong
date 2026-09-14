@@ -103,22 +103,45 @@ function Aba({ atual, v, set, icone, label }) {
 // ---------------------------------------------------------------------------
 function Pista() {
   const [semana, setSemana] = useState(null);
+  const [historico, setHistorico] = useState([]);
   const [cfg, setCfg] = useState(null);
   const [pendentes, setPendentes] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const inicio = segundaDa(hoje());
 
+  // As quatro segundas: esta e as três anteriores. Calculadas aqui em vez de
+  // pedir "as 4 últimas do banco" porque semana sem nenhum post nem cartão
+  // simplesmente não existe lá — e some do meio da sequência, o que daria a
+  // impressão errada de que a semana foi pulada no calendário.
+  const quatroSegundas = [0, 1, 2, 3].map((i) => somaDias(inicio, -7 * i));
+
   useEffect(() => {
     (async () => {
-      const [s, c, p] = await Promise.all([
-        supabase.from("v_pontos_semana").select("*").eq("semana_inicio", inicio).maybeSingle(),
+      const [s, c, f, p] = await Promise.all([
+        supabase.from("v_pontos_semana").select("*").in("semana_inicio", quatroSegundas),
         supabase.from("config_marketing").select("*").eq("id", 1).maybeSingle(),
+        supabase.from("semanas_marketing").select("*").in("semana_inicio", quatroSegundas),
         supabase.from("postagens_planejadas").select("*")
           .gte("data_prevista", inicio).lte("data_prevista", somaDias(inicio, 6))
           .is("confirmado_em", null).eq("publicado_manual", false)
           .order("data_prevista"),
       ]);
-      setSemana(s.data);
+      const linhas = s.data || [];
+      const congeladas = f.data || [];
+
+      // Semana congelada manda. Ela guarda os contadores e a configuração do
+      // dia em que foi fechada — e é por esses números que o bônus foi pago.
+      // Mostrar o recálculo de hoje aqui faria a tela discordar do contracheque.
+      setHistorico(quatroSegundas.map((ini) => {
+        const congelada = congeladas.find((x) => x.semana_inicio === ini);
+        if (congelada) {
+          return { ini, linha: congelada, congelada: true, cfg: congelada.metas_no_fechamento || c.data };
+        }
+        const viva = linhas.find((l) => l.semana_inicio === ini);
+        return { ini, linha: viva || null, congelada: false, cfg: c.data };
+      }));
+
+      setSemana(linhas.find((l) => l.semana_inicio === inicio) || null);
       setCfg(c.data);
       setPendentes(p.data || []);
       setCarregando(false);
@@ -128,23 +151,7 @@ function Pista() {
   if (carregando) return <Carregando />;
   if (!cfg) return <Aviso texto="Configuração de metas não encontrada. Rode a migração 037." />;
 
-  const metas = [
-    { nome: "Reels", feito: semana?.reels_feitos || 0, meta: cfg.meta_reels },
-    { nome: "Posts feed", feito: semana?.posts_feitos || 0, meta: cfg.meta_posts },
-    { nome: "Stories", feito: semana?.stories_feitos || 0, meta: cfg.meta_stories, naMao: true },
-    { nome: "Seguidores", feito: semana?.seguidores_ganhos || 0, meta: cfg.meta_seguidores },
-  ];
-  // A janela deixou de ser um sim/não da semana inteira (043). Agora cada
-  // cartão do calendário é medido contra a própria hora_prevista, então o
-  // que aparece aqui é quantos saíram dentro da janela, de quantos contam.
-  if (semana?.base_esforco) {
-    metas.splice(3, 0, {
-      nome: "No horário",
-      feito: semana?.no_horario || 0,
-      meta: semana.base_esforco,
-      dica: `Até ${cfg.janela_tolerancia_min ?? 15} min para mais ou para menos da hora marcada no cartão.`,
-    });
-  }
+  const metas = metasDaSemana(semana, cfg);
 
   // O progresso da pista usa só as metas que valem pontos (stories fora).
   const contam = metas.filter((m) => !m.naMao);
@@ -183,24 +190,7 @@ function Pista() {
 
       <div style={sectionLabel}>Metas da semana</div>
       <div style={{ ...cardStyle, display: "grid", gap: 10 }}>
-        {metas.map((m) => {
-          const pct = Math.min((m.feito / (m.meta || 1)) * 100, 100);
-          const cor = pct >= 100 ? "#2F8F5B" : pct >= 60 ? "#C9A227" : "#22231F";
-          return (
-            <div key={m.nome} style={{ display: "grid", gridTemplateColumns: "82px 1fr 54px", gap: 8, alignItems: "center", fontSize: 11.5 }}>
-              <span style={{ color: "#22231F", display: "flex", alignItems: "center", gap: 4 }}>
-                <span title={m.dica || undefined}>{m.nome}</span>
-                {m.naMao && <span style={seloMao} title="Registrado na mão — não vale bônus">mão</span>}
-              </span>
-              <span style={{ height: 8, borderRadius: 999, background: "#E8E2D2", overflow: "hidden" }}>
-                <span style={{ display: "block", height: "100%", width: `${pct}%`, background: cor, borderRadius: 999 }} />
-              </span>
-              <span style={{ textAlign: "right", color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>
-                {m.nome === "Seguidores" ? `+${m.feito}` : m.feito}/{m.meta}
-              </span>
-            </div>
-          );
-        })}
+        <BarrasMetas metas={metas} />
       </div>
 
       {pendentes.length > 0 && (
@@ -226,11 +216,129 @@ function Pista() {
         Stories aparecem na pista mas não entram na pontuação do bônus — são
         registrados na mão, e número marcado na mão não vira dinheiro.
       </div>
+
+      <SemanasAnteriores semanas={historico.filter((h) => h.ini !== inicio)} />
     </div>
   );
 }
 
 // Desenho da pista. Duas raias, corredor e fantasma, bandeira quadriculada.
+// ---------------------------------------------------------------------------
+// AS TRÊS SEMANAS ANTERIORES
+//
+// Cada semana ganha o mesmo cartão da semana em curso, com as mesmas metas,
+// para poder ser lida do mesmo jeito. Sem isso a Pista respondia só "como
+// estou hoje" — e uma semana ruim parecia o normal, porque não havia nada
+// ao lado para comparar.
+//
+// Semana congelada é lida da tabela do congelamento, não do recálculo de
+// hoje. Ela guarda os contadores E a configuração do dia em que foi fechada,
+// que é por onde o bônus foi pago. Se a tela mostrasse o recálculo, ela
+// discordaria do contracheque na pior hora possível.
+// ---------------------------------------------------------------------------
+function SemanasAnteriores({ semanas }) {
+  if (!semanas || semanas.length === 0) return null;
+  return (
+    <div style={{ marginTop: 18 }}>
+      <div style={sectionLabel}>Semanas anteriores</div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {semanas.map((s) => <CartaoSemana key={s.ini} {...s} />)}
+      </div>
+    </div>
+  );
+}
+
+function CartaoSemana({ ini, linha, congelada, cfg }) {
+  const pontos = linha ? Number(linha.pontos_total ?? 0) : null;
+  const semDado = !linha;
+
+  return (
+    <div style={{ ...cardStyle, display: "grid", gap: 9 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontWeight: 700, fontSize: 12.5, color: "#22231F" }}>
+            {dataBR(ini)} a {dataBR(somaDias(ini, 6))}
+          </span>
+          {congelada && (
+            <span style={{
+              fontSize: 9, letterSpacing: 0.3, textTransform: "uppercase", fontWeight: 700,
+              color: "#8A8778", border: "1px solid #E8E2D2", padding: "1px 5px",
+            }} title="Fechada. Coleta ou meta nova não mexem mais nesta semana.">
+              congelada
+            </span>
+          )}
+        </div>
+        <span style={{
+          fontSize: 15, fontWeight: 800, fontVariantNumeric: "tabular-nums",
+          color: pontos == null ? "#8A8778" : "#22231F",
+        }}>
+          {pontos == null ? "—" : `${Math.round(pontos)} pts`}
+        </span>
+      </div>
+
+      {semDado ? (
+        <div style={{ fontSize: 11, color: "#8A8778", lineHeight: 1.45 }}>
+          Nada publicado e nada planejado nesta semana.
+        </div>
+      ) : (
+        <BarrasMetas metas={metasDaSemana(linha, cfg)} />
+      )}
+    </div>
+  );
+}
+
+// As metas de uma semana. Recebe a configuração junto porque semana
+// congelada usa a configuração dela, não a de hoje.
+function metasDaSemana(s, cfg) {
+  const metas = [
+    { nome: "Reels", feito: s?.reels_feitos || 0, meta: cfg?.meta_reels },
+    { nome: "Posts feed", feito: s?.posts_feitos || 0, meta: cfg?.meta_posts },
+    { nome: "Stories", feito: s?.stories_feitos || 0, meta: cfg?.meta_stories, naMao: true },
+    { nome: "Seguidores", feito: s?.seguidores_ganhos || 0, meta: cfg?.meta_seguidores },
+  ];
+  // A janela deixou de ser um sim/não da semana inteira (043). Agora cada
+  // cartão do calendário é medido contra a própria hora_prevista, então o
+  // que aparece é quantos saíram dentro da janela, de quantos contam.
+  //
+  // Semana fechada antes da 044 não tem esses campos — e é certo que não
+  // tenha: ela foi apurada por outra regra, e inventar o número agora seria
+  // reescrever o passado.
+  if (s?.base_esforco) {
+    metas.splice(3, 0, {
+      nome: "No horário",
+      feito: s?.no_horario || 0,
+      meta: s.base_esforco,
+      dica: `Até ${cfg?.janela_tolerancia_min ?? 15} min para mais ou para menos da hora marcada no cartão.`,
+    });
+  }
+  return metas;
+}
+
+function BarrasMetas({ metas }) {
+  return (
+    <>
+      {metas.map((m) => {
+        const pct = Math.min((m.feito / (m.meta || 1)) * 100, 100);
+        const cor = pct >= 100 ? "#2F8F5B" : pct >= 60 ? "#C9A227" : "#22231F";
+        return (
+          <div key={m.nome} style={{ display: "grid", gridTemplateColumns: "82px 1fr 54px", gap: 8, alignItems: "center", fontSize: 11.5 }}>
+            <span style={{ color: "#22231F", display: "flex", alignItems: "center", gap: 4 }}>
+              <span title={m.dica || undefined}>{m.nome}</span>
+              {m.naMao && <span style={seloMao} title="Registrado na mão — não vale bônus">mão</span>}
+            </span>
+            <span style={{ height: 8, borderRadius: 999, background: "#E8E2D2", overflow: "hidden" }}>
+              <span style={{ display: "block", height: "100%", width: `${pct}%`, background: cor, borderRadius: 999 }} />
+            </span>
+            <span style={{ textAlign: "right", color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>
+              {m.nome === "Seguidores" ? `+${m.feito}` : m.feito}/{m.meta ?? "—"}
+            </span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function Raias({ nosso, praca }) {
   const L = 326;
   const x1 = Math.max(10, Math.min((nosso / 100) * L, L));
