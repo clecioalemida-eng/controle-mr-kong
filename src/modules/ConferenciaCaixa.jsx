@@ -47,7 +47,34 @@ function labelCanal(salesChannel) {
   return salesChannel || "Não identificado";
 }
 
+// ---------------------------------------------------------------------------
+// Sangria
+//
+// NAO e' forma de pagamento — e' dinheiro que SAIU da gaveta durante o
+// turno (foi pro cofre, pro banco, pagar um fornecedor na porta). Por
+// isso ela nunca tem valor no sistema: o CardapioWeb registra venda, e
+// sangria nao e' venda. E' a MESMA venda em dinheiro, que mudou de
+// lugar.
+//
+// E e' exatamente por isso que ela fecha a conta. Sem essa linha:
+//
+//   sistema diz    Dinheiro R$ 390,01
+//   gaveta tem     R$  90,01   (porque R$ 300 sairam no meio da noite)
+//   diferenca      -R$ 300,00  <- parece furo de caixa, e nao e'
+//
+// Com a linha, a pessoa digita os R$ 90,01 que contou na gaveta e os
+// R$ 300 da sangria. Soma 390,01, bate com o sistema, e a diferenca
+// volta a zero. O caixa deixa de acusar roubo quando o que houve foi
+// procedimento.
+//
+// Um caixa que aponta erro todo dia sem ter erro e' pior que caixa
+// nenhum: em duas semanas ninguem olha mais a coluna de diferenca, e
+// aí o furo de verdade passa despercebido no meio do ruido.
+// ---------------------------------------------------------------------------
+const SANGRIA = "sangria";
+
 const NOMES_PAGAMENTO = {
+  sangria: "Sangria",
   money: "Dinheiro",
   credit_card: "Cartão de crédito",
   debit_card: "Cartão de débito",
@@ -65,6 +92,19 @@ const NOMES_PAGAMENTO = {
   food99: "99Food (online)",
   food99_voucher: "Desconto 99Food",
 };
+
+// A linha de sangria existe SEMPRE, mesmo valendo zero, e sempre por
+// ultimo. Linha que so aparece depois de alguem lembrar de criar e'
+// linha que ninguem usa — e a sangria precisa estar na frente da pessoa
+// no momento em que ela conta a gaveta, nao escondida atras de um botao.
+function comSangria(lista) {
+  const semSangria = lista.filter((l) => l.forma_pagamento !== SANGRIA);
+  const jaTinha = lista.find((l) => l.forma_pagamento === SANGRIA);
+  semSangria.sort((a, b) =>
+    (NOMES_PAGAMENTO[a.forma_pagamento] || a.forma_pagamento)
+      .localeCompare(NOMES_PAGAMENTO[b.forma_pagamento] || b.forma_pagamento));
+  return [...semSangria, jaTinha || { forma_pagamento: SANGRIA, valor_sistema: 0, valor_conferido: 0 }];
+}
 
 // Aba embutível dentro do Financeiro — conferência de caixa por forma de
 // pagamento, categoria (mesas/delivery/retirada/iFood) e atendente, dia a
@@ -111,7 +151,7 @@ export default function ConferenciaCaixa() {
     }
     if (error) setErro(error.message);
     if (data && data.length > 0) {
-      setLinhas(data.map((d) => ({ forma_pagamento: d.forma_pagamento, valor_sistema: d.valor_sistema, valor_conferido: d.valor_conferido })));
+      setLinhas(comSangria(data.map((d) => ({ forma_pagamento: d.forma_pagamento, valor_sistema: d.valor_sistema, valor_conferido: d.valor_conferido }))));
       setMensagem("Esse dia já tem conferência salva. Buscar de novo atualiza o valor do sistema, sem mexer no que você já conferiu.");
     } else {
       setLinhas([]);
@@ -139,11 +179,15 @@ export default function ConferenciaCaixa() {
     setLinhas((prev) => {
       const mapaConferido = Object.fromEntries(prev.map((l) => [l.forma_pagamento, l.valor_conferido]));
       const formas = new Set([...Object.keys(porForma), ...prev.map((l) => l.forma_pagamento)]);
-      return Array.from(formas).map((f) => ({
+      formas.delete(SANGRIA); // a sangria entra pelo comSangria, nunca do sistema
+      const doSistema = Array.from(formas).map((f) => ({
         forma_pagamento: f,
         valor_sistema: porForma[f] || 0,
+        // Buscar de novo NAO apaga o que a pessoa ja conferiu.
         valor_conferido: mapaConferido[f] ?? porForma[f] ?? 0,
-      })).sort((a, b) => (NOMES_PAGAMENTO[a.forma_pagamento] || a.forma_pagamento).localeCompare(NOMES_PAGAMENTO[b.forma_pagamento] || b.forma_pagamento));
+      }));
+      const sangriaAtual = prev.find((l) => l.forma_pagamento === SANGRIA);
+      return comSangria(sangriaAtual ? [...doSistema, sangriaAtual] : doSistema);
     });
 
     // Categoria (tipo de pedido), canal e atendente já vêm dentro de cada
@@ -336,16 +380,45 @@ export default function ConferenciaCaixa() {
               <span>Forma</span><span style={{ textAlign: "right" }}>Sistema</span><span style={{ textAlign: "right" }}>Conferido</span><span style={{ textAlign: "right" }}>Diferença</span>
             </div>
             {linhas.map((l, idx) => {
+              const ehSangria = l.forma_pagamento === SANGRIA;
               const diferenca = l.valor_conferido - l.valor_sistema;
               return (
-                <div key={l.forma_pagamento} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr", gap: 6, padding: "9px 10px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", alignItems: "center", fontSize: 12 }}>
-                  <span style={{ color: "#22231F" }}>{NOMES_PAGAMENTO[l.forma_pagamento] || l.forma_pagamento}</span>
-                  <span style={{ textAlign: "right", color: "#8A8778" }}>{brl(l.valor_sistema)}</span>
-                  <input type="number" step="0.01" value={l.valor_conferido} onChange={(e) => alterarConferido(l.forma_pagamento, e.target.value)}
-                    style={{ width: "100%", boxSizing: "border-box", textAlign: "right", padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                  <span style={{ textAlign: "right", fontWeight: 700, color: Math.abs(diferenca) < 0.01 ? "#8A8778" : diferenca > 0 ? "#0F6E56" : "#C4432B" }}>
-                    {diferenca > 0 ? "+" : ""}{brl(diferenca)}
+                <div key={l.forma_pagamento} style={{
+                  display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr", gap: 6,
+                  padding: "9px 10px", alignItems: "center", fontSize: 12,
+                  // Traço tracejado separa: daqui pra baixo não é mais venda.
+                  borderTop: idx === 0 ? "none" : ehSangria ? "1px dashed #D8CFBA" : "1px solid #F0EBDD",
+                  background: ehSangria ? "#FCFAF6" : "transparent",
+                }}>
+                  <span style={{ color: "#22231F" }}>
+                    {NOMES_PAGAMENTO[l.forma_pagamento] || l.forma_pagamento}
+                    {ehSangria && (
+                      <span style={{ display: "block", fontSize: 10.5, color: "#8A8778", lineHeight: 1.4, marginTop: 1 }}>
+                        dinheiro que saiu da gaveta no turno
+                      </span>
+                    )}
                   </span>
+                  {/* Sangria não tem valor no sistema: o CardápioWeb registra
+                      venda, e sangria não é venda. Mostrar R$ 0,00 daria a
+                      entender que o sistema esperava zero — o certo é dizer
+                      que essa coluna não se aplica. */}
+                  <span style={{ textAlign: "right", color: "#B9B2A4" }}>
+                    {ehSangria ? "—" : brl(l.valor_sistema)}
+                  </span>
+                  <input type="number" step="0.01" value={l.valor_conferido}
+                    onChange={(e) => alterarConferido(l.forma_pagamento, e.target.value)}
+                    placeholder={ehSangria ? "0,00" : undefined}
+                    style={{ width: "100%", boxSizing: "border-box", textAlign: "right",
+                             padding: "4px 6px", borderRadius: 6,
+                             border: "1px solid " + (ehSangria ? "#D8CFBA" : "#E8E2D2"), fontSize: 12 }} />
+                  {/* Idem: sangria não tem contra o que divergir. */}
+                  {ehSangria ? (
+                    <span style={{ textAlign: "right", color: "#B9B2A4" }}>—</span>
+                  ) : (
+                    <span style={{ textAlign: "right", fontWeight: 700, color: Math.abs(diferenca) < 0.01 ? "#8A8778" : diferenca > 0 ? "#0F6E56" : "#C4432B" }}>
+                      {diferenca > 0 ? "+" : ""}{brl(diferenca)}
+                    </span>
+                  )}
                 </div>
               );
             })}
@@ -358,6 +431,20 @@ export default function ConferenciaCaixa() {
               </span>
             </div>
           </div>
+
+          {(() => {
+            const sangria = linhas.find((l) => l.forma_pagamento === SANGRIA);
+            const valorSangria = Number(sangria?.valor_conferido) || 0;
+            if (valorSangria <= 0) return null;
+            const dinheiro = linhas.find((l) => l.forma_pagamento === "money");
+            return (
+              <div style={{ fontSize: 11.5, color: "#8A8778", lineHeight: 1.6, marginTop: -6, marginBottom: 14 }}>
+                Conferindo: a gaveta tem <b>{brl(Number(dinheiro?.valor_conferido) || 0)}</b> e
+                saíram <b>{brl(valorSangria)}</b> de sangria — juntos, <b>{brl((Number(dinheiro?.valor_conferido) || 0) + valorSangria)}</b> contra
+                os <b>{brl(Number(dinheiro?.valor_sistema) || 0)}</b> que o sistema registrou em dinheiro.
+              </div>
+            );
+          })()}
 
           <button onClick={salvar} disabled={salvando} style={{ ...btnPrimary, width: "100%" }}>
             {salvando ? <Loader2 size={16} /> : <Check size={16} />} Salvar conferência
