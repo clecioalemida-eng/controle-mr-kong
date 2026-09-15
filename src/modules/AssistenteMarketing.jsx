@@ -598,9 +598,22 @@ function Proposta({ proposta, onDecidido }) {
     if (!linhas.length) return;
     setSalvando(true); setErro("");
     // "titulo" aqui vira "tema" na Pista — é o nome da coluna lá.
+    //
+    // O motivo vai junto, como justificativa. Sem ele o cartão chega na Pista
+    // como uma ordem sem origem — e a Pista vale bônus: quem for cobrado por
+    // um cartão tem que conseguir ler por que ele existe.
+    //
+    // eng_esperado é o que permite comparar o planejado com o real no fim da
+    // semana. Vai null quando não houve amostra para estimar.
     const { error } = await supabase.from("postagens_planejadas").insert(
       linhas.map((l) => ({
-        data_prevista: l.data, hora_prevista: l.hora || null, tipo: l.tipo, tema: l.titulo,
+        data_prevista: l.data,
+        hora_prevista: l.hora || null,
+        tipo: l.tipo,
+        tema: l.titulo,
+        origem: "ia",
+        justificativa: [l.pilar, l.motivo].filter(Boolean).join(" · ") || null,
+        eng_esperado: Number.isFinite(Number(l.eng_esperado)) ? Number(l.eng_esperado) : null,
       }))
     );
     if (error) { setErro(error.message); setSalvando(false); return; }
@@ -645,7 +658,18 @@ function Proposta({ proposta, onDecidido }) {
                 {l.hora ? `${l.hora} · ` : ""}{l.motivo || "sem motivo declarado"}
               </div>
             </div>
-            <span style={{ ...tagBase, ...(l.tipo === "reels" ? tagOk : {}) }}>{TIPOS[l.tipo] || l.tipo}</span>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+              <span style={{ ...tagBase, ...(l.tipo === "reels" ? tagOk : {}) }}>{TIPOS[l.tipo] || l.tipo}</span>
+              {/* O esperado serve para você reprovar cartão fraco ANTES de
+                  alguém gastar produção nele. Sem amostra, mostra um traço —
+                  não um número inventado. */}
+              <span style={{ fontSize: 9.5, color: "#8A8778", fontVariantNumeric: "tabular-nums" }}
+                title="Interações esperadas, pela mediana do histórico. Estimativa, não meta.">
+                {Number.isFinite(Number(l.eng_esperado)) && Number(l.eng_esperado) > 0
+                  ? `~${Math.round(Number(l.eng_esperado))} interações`
+                  : "sem base para estimar"}
+              </span>
+            </div>
             <button onClick={() => remover(i)} style={iconMini} title="Tirar da pauta"><X size={12} /></button>
           </div>
         ))}
