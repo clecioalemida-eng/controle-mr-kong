@@ -154,7 +154,7 @@ function Pista() {
   const metas = metasDaSemana(semana, cfg);
 
   // O progresso da pista usa só as metas que valem pontos (stories fora).
-  const contam = metas.filter((m) => !m.naMao);
+  const contam = metas.filter((m) => !m.naMao && !m.vazio);
   const nosso = Math.round(
     (contam.reduce((s, m) => s + Math.min(m.feito / (m.meta || 1), 1), 0) / (contam.length || 1)) * 100
   );
@@ -304,11 +304,19 @@ function metasDaSemana(s, cfg) {
   // tenha: ela foi apurada por outra regra, e inventar o número agora seria
   // reescrever o passado.
   if (s?.base_esforco) {
+    // Sem cartão no Calendário não existe janela a cumprir. Mostrar "0/4" aqui
+    // acusaria alguém de ter perdido quatro horários que nunca foram marcados.
+    // A nota continua zero — isso está certo e está no Placar. O que muda é
+    // parar de parecer falha o que é ausência de plano.
+    const semPlano = !s?.planejadas;
     metas.splice(3, 0, {
       nome: "No horário",
       feito: s?.no_horario || 0,
       meta: s.base_esforco,
-      dica: `Até ${cfg?.janela_tolerancia_min ?? 15} min para mais ou para menos da hora marcada no cartão.`,
+      vazio: semPlano,
+      dica: semPlano
+        ? "Nenhum cartão no Calendário desta semana — não havia horário a cumprir."
+        : `Até ${cfg?.janela_tolerancia_min ?? 15} min para mais ou para menos da hora marcada no cartão.`,
     });
   }
   return metas;
@@ -327,10 +335,14 @@ function BarrasMetas({ metas }) {
               {m.naMao && <span style={seloMao} title="Registrado na mão — não vale bônus">mão</span>}
             </span>
             <span style={{ height: 8, borderRadius: 999, background: "#E8E2D2", overflow: "hidden" }}>
-              <span style={{ display: "block", height: "100%", width: `${pct}%`, background: cor, borderRadius: 999 }} />
+              {!m.vazio && (
+                <span style={{ display: "block", height: "100%", width: `${pct}%`, background: cor, borderRadius: 999 }} />
+              )}
             </span>
             <span style={{ textAlign: "right", color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>
-              {m.nome === "Seguidores" ? `+${m.feito}` : m.feito}/{m.meta ?? "—"}
+              {m.vazio
+                ? <span style={{ fontSize: 9.5, fontVariantNumeric: "normal" }}>sem calendário</span>
+                : <>{m.nome === "Seguidores" ? `+${m.feito}` : m.feito}/{m.meta ?? "—"}</>}
             </span>
           </div>
         );
