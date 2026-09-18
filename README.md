@@ -884,3 +884,4 @@ substituir o conteúdo do arquivo correspondente em `src/modules/` (ex.:
 Não esqueça de rodar `supabase/003_novos_modulos.sql` no SQL Editor do
 Supabase para cadastrar os 5 módulos no banco (sem isso os cards não
 aparecem, mesmo já estando no código).
+   <!-- atualizado 18/09 -->
