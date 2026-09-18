@@ -14,6 +14,7 @@ import Permissoes from "./modules/Permissoes";
 import DashboardModulo from "./modules/DashboardModulo";
 import GenteGestao from "./modules/GenteGestao";
 import Desempenho from "./modules/Desempenho";
+import Crm from "./modules/Crm";
 // Mapa: chave do módulo (banco) -> componente React que o renderiza.
 // Para adicionar um novo card no futuro: crie o componente, cadastre uma
 // linha na tabela `modulos` (ver supabase/002_auth_e_modulos.sql) com a
@@ -29,6 +30,7 @@ const COMPONENTES_MODULO = {
   sac: Sac,
   supply: SupplyChain,
   desempenho: Desempenho,
+  crm: Crm,
 };
 export default function App() {
   const [carregandoAuth, setCarregandoAuth] = useState(true);
