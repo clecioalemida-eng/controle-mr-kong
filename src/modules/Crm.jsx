@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   ChevronLeft, Loader2, AlertTriangle, RefreshCw, Search, Users, Megaphone,
-  MessageCircle, ChevronDown, ChevronUp, CheckCircle2, XCircle, Phone, GraduationCap,
+  MessageCircle, ChevronDown, ChevronUp, CheckCircle2, XCircle, Phone, GraduationCap, Download,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { podeEditar } from "../lib/permissoes";
@@ -13,6 +13,8 @@ import CrmAgente from "./CrmAgente";
 //
 // Clientes (fase 1): a base é montada no banco (migração 120) a partir do
 // pedidos_cache, todo dia às 04h30. Só leitura, fora o aceite de mensagens.
+// O cadastro inteiro do CardápioWeb entra pelo botão "Trazer do
+// CardápioWeb" (migração 122 + Edge Function crm-importar-clientes).
 //
 // Atendimento e Treinar o agente (fase 2): o agente no WhatsApp (migração 121
 // + Edge Function whatsapp-agente). Ficam em CrmAtendimento.jsx e CrmAgente.jsx.
@@ -33,6 +35,7 @@ const SEGMENTOS = {
   vip:        { nome: "VIP",        fundo: "#FBEFC4", cor: "#6B4E00" },
   em_risco:   { nome: "Em risco",   fundo: "#FBE3DC", cor: "#8A2E1F" },
   perdido:    { nome: "Perdido",    fundo: "#ECEAE3", cor: "#4A574D" },
+  cadastro:   { nome: "Cadastro",   fundo: "#F1ECE0", cor: "#6B6758" },
 };
 
 const FILTROS = [
@@ -42,6 +45,7 @@ const FILTROS = [
   { chave: "vip", label: "VIP" },
   { chave: "em_risco", label: "Em risco" },
   { chave: "perdido", label: "Perdidos" },
+  { chave: "cadastro", label: "Só cadastro" },
   { chave: "sem_optin", label: "Sem resposta de mensagens" },
 ];
 
@@ -166,7 +170,7 @@ function AbaClientes({ permissoes }) {
   const montarConsulta = useCallback((de) => {
     let q = supabase
       .from("clientes")
-      .select("id, telefone, nome, bairro, pedidos, total_gasto, ticket_medio, ultimo_dia, intervalo_medio_dias, favorito, canal_preferido, segmento, aceita_mensagens, consentimento_em, consentimento_origem")
+      .select("id, telefone, nome, bairro, pedidos, total_gasto, ticket_medio, ultimo_dia, intervalo_medio_dias, favorito, canal_preferido, segmento, aceita_mensagens, consentimento_em, consentimento_origem, email, aniversario, cw_cadastro_em, cw_pontos, cw_cashback")
       .order("ultimo_dia", { ascending: false, nullsFirst: false })
       .order("pedidos", { ascending: false })
       .range(de, de + POR_PAGINA - 1);
@@ -281,6 +285,11 @@ function AbaClientes({ permissoes }) {
         )}
       </div>
       {avisoAtualizacao && <div style={{ ...okStyle }}>{avisoAtualizacao}</div>}
+
+      {editar && (
+        <ImportarCardapioWeb jaImportados={r.do_cardapioweb}
+          onTerminou={() => { carregarResumo(); carregarLista(); }} />
+      )}
       {erro && (resumo || lista.length) ? <div style={avisoStyle}><AlertTriangle size={16} />{erro}</div> : null}
 
       {/* ------------------------------------------------ busca e filtros */}
@@ -336,7 +345,7 @@ function contagemFiltro(r, chave) {
   if (!r || r.total == null) return null;
   return {
     todos: r.total, novo: r.novos, recorrente: r.recorrentes, vip: r.vip,
-    em_risco: r.em_risco, perdido: r.perdidos, sem_optin: r.nao_perguntados,
+    em_risco: r.em_risco, perdido: r.perdidos, cadastro: r.cadastro, sem_optin: r.nao_perguntados,
   }[chave];
 }
 
@@ -361,8 +370,19 @@ function CartaoCliente({ c, aberto, editar, onAlternar, onConsentimento }) {
             <span style={{ fontSize: 11, fontWeight: 700, borderRadius: 999, padding: "2px 8px", background: seg.fundo, color: seg.cor }}>{seg.nome}</span>
           </div>
           <div style={{ fontSize: 12, color: "#8A8778", marginTop: 2 }}>
-            {c.pedidos} {c.pedidos === 1 ? "pedido" : "pedidos"} · {brl(c.ticket_medio)} de ticket ·{" "}
-            <span style={sumindo ? { color: "#8A2E1F", fontWeight: 600 } : undefined}>{textoDias(dias)}</span>
+            {c.pedidos > 0 ? (
+              <>
+                {c.pedidos} {c.pedidos === 1 ? "pedido" : "pedidos"} · {brl(c.ticket_medio)} de ticket ·{" "}
+                <span style={sumindo ? { color: "#8A2E1F", fontWeight: 600 } : undefined}>{textoDias(dias)}</span>
+              </>
+            ) : (
+              <>
+                {c.cw_cadastro_em
+                  ? `Cadastrado no CardápioWeb em ${new Date(c.cw_cadastro_em).toLocaleDateString("pt-BR", { month: "short", year: "numeric" })}`
+                  : "Cadastrado no CardápioWeb"}
+                {" "}· sem pedido no histórico
+              </>
+            )}
           </div>
           {c.favorito && <div style={{ fontSize: 12, color: "#22231F", marginTop: 2 }}>Favorito: {c.favorito}</div>}
         </div>
@@ -410,6 +430,12 @@ function DetalheCliente({ c, editar, onConsentimento }) {
         <Info rotulo="Volta a cada" valor={c.intervalo_medio_dias ? `${Number(c.intervalo_medio_dias).toLocaleString("pt-BR")} dias` : "—"} />
         <Info rotulo="Pede mais pelo" valor={NOMES_CANAL[c.canal_preferido] || c.canal_preferido || "—"} />
         <Info rotulo="Último pedido" valor={c.ultimo_dia ? new Date(`${c.ultimo_dia}T12:00:00`).toLocaleDateString("pt-BR") : "—"} />
+        <Info rotulo="Aniversário" valor={c.aniversario ? new Date(`${c.aniversario}T12:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "long" }) : "—"} />
+        <Info rotulo="Cliente desde" valor={c.cw_cadastro_em ? new Date(c.cw_cadastro_em).toLocaleDateString("pt-BR") : "—"} />
+        {c.email && <Info rotulo="E-mail" valor={c.email} />}
+        {(c.cw_pontos > 0 || Number(c.cw_cashback) > 0) && (
+          <Info rotulo="Fidelidade" valor={[c.cw_pontos > 0 ? `${c.cw_pontos} pontos` : null, Number(c.cw_cashback) > 0 ? `${brl(c.cw_cashback)} de cashback` : null].filter(Boolean).join(" · ")} />
+        )}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -463,6 +489,120 @@ function Info({ rotulo, valor }) {
     <div>
       <div style={{ color: "#8A8778" }}>{rotulo}</div>
       <div style={{ color: "#22231F", fontWeight: 600, marginTop: 1 }}>{valor}</div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Trazer o cadastro do CardápioWeb
+//
+// A Edge Function busca 1.000 clientes por chamada e diz em que página
+// parou; aqui a gente chama de novo até acabar, mostrando o andamento.
+// Pode fechar no meio: rodar de novo não duplica ninguém (a chave é o
+// telefone), só completa.
+// ---------------------------------------------------------------------------
+function ImportarCardapioWeb({ jaImportados, onTerminou }) {
+  const [rodando, setRodando] = useState(false);
+  const [andamento, setAndamento] = useState(null);
+  const [erro, setErro] = useState("");
+  const [fim, setFim] = useState(null);
+
+  const lerErro = async (error) => {
+    let msg = error.message || "Erro ao falar com o CardápioWeb.";
+    try {
+      if (error.context && typeof error.context.json === "function") {
+        const corpo = await error.context.json();
+        if (corpo?.error) msg = corpo.error + (corpo.detalhe ? ` — ${corpo.detalhe}` : "");
+      }
+    } catch (_) { /* fica a mensagem genérica */ }
+    if (/Failed to send|not found|404/i.test(msg)) {
+      msg = "A função crm-importar-clientes ainda não foi criada no Supabase.";
+    }
+    return msg;
+  };
+
+  const importar = async () => {
+    setRodando(true);
+    setErro("");
+    setFim(null);
+    const soma = { recebidos: 0, novos: 0, atualizados: 0, sem_telefone: 0 };
+    let pagina = 1;
+    let totalPaginas = null;
+    let totalClientes = null;
+
+    for (let voltas = 0; voltas < 200; voltas++) {
+      setAndamento({ pagina, totalPaginas, totalClientes, ...soma });
+      const { data, error } = await supabase.functions.invoke("crm-importar-clientes", { body: { pagina } });
+      if (error || data?.error) {
+        setErro(error ? await lerErro(error) : data.error + (data.detalhe ? ` — ${data.detalhe}` : ""));
+        break;
+      }
+      soma.recebidos += data.recebidos || 0;
+      soma.novos += data.novos || 0;
+      soma.atualizados += data.atualizados || 0;
+      soma.sem_telefone += data.sem_telefone || 0;
+      totalPaginas = data.total_paginas ?? totalPaginas;
+      totalClientes = data.total_clientes ?? totalClientes;
+
+      if (data.terminou) { setFim({ ...soma, totalClientes }); break; }
+      if (data.esperar_segundos) {
+        setAndamento({ pagina: data.proxima_pagina, totalPaginas, totalClientes, ...soma, esperando: true });
+        await new Promise((r) => setTimeout(r, data.esperar_segundos * 1000));
+      }
+      pagina = data.proxima_pagina;
+    }
+
+    setRodando(false);
+    setAndamento(null);
+    onTerminou();
+  };
+
+  const pct = andamento?.totalPaginas
+    ? Math.min(100, Math.round(((andamento.pagina - 1) / andamento.totalPaginas) * 100))
+    : 0;
+
+  return (
+    <div style={{ ...cardStyle, display: "grid", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>Cadastro do CardápioWeb</div>
+          <div style={{ fontSize: 12, color: "#8A8778", marginTop: 2, lineHeight: 1.4 }}>
+            {jaImportados
+              ? `${Number(jaImportados).toLocaleString("pt-BR")} clientes já vieram de lá. Rodar de novo só completa, não duplica.`
+              : "Traz todos os clientes cadastrados, com aniversário, e-mail, pontos e cashback."}
+          </div>
+        </div>
+        <button onClick={importar} disabled={rodando} style={btnSecondary}>
+          {rodando ? <Loader2 size={14} /> : <Download size={14} />}
+          {rodando ? "Trazendo…" : jaImportados ? "Trazer de novo" : "Trazer do CardápioWeb"}
+        </button>
+      </div>
+
+      {andamento && (
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ height: 8, borderRadius: 999, background: "#EFE9DA", overflow: "hidden" }}>
+            <div style={{ width: `${pct}%`, height: "100%", background: "#1F5134", transition: "width .4s" }} />
+          </div>
+          <div style={{ fontSize: 12, color: "#8A8778" }}>
+            {andamento.esperando
+              ? "O CardápioWeb pediu uma pausa. Continua sozinho em 1 minuto…"
+              : andamento.totalPaginas
+                ? `${pct}% · ${andamento.recebidos.toLocaleString("pt-BR")} de ${Number(andamento.totalClientes || 0).toLocaleString("pt-BR")} clientes lidos · ${andamento.novos.toLocaleString("pt-BR")} novos na base`
+                : "Conectando no CardápioWeb…"}
+            {" "}Deixe esta tela aberta até terminar.
+          </div>
+        </div>
+      )}
+
+      {fim && (
+        <div style={okStyle}>
+          Pronto: {fim.recebidos.toLocaleString("pt-BR")} clientes lidos. {fim.novos.toLocaleString("pt-BR")} entraram na base
+          e {fim.atualizados.toLocaleString("pt-BR")} que já estavam foram completados
+          {fim.sem_telefone ? ` · ${fim.sem_telefone.toLocaleString("pt-BR")} sem telefone ficaram de fora` : ""}.
+          Ninguém foi marcado como "aceita mensagens": isso só muda quando a pessoa responder no WhatsApp.
+        </div>
+      )}
+      {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div>{erro}</div></div>}
     </div>
   );
 }
