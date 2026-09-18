@@ -68,6 +68,10 @@ export const CATALOGO = [
   { chave: "marketing",       nome: "Marketing" },
   { chave: "comercial",       nome: "Comercial" },
   { chave: "sac",             nome: "SAC" },
+  // Base de clientes: nome, telefone e histórico de pedidos. Dado pessoal —
+  // por isso é sensível. "editar" libera o botão de atualizar e o aceite de
+  // mensagens; "ver" só consulta.
+  { chave: "crm",             nome: "CRM (clientes)", sensivel: true },
 ];
 
 export const TODAS_AS_CHAVES = CATALOGO.flatMap((m) => [m.chave, ...(m.filhos || []).map((f) => f.chave)]);
