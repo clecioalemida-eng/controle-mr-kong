@@ -7,6 +7,7 @@ import { supabase } from "../lib/supabaseClient";
 import { podeEditar } from "../lib/permissoes";
 import CrmAtendimento from "./CrmAtendimento";
 import CrmAgente from "./CrmAgente";
+import CrmCampanhas from "./CrmCampanhas";
 
 // ---------------------------------------------------------------------------
 // Módulo CRM
@@ -19,7 +20,8 @@ import CrmAgente from "./CrmAgente";
 // Atendimento e Treinar o agente (fase 2): o agente no WhatsApp (migração 121
 // + Edge Function whatsapp-agente). Ficam em CrmAtendimento.jsx e CrmAgente.jsx.
 //
-// Campanhas entram na fase 3.
+// Campanhas (fase 3): migração 123 + Edge Function crm-campanhas. Ficam em
+// CrmCampanhas.jsx.
 // ---------------------------------------------------------------------------
 
 const ABAS = [
@@ -121,10 +123,7 @@ export default function Crm({ onVoltar, permissoes }) {
         </div>
 
         {aba === "clientes" && <AbaClientes permissoes={permissoes} />}
-        {aba === "campanhas" && (
-          <EmBreve titulo="Campanhas"
-            texto="O agente monta a campanha, vocês aprovam vendo o custo antes, e o envio sai compassado pelo WhatsApp. Entra na fase 3." />
-        )}
+        {aba === "campanhas" && <CrmCampanhas permissoes={permissoes} />}
         {aba === "atendimento" && <CrmAtendimento permissoes={permissoes} />}
         {aba === "agente" && <CrmAgente permissoes={permissoes} />}
       </div>
@@ -619,14 +618,6 @@ function Stat({ numero, rotulo, detalhe, cor, fundo, borda, corDetalhe, onClick 
   );
 }
 
-function EmBreve({ titulo, texto }) {
-  return (
-    <div style={{ ...cardStyle, textAlign: "center", padding: "28px 16px" }}>
-      <div style={{ fontWeight: 700, fontSize: 15, color: "#22231F", marginBottom: 6 }}>{titulo} · em breve</div>
-      <div style={{ fontSize: 13, color: "#8A8778", maxWidth: 360, margin: "0 auto", lineHeight: 1.5 }}>{texto}</div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Estilos (mesma paleta do resto do painel)
