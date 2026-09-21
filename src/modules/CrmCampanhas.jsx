@@ -21,28 +21,35 @@ import { podeEditar } from "../lib/permissoes";
 // cliente por semana; funcionário fica de fora.
 // ---------------------------------------------------------------------------
 
+// Ofertas combinadas com o Clecio (19/09/2026). Brinde só com compra, prazo
+// curto e cupom do CardápioWeb (para medir). Os cupons precisam existir no
+// CardápioWeb e a oferta precisa estar em "Treinar o agente", senão o agente
+// não sabe explicar quando o cliente perguntar.
 const SEGMENTOS = [
-  { chave: "em_risco", nome: "Em risco", desc: "3 a 8 semanas sem pedir", fundo: "#FBE3DC", cor: "#8A2E1F",
-    ideia: "Sentimos sua falta",
-    texto: "Oi, {nome}! Faz um tempinho que o {favorito} não sai daqui pra você 🐒 Bateu saudade? O cardápio tá esperando." },
-  { chave: "vip", nome: "VIP", desc: "os que mais gastam", fundo: "#FBEFC4", cor: "#6B4E00",
-    ideia: "Aviso antes de todo mundo",
-    texto: "Oi, {nome}! Você é de casa aqui no Mr. Kong 🦍 Por isso avisamos primeiro: amanhã é Quarta em dobro do Sagui, qualquer sanduíche ganha um Sagui." },
   { chave: "novo", nome: "Novos", desc: "fizeram 1 pedido", fundo: "#E4ECF7", cor: "#244C7A",
-    ideia: "Volta pro 2º pedido",
-    texto: "Oi, {nome}! Que bom ter você no Mr. Kong 🐒 Já provou o Orangotango? É o mais pedido da casa e pode ser o seu próximo." },
-  { chave: "recorrente", nome: "Recorrentes", desc: "pedem sempre", fundo: "#E0EFE3", cor: "#1F5134",
-    ideia: "Lembrar o favorito",
-    texto: "Oi, {nome}! Hoje tem cara de {favorito}, né? 🍔 A cozinha tá aberta das 17h às 3h." },
+    ideia: "2º pedido com batata",
+    texto: "Oi, {nome}! Curtiu o Mr. Kong? 🐒 Seu segundo pedido ganha *batata M de presente* até sábado, com o cupom VOLTEI." },
+  { chave: "em_risco", nome: "Em risco", desc: "3 a 8 semanas sem pedir", fundo: "#FBE3DC", cor: "#8A2E1F",
+    ideia: "Saudade: refri 2L",
+    texto: "Oi, {nome}! Faz tempo que o {favorito} não sai daqui pra você 🐒 Até quinta, pedido acima de R$ 50 leva *refri 2L de presente* com o cupom SAUDADE." },
   { chave: "aniversario_mes", nome: "Aniversariantes", desc: "fazem aniversário este mês", fundo: "#F3E6F7", cor: "#6A2C7A",
-    ideia: "Parabéns da selva",
-    texto: "Oi, {nome}! Esse mês é seu aniversário e a selva inteira comemora com você 🎉 Vem festejar com um lanche do Mr. Kong." },
+    ideia: "Lanche do aniversariante",
+    texto: "Oi, {nome}! A selva inteira sabe que esse mês é seu aniversário 🎉 Na semana do seu dia, comprando um lanche *o seu sai de presente* com o cupom NIVER." },
+  { chave: "recorrente", nome: "Recorrentes", desc: "pedem sempre", fundo: "#E0EFE3", cor: "#1F5134",
+    ideia: "Pontos em dobro",
+    texto: "Oi, {nome}! Essa semana todo pedido vale *pontos em dobro* no Mr. Kong 🦍 Junta mais um pouco e o próximo {favorito} sai por conta dos pontos." },
+  { chave: "vip", nome: "VIP", desc: "os que mais gastam", fundo: "#FBEFC4", cor: "#6B4E00",
+    ideia: "Clube da Selva",
+    texto: "Oi, {nome}! Você está no *Clube da Selva*, os clientes mais fiéis do Mr. Kong 🦍 No seu próximo pedido até domingo vai um mimo surpresa, por nossa conta." },
   { chave: "perdido", nome: "Perdidos", desc: "mais de 2 meses sem pedir", fundo: "#ECEAE3", cor: "#4A574D",
-    ideia: "Reconquistar",
-    texto: "Oi, {nome}! Faz tempo que a gente não se vê 🐒 O Mr. Kong agora é só hambúrguer, e tá caprichado. Dá uma espiada no cardápio." },
+    ideia: "Última chamada: Sagui",
+    texto: "Oi, {nome}! O Mr. Kong mudou: agora é só hambúrguer, e tá caprichado 🍔 Pra você voltar, qualquer pedido ganha *um Sagui de presente* até domingo com o cupom REI." },
   { chave: "cadastro", nome: "Só cadastro", desc: "cadastrados sem pedido recente", fundo: "#F1ECE0", cor: "#6B6758",
-    ideia: "Primeiro pedido",
-    texto: "Oi, {nome}! Aqui é o Mr. Kong, hamburgueria de Rio Verde 🍔 O cardápio tá no ar das 17h às 3h, com promoção todo dia." },
+    ideia: "Primeiro pedido: entrega grátis",
+    texto: "Oi, {nome}! Você tem cadastro no Mr. Kong e ainda não provou nosso hambúrguer 🍔 De terça a sexta, pedindo até as 22h, *a entrega é grátis*. Bora?" },
+  { chave: "sem_aniversario", nome: "Sem aniversário", desc: "ainda não sabemos a data", fundo: "#FDEBD8", cor: "#8A4B12",
+    ideia: "Conta seu aniversário",
+    texto: "Oi, {nome}! Queremos comemorar seu aniversário com você 🎂 Responde aqui com o dia e o mês (ex.: 15/03) e no seu mês tem *Sagui de presente* no Mr. Kong." },
 ];
 const SEG = Object.fromEntries(SEGMENTOS.map((s) => [s.chave, s]));
 
