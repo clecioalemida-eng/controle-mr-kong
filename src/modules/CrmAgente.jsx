@@ -70,6 +70,7 @@ export default function CrmAgente({ permissoes }) {
       {sugestoes.length > 0 && <Sugestoes lista={sugestoes} editar={editar} onMudou={carregar} />}
       <Conhecimento lista={saber} editar={editar} onMudou={carregar} />
       <Comportamento cfg={cfg} editar={editar} onMudou={carregar} />
+      <Avaliacoes cfg={cfg} editar={editar} onMudou={carregar} />
       <Testar />
       <Custo />
     </div>
@@ -487,6 +488,86 @@ function descreverAcao(a) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Pede a nota do pedido (só para quem está com a janela de 24h aberta, então
+// é grátis) e manda o link do Google para todo mundo que der nota.
+function Avaliacoes({ cfg, editar, onMudou }) {
+  const [ligada, setLigada] = useState(cfg.avaliacao_ligada ?? true);
+  const [espera, setEspera] = useState(String(cfg.avaliacao_espera_min ?? 60));
+  const [google, setGoogle] = useState(cfg.link_google || "");
+  const [salvando, setSalvando] = useState(false);
+  const [ok, setOk] = useState(false);
+  const [resumo, setResumo] = useState(null);
+
+  useEffect(() => {
+    supabase.rpc("crm_avaliacoes_resumo").then(({ data }) => setResumo(data || null));
+  }, []);
+
+  const salvar = async () => {
+    setSalvando(true);
+    setOk(false);
+    const min = Math.min(240, Math.max(10, parseInt(espera, 10) || 60));
+    const { error } = await supabase.from("agente_config").update({
+      avaliacao_ligada: ligada,
+      avaliacao_espera_min: min,
+      link_google: google.trim() || null,
+      atualizado_em: new Date().toISOString(),
+    }).eq("id", 1);
+    setSalvando(false);
+    if (!error) { setEspera(String(min)); setOk(true); onMudou(); }
+  };
+
+  const media = resumo?.media != null ? String(resumo.media).replace(".", ",") : "–";
+  return (
+    <section style={cardStyle}>
+      <div style={tituloSecao}>Avaliações</div>
+      <div style={{ display: "grid", gap: 14 }}>
+        <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13.5, color: "#22231F" }}>
+          <input type="checkbox" checked={ligada} disabled={!editar} onChange={(e) => setLigada(e.target.checked)} style={{ marginTop: 3 }} />
+          <span>
+            Pedir a nota depois do pedido
+            <span style={{ display: "block", fontSize: 12, color: "#8A8778" }}>
+              Só para quem conversou no WhatsApp nas últimas 24h (grátis na Meta). Pedido fechado no CardápioWeb do mesmo telefone.
+            </span>
+          </span>
+        </label>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ width: 170 }}>
+            <label htmlFor="aval-espera" style={rotulo}>Esperar depois do pedido</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input id="aval-espera" value={espera} disabled={!editar} inputMode="numeric"
+                onChange={(e) => setEspera(e.target.value.replace(/\D/g, "").slice(0, 3))}
+                style={{ ...inputStyle, width: 80 }} />
+              <span style={{ fontSize: 13, color: "#5E5C52" }}>minutos</span>
+            </div>
+          </div>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <label htmlFor="aval-google" style={rotulo}>Link de avaliação do Google</label>
+            <input id="aval-google" value={google} disabled={!editar} onChange={(e) => setGoogle(e.target.value)}
+              placeholder="https://g.page/r/…/review" style={{ ...inputStyle, width: "100%" }} />
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: "#8A8778" }}>
+          Todo cliente que der nota recebe o link do Google (regra do Google: não pode pedir só para quem gostou). Nota 1 ou 2: além disso, ele pede desculpa e passa para a atendente.
+        </div>
+        {resumo && (
+          <div style={{ background: "#F7F4EC", borderRadius: 10, padding: "10px 12px", fontSize: 13, color: "#22231F" }}>
+            <b>Este mês:</b> nota média {media} · {resumo.total} avaliações · {resumo.baixas} notas baixas · {resumo.pedidas} pedidos de avaliação enviados
+          </div>
+        )}
+        {editar && (
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button onClick={salvar} disabled={salvando} style={btnPrimary}>
+              {salvando ? <Loader2 size={14} /> : <Save size={14} />} Salvar avaliações
+            </button>
+            {ok && <span style={{ fontSize: 13, color: "#1F5134" }}>Salvo.</span>}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function Custo() {
   const [dados, setDados] = useState(null);
   useEffect(() => {
