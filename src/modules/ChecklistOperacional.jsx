@@ -4,7 +4,7 @@ import {
   CheckCircle2, XCircle, Clock, AlertTriangle, ChevronLeft,
   LayoutDashboard, Flame, Wine, CircleDollarSign, Utensils, ClipboardList,
   ShieldCheck, Loader2, Pencil, Trash2, Plus, Check, Truck, Trophy,
-  GripVertical, Copy, TrendingUp, TrendingDown,
+  GripVertical,
 } from "lucide-react";
 import { supabase, TABELA_CHECKLIST } from "../lib/supabaseClient";
 // ---------------------------------------------------------------------------
@@ -1847,188 +1847,6 @@ function ListaDeCompra({ dia, setorInicial, onVoltar }) {
 // itens passaram a viver no banco, esse total ficava errado sempre que
 // alguém acrescentava ou removia um item pelo Editar checklist.
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Relatório diário (vendas) — migração 126
-//
-// Regra do dia: o turno das 17h às 3h é venda do dia em que ABRIU (sábado
-// 17h → domingo 3h = sábado). O mês vem do cache (relatorio_vendas); o dia
-// escolhido é conferido ao vivo no CardápioWeb, porque a madrugada do
-// último dia pode ainda não ter entrado no cache.
-// ---------------------------------------------------------------------------
-const META_MES = 140000;
-const DIAS_SEMANA = ["dom.", "seg.", "ter.", "qua.", "qui.", "sex.", "sáb."];
-
-function brlInt(v) {
-  return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
-}
-function brl2(v) {
-  return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-function variacaoPct(atual, anterior) {
-  if (!anterior) return null;
-  return ((atual - anterior) / anterior) * 100;
-}
-function textoVar(p) {
-  if (p == null) return "sem base";
-  return `${p >= 0 ? "▲" : "▼"} ${Math.abs(p).toFixed(1).replace(".", ",")}%`;
-}
-function diaCurto(dateStr) {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const dt = new Date(y, m - 1, d);
-  return `${DIAS_SEMANA[dt.getDay()]} ${pad(d)}/${pad(m)}`;
-}
-function somarDiasStr(dateStr, n) {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const dt = new Date(y, m - 1, d + n);
-  return toDateStr(dt);
-}
-const NOMES_MES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
-  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
-
-async function carregarVendasDoDia(dia) {
-  const { data, error } = await supabase.rpc("relatorio_vendas", { p_dia: dia });
-  if (error) {
-    if (/sem_acesso/.test(error.message)) return { semAcesso: true };
-    if (/does not exist|Could not find|schema cache/i.test(error.message)) {
-      return { erro: "Falta rodar a migração 126 no banco." };
-    }
-    return { erro: error.message };
-  }
-  const v = { ...data, conferidoAoVivo: false };
-  // confere o dia no CardápioWeb (5h do dia até 5h do dia seguinte)
-  try {
-    const { data: vivo, error: e2 } = await supabase.functions.invoke("cardapioweb-proxy", {
-      body: {
-        acao: "faturamento_periodo",
-        data_inicio: `${dia}T05:00:00-03:00`,
-        data_fim: `${somarDiasStr(dia, 1)}T04:59:59-03:00`,
-      },
-    });
-    if (!e2 && vivo && typeof vivo.faturamento_bruto === "number") {
-      v.mes_total = Number(v.mes_total) - Number(v.dia_total) + vivo.faturamento_bruto;
-      v.mes_pedidos = Number(v.mes_pedidos) - Number(v.dia_pedidos) + (vivo.pedidos_fechados || 0);
-      v.dia_total = vivo.faturamento_bruto;
-      v.dia_pedidos = vivo.pedidos_fechados || 0;
-      v.conferidoAoVivo = true;
-    }
-  } catch { /* fica o número do cache */ }
-  return { vendas: v };
-}
-
-function montarTextoRelatorio({ dia, vendas, statusDia, alertas, deptKeys }) {
-  const linhas = [`*Mr. Kong · Relatório de ${diaCurto(dia)}*`, ""];
-  if (vendas) {
-    const ticket = vendas.dia_pedidos ? vendas.dia_total / vendas.dia_pedidos : 0;
-    const [, mesAnt] = String(vendas.ant_ini).split("-").map(Number);
-    const [, mesAt, diaNum] = dia.split("-").map(Number);
-    const fimAnt = Number(String(vendas.ant_fim).slice(8, 10));
-    linhas.push(`💰 *Vendas do dia:* ${brlInt(vendas.dia_total)} (${vendas.dia_pedidos} pedidos, ticket ${brl2(ticket)})`);
-    linhas.push(`vs ${diaCurto(vendas.semana_passada)}: ${textoVar(variacaoPct(vendas.dia_total, vendas.semana_passada_total))}`);
-    linhas.push("");
-    linhas.push(`📅 *${NOMES_MES[mesAt - 1][0].toUpperCase() + NOMES_MES[mesAt - 1].slice(1)} até dia ${diaNum}:* ${brlInt(vendas.mes_total)}`);
-    linhas.push(`vs ${NOMES_MES[mesAnt - 1]} 1–${fimAnt}: ${brlInt(vendas.ant_total)} → ${textoVar(variacaoPct(vendas.mes_total, vendas.ant_total))}`);
-    const faltam = Math.max(0, META_MES - vendas.mes_total);
-    const diasRest = vendas.dias_no_mes - diaNum;
-    linhas.push(`Meta: ${Math.round((vendas.mes_total / META_MES) * 100)}%${faltam > 0 && diasRest > 0 ? ` · faltam ${brlInt(faltam / diasRest)}/dia` : ""}`);
-    linhas.push("");
-  }
-  let completos = 0;
-  let totalEtapas = 0;
-  const pendentes = [];
-  deptKeys.forEach((k) => {
-    TURNOS.forEach((etapa) => {
-      const st = statusDia[`${k}:${etapa}`];
-      if (!st || !st.total) return;
-      totalEtapas += 1;
-      if (st.ok) completos += 1;
-      else pendentes.push(`${aparenciaDe(k).label} ${etapa === "abertura" ? "abert." : "fech."}`);
-    });
-  });
-  linhas.push(`✅ *Checklist:* ${completos} de ${totalEtapas} completos`);
-  if (pendentes.length) linhas.push(`⏳ Pendentes: ${pendentes.join(", ")}`);
-  if (alertas.length) {
-    linhas.push(`⚠️ ${alertas.length} não conformidade${alertas.length > 1 ? "s" : ""}:`);
-    alertas.forEach((a) => linhas.push(`• ${a.dept} · ${a.item}${a.responsavel ? ` (${a.responsavel})` : ""}`));
-  } else {
-    linhas.push("Nenhuma não conformidade.");
-  }
-  return linhas.join("\n");
-}
-
-function VendasDoDia({ dia, vendas, erro, carregando }) {
-  if (carregando) return <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando vendas…</div>;
-  if (erro) return <div style={avisoBloqueio}><AlertTriangle size={16} /> {erro}</div>;
-  if (!vendas) return null;
-  const [, mesAt, diaNum] = dia.split("-").map(Number);
-  const [, mesAnt] = String(vendas.ant_ini).split("-").map(Number);
-  const fimAnt = Number(String(vendas.ant_fim).slice(8, 10));
-  const ticket = vendas.dia_pedidos ? vendas.dia_total / vendas.dia_pedidos : 0;
-  const ticketMes = vendas.mes_pedidos ? vendas.mes_total / vendas.mes_pedidos : 0;
-  const ticketAnt = vendas.ant_pedidos ? vendas.ant_total / vendas.ant_pedidos : 0;
-  const vDia = variacaoPct(vendas.dia_total, vendas.semana_passada_total);
-  const vMes = variacaoPct(vendas.mes_total, vendas.ant_total);
-  const faltam = Math.max(0, META_MES - vendas.mes_total);
-  const diasRest = vendas.dias_no_mes - diaNum;
-  const pctMeta = Math.min(100, Math.round((vendas.mes_total / META_MES) * 100));
-  const cor = (p) => (p == null ? "#8A8778" : p >= 0 ? "#2F8F5B" : "#C4432B");
-  const Seta = ({ p }) => (p == null ? null : p >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />);
-  const Linha = ({ rot, children }) => (
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "7px 0", borderBottom: "1px solid #EFE9DA", fontSize: 13 }}>
-      <span style={{ color: "#5C5A4E" }}>{rot}</span><span style={{ textAlign: "right" }}>{children}</span>
-    </div>
-  );
-  const nomeMes = NOMES_MES[mesAt - 1];
-  return (
-    <div style={{ display: "grid", gap: 10 }}>
-      <div style={{ display: "flex", gap: 10 }}>
-        <div style={{ ...statBox, textAlign: "left" }}>
-          <div style={statLabel}>{diaCurto(dia)}</div>
-          <div style={statNum}>{brlInt(vendas.dia_total)}</div>
-          <div style={statLabel}>{vendas.dia_pedidos} pedidos · ticket {brl2(ticket)}</div>
-          <div style={{ fontSize: 12, marginTop: 6, color: cor(vDia), display: "flex", alignItems: "center", gap: 4, fontWeight: 700 }}>
-            <Seta p={vDia} /> {textoVar(vDia)} <span style={{ color: "#8A8778", fontWeight: 400 }}>vs {diaCurto(vendas.semana_passada)}</span>
-          </div>
-        </div>
-        <div style={{ ...statBox, textAlign: "left" }}>
-          <div style={statLabel}>{nomeMes} até dia {diaNum}</div>
-          <div style={statNum}>{brlInt(vendas.mes_total)}</div>
-          <div style={statLabel}>média {brlInt(vendas.mes_total / Math.max(diaNum, 1))} por dia</div>
-          <div style={{ fontSize: 12, marginTop: 6, color: cor(vMes), display: "flex", alignItems: "center", gap: 4, fontWeight: 700 }}>
-            <Seta p={vMes} /> {textoVar(vMes)} <span style={{ color: "#8A8778", fontWeight: 400 }}>vs {NOMES_MES[mesAnt - 1]}</span>
-          </div>
-        </div>
-      </div>
-      <div style={cardStyle}>
-        <div style={{ ...sectionLabel, marginBottom: 4 }}>Mês atual × mesmo período do mês passado</div>
-        <Linha rot={`${nomeMes}, dias 1 a ${diaNum}`}><b>{brl2(vendas.mes_total)}</b></Linha>
-        <Linha rot={`${NOMES_MES[mesAnt - 1]}, dias 1 a ${fimAnt}`}><b>{brl2(vendas.ant_total)}</b></Linha>
-        <Linha rot="Diferença">
-          <b style={{ color: cor(vMes) }}>{vendas.mes_total - vendas.ant_total >= 0 ? "+ " : "− "}{brl2(Math.abs(vendas.mes_total - vendas.ant_total))} ({textoVar(vMes)})</b>
-        </Linha>
-        <Linha rot="Pedidos">
-          {vendas.mes_pedidos} × {vendas.ant_pedidos}{" "}
-          <span style={{ color: cor(variacaoPct(vendas.mes_pedidos, vendas.ant_pedidos)), fontWeight: 700 }}>{textoVar(variacaoPct(vendas.mes_pedidos, vendas.ant_pedidos))}</span>
-        </Linha>
-        <Linha rot="Ticket médio">
-          {brl2(ticketMes)} × {brl2(ticketAnt)}{" "}
-          <span style={{ color: cor(variacaoPct(ticketMes, ticketAnt)), fontWeight: 700 }}>{textoVar(variacaoPct(ticketMes, ticketAnt))}</span>
-        </Linha>
-        <div style={{ fontSize: 12, color: "#8A8778", marginTop: 10 }}>
-          Meta do mês {brlInt(META_MES)}
-          {faltam > 0 && diasRest > 0 ? ` · faltam ${brlInt(faltam)} em ${diasRest} dias (${brlInt(faltam / diasRest)} por dia)` : faltam === 0 ? " · batida! 🎉" : ""}
-        </div>
-        <div style={{ height: 8, borderRadius: 99, background: "#EFE9DA", overflow: "hidden", margin: "6px 0 4px" }}>
-          <div style={{ width: `${pctMeta}%`, height: "100%", background: "#2F8F5B" }} />
-        </div>
-        <div style={{ fontSize: 12, color: "#8A8778" }}>{pctMeta}% da meta</div>
-        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8 }}>
-          Turno das 17h às 3h conta no dia em que abriu. {vendas.conferidoAoVivo ? "O dia foi conferido agora no CardápioWeb." : "Dia pelo cache da madrugada (não deu para conferir ao vivo)."}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function Dashboard({ onBack, opDateHoje, itensDb, deptKeys }) {
   const [diaSelecionado, setDiaSelecionado] = useState(opDateHoje);
   const [mesSelecionado, setMesSelecionado] = useState(opDateHoje.slice(0, 7));
@@ -2037,35 +1855,6 @@ function Dashboard({ onBack, opDateHoje, itensDb, deptKeys }) {
   const [alertas, setAlertas] = useState([]);
   const [resumoMes, setResumoMes] = useState(null);
   const [erroCarregamento, setErroCarregamento] = useState("");
-  const [vendas, setVendas] = useState(null);
-  const [vendasErro, setVendasErro] = useState("");
-  const [vendasSemAcesso, setVendasSemAcesso] = useState(false);
-  const [carregandoVendas, setCarregandoVendas] = useState(true);
-  const [copiado, setCopiado] = useState(false);
-  useEffect(() => {
-    let vivo = true;
-    setCarregandoVendas(true);
-    setVendasErro("");
-    carregarVendasDoDia(diaSelecionado).then((r) => {
-      if (!vivo) return;
-      setCarregandoVendas(false);
-      setVendasSemAcesso(!!r.semAcesso);
-      setVendas(r.vendas || null);
-      setVendasErro(r.erro || "");
-    });
-    return () => { vivo = false; };
-  }, [diaSelecionado]);
-  const copiarRelatorio = async () => {
-    const texto = montarTextoRelatorio({ dia: diaSelecionado, vendas, statusDia, alertas, deptKeys });
-    let ok = false;
-    try { await navigator.clipboard.writeText(texto); ok = true; } catch {
-      const a = document.createElement("textarea");
-      a.value = texto; document.body.appendChild(a); a.select();
-      try { ok = document.execCommand("copy"); } catch { ok = false; }
-      a.remove();
-    }
-    if (ok) { setCopiado(true); setTimeout(() => setCopiado(false), 2500); }
-  };
   const carregarDia = useCallback(async (dia) => {
     setCarregando(true);
     setErroCarregamento("");
@@ -2159,23 +1948,8 @@ function Dashboard({ onBack, opDateHoje, itensDb, deptKeys }) {
         </div>
       )}
       <div style={{ marginBottom: 18 }}>
-        <div style={sectionLabel}>Dia do relatório</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input type="date" value={diaSelecionado} onChange={(e) => e.target.value && setDiaSelecionado(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-          <button onClick={() => setDiaSelecionado(somarDiasStr(diaSelecionado, -1))} style={{ ...iconBtn, width: "auto", padding: "0 12px", fontSize: 13, fontWeight: 600 }}>‹ dia antes</button>
-        </div>
-        <div style={{ fontSize: 12, color: "#8A8778", marginTop: 6 }}>
-          Abre no dia operacional: de manhã mostra o dia anterior (domingo de manhã mostra o sábado).
-        </div>
-      </div>
-      {!vendasSemAcesso && (
-        <div style={{ marginBottom: 18 }}>
-          <div style={sectionLabel}>Vendas</div>
-          <VendasDoDia dia={diaSelecionado} vendas={vendas} erro={vendasErro} carregando={carregandoVendas} />
-        </div>
-      )}
-      <div style={{ marginBottom: 18 }}>
         <div style={sectionLabel}>Pendências do dia</div>
+        <input type="date" value={diaSelecionado} onChange={(e) => setDiaSelecionado(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
         {carregando ? (
           <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
         ) : (
@@ -2215,27 +1989,6 @@ function Dashboard({ onBack, opDateHoje, itensDb, deptKeys }) {
               </div>
             </div>
           ))}
-        </div>
-      </div>
-      <div style={{ marginBottom: 18 }}>
-        <div style={sectionLabel}>Relatório para enviar</div>
-        <div style={cardStyle}>
-          <div style={{ background: "#EFE7DC", borderRadius: 10, padding: 10 }}>
-            <div style={{ background: "#E7F8D8", borderRadius: 8, padding: "10px 12px", fontSize: 13, whiteSpace: "pre-wrap", color: "#22231F", lineHeight: 1.45 }}>
-              {carregando || carregandoVendas
-                ? "Montando o relatório…"
-                : montarTextoRelatorio({ dia: diaSelecionado, vendas, statusDia, alertas, deptKeys })}
-            </div>
-          </div>
-          <button onClick={copiarRelatorio} disabled={carregando || carregandoVendas}
-            style={{ ...btnPrimary, width: "100%", marginTop: 10, background: copiado ? "#2F8F5B" : "#22231F" }}>
-            {copiado ? <CheckCircle2 size={16} /> : <Copy size={16} />} {copiado ? "Copiado! Cole no WhatsApp" : "Copiar relatório"}
-          </button>
-          {vendasSemAcesso && (
-            <div style={{ fontSize: 12, color: "#8A8778", marginTop: 8 }}>
-              Seu cargo não vê vendas, então o relatório sai só com o checklist. O admin libera em Cargos → Dashboard.
-            </div>
-          )}
         </div>
       </div>
       <div>
