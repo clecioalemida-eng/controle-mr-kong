@@ -122,12 +122,63 @@ function StatusAgente({ cfg, editar, onMudou }) {
           </button>
         )}
       </div>
-      {diag && <ResultadoDiagnostico d={diag} />}
+      {diag && <ResultadoDiagnostico d={diag} editar={editar} onRegistrou={diagnosticar} />}
     </section>
   );
 }
 
-function ResultadoDiagnostico({ d }) {
+// número ainda não ligado à API oficial (acontece logo depois de adicionar o
+// número do Kong na Meta): falta o passo "registrar"
+function precisaRegistrar(n) {
+  if (!n || n.erro) return false;
+  if (n.platform_type && n.platform_type !== "CLOUD_API") return true;
+  return n.status && !["CONNECTED", "FLAGGED", "RESTRICTED", "RATE_LIMITED"].includes(n.status);
+}
+
+function Registrar({ onRegistrou }) {
+  const [pin, setPin] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+  const [ok, setOk] = useState(false);
+
+  const registrar = async () => {
+    if (!/^\d{6}$/.test(pin)) { setErro("A senha precisa ter exatamente 6 números."); return; }
+    setEnviando(true);
+    setErro("");
+    const { error } = await supabase.functions.invoke("whatsapp-agente", { body: { acao: "registrar", pin } });
+    setEnviando(false);
+    if (error) { setErro(await lerErroDaFuncao(error)); return; }
+    setOk(true);
+    setPin("");
+    onRegistrou?.();
+  };
+
+  if (ok) {
+    return (
+      <div style={{ background: "#E0EFE3", color: "#1F5134", borderRadius: 10, padding: 12, fontSize: 13, display: "flex", gap: 6 }}>
+        <CheckCircle2 size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+        Número registrado. Mande um “oi” de outro celular para testar.
+      </div>
+    );
+  }
+  return (
+    <div style={{ background: "#FBF3D9", color: "#6B4E00", borderRadius: 10, padding: 12, fontSize: 13 }}>
+      <b>Falta registrar o número na Meta.</b> Crie uma senha de 6 números (é a verificação em duas etapas do
+      número; guarde, a Meta pede se um dia trocar de sistema).
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <input value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+          inputMode="numeric" placeholder="6 números" aria-label="Senha de 6 números"
+          style={{ ...inputStyle, width: 130, letterSpacing: "0.2em" }} />
+        <button onClick={registrar} disabled={enviando} style={btnPrimary}>
+          {enviando ? <Loader2 size={14} /> : null} Registrar número
+        </button>
+      </div>
+      {erro && <div style={{ color: "#C4432B", marginTop: 8 }}>{erro}</div>}
+    </div>
+  );
+}
+
+function ResultadoDiagnostico({ d, editar, onRegistrou }) {
   if (d.erroGeral) return <div style={{ ...avisoStyle, marginTop: 12 }}><AlertTriangle size={16} />{d.erroGeral}</div>;
   if (d.faltando?.length) {
     return (
@@ -140,7 +191,8 @@ function ResultadoDiagnostico({ d }) {
   const n = d.numero || {};
   return (
     <div style={{ marginTop: 12, display: "grid", gap: 6, fontSize: 13 }}>
-      <Linha ok={!n.erro} texto={n.erro ? `Número: ${n.erro}` : `Número ${n.display_phone_number} · ${n.verified_name} · qualidade ${traduzQualidade(n.quality_rating)}`} />
+      <Linha ok={!n.erro && !precisaRegistrar(n)} texto={n.erro ? `Número: ${n.erro}` : `Número ${n.display_phone_number} · ${n.verified_name} · ${precisaRegistrar(n) ? "ainda não registrado" : `qualidade ${traduzQualidade(n.quality_rating)}`}`} />
+      {precisaRegistrar(n) && editar && <Registrar onRegistrou={onRegistrou} />}
       <Linha ok={!d.inscricao?.erro && d.inscricao?.success} texto={d.inscricao?.erro ? `Inscrição do app: ${d.inscricao.erro}` : "App inscrito para receber as mensagens"} />
       <div style={{ fontSize: 12, color: "#8A8778", wordBreak: "break-all" }}>Endereço do webhook: {d.webhook}</div>
     </div>
