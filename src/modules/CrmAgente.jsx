@@ -66,6 +66,7 @@ export default function CrmAgente({ permissoes }) {
       {!editar && (
         <div style={avisoStyle}>Seu cargo pode ver o treinamento, mas não mudar. Quem muda é quem tem o CRM em “editar”.</div>
       )}
+      <ConexaoKong editar={editar} />
       <StatusAgente cfg={cfg} editar={editar} onMudou={carregar} />
       {sugestoes.length > 0 && <Sugestoes lista={sugestoes} editar={editar} onMudou={carregar} />}
       <Conhecimento lista={saber} editar={editar} onMudou={carregar} />
@@ -74,6 +75,150 @@ export default function CrmAgente({ permissoes }) {
       <Testar />
       <Custo />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Conectar o WhatsApp do Kong (coexistência): o número continua no app do
+// celular e o agente passa a responder nele também. Migração 129.
+function carregarSdkFacebook() {
+  if (window.FB) return Promise.resolve(window.FB);
+  return new Promise((ok, falha) => {
+    window.fbAsyncInit = () => ok(window.FB);
+    const s = document.createElement("script");
+    s.src = "https://connect.facebook.net/pt_BR/sdk.js";
+    s.async = true;
+    s.crossOrigin = "anonymous";
+    s.onerror = () => falha(new Error("Não consegui abrir a janela da Meta (bloqueador de pop-up ou internet)."));
+    document.body.appendChild(s);
+  });
+}
+
+function ConexaoKong({ editar }) {
+  const [st, setSt] = useState(null);
+  const [trabalhando, setTrabalhando] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [erro, setErro] = useState("");
+
+  const carregar = useCallback(async () => {
+    const { data, error } = await supabase.rpc("crm_conexao_status");
+    if (!error) setSt(data || null);
+  }, []);
+  useEffect(() => { carregar(); }, [carregar]);
+  // enquanto o histórico chega, confere a cada 10 s
+  useEffect(() => {
+    if (!st?.ativo || !["pedido", "recebendo"].includes(st?.historico_status)) return undefined;
+    const t = setInterval(carregar, 10000);
+    return () => clearInterval(t);
+  }, [st, carregar]);
+
+  const conectar = async () => {
+    setErro(""); setMsg(""); setTrabalhando(true);
+    try {
+      const { data: info, error } = await supabase.functions.invoke("whatsapp-agente", { body: { acao: "conexao_info" } });
+      if (error) throw new Error(await lerErroDaFuncao(error));
+      if (!info?.config_id) throw new Error("Falta o ID da configuração (migração 129).");
+      const FB = await carregarSdkFacebook();
+      FB.init({ appId: info.app_id, autoLogAppEvents: true, xfbml: false, version: info.versao || "v23.0" });
+
+      // a janela da Meta avisa por mensagem quando termina (com a conta do WhatsApp)
+      let sessao = null;
+      const ouvir = (ev) => {
+        if (!/facebook\.com$/.test(new URL(ev.origin).hostname)) return;
+        try {
+          const d = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data;
+          if (d?.type !== "WA_EMBEDDED_SIGNUP") return;
+          if (String(d.event || "").startsWith("FINISH")) sessao = d.data || {};
+          if (d.event === "CANCEL") sessao = { cancelado: true, etapa: d.data?.current_step, erro: d.data?.error_message };
+        } catch { /* outras mensagens da página */ }
+      };
+      window.addEventListener("message", ouvir);
+
+      const code = await new Promise((ok) => {
+        FB.login((r) => ok(r?.authResponse?.code || null), {
+          config_id: info.config_id,
+          response_type: "code",
+          override_default_response_type: true,
+          extras: { setup: {}, featureType: "whatsapp_business_app_onboarding", sessionInfoVersion: "3" },
+        });
+      });
+      // a mensagem da sessão pode chegar um pouco depois do login
+      for (let i = 0; i < 20 && !sessao; i++) await new Promise((r) => setTimeout(r, 250));
+      window.removeEventListener("message", ouvir);
+
+      if (sessao?.cancelado) throw new Error(sessao.erro || `Conexão cancelada${sessao.etapa ? ` na etapa ${sessao.etapa}` : ""}.`);
+      if (!code) throw new Error("A janela da Meta foi fechada antes de terminar.");
+      if (!sessao?.waba_id) throw new Error("A Meta não devolveu a conta do WhatsApp. Tente de novo e vá até o fim da janela.");
+
+      const { data: r, error: e2 } = await supabase.functions.invoke("whatsapp-agente", {
+        body: { acao: "coexistencia", code, app_id: info.app_id, waba_id: sessao.waba_id, phone_number_id: sessao.phone_number_id || "" },
+      });
+      if (e2) throw new Error(await lerErroDaFuncao(e2));
+      setMsg(`Conectado${r?.numero ? ` (${r.numero})` : ""}. O histórico está chegando; mande um “oi” de outro celular para testar.`
+        + (r?.aviso ? ` Aviso da Meta: ${r.aviso}` : ""));
+      carregar();
+    } catch (e) {
+      setErro(String(e?.message || e));
+    } finally {
+      setTrabalhando(false);
+    }
+  };
+
+  const desconectar = async () => {
+    if (!window.confirm("Voltar o agente para o número de teste? O WhatsApp do Kong continua funcionando normal no celular.")) return;
+    setTrabalhando(true); setErro("");
+    const { error } = await supabase.functions.invoke("whatsapp-agente", { body: { acao: "desconectar" } });
+    setTrabalhando(false);
+    if (error) setErro(await lerErroDaFuncao(error));
+    else { setMsg("Voltou para o número de teste."); carregar(); }
+  };
+
+  if (st === null) return null; // migração 129 ainda não rodou
+  const ativo = !!st.ativo;
+  const numeroFmt = st.numero ? st.numero.replace(/^55(\d{2})(\d{4,5})(\d{4})$/, "($1) $2-$3") : "(64) 99246-8524";
+  const hist = st.historico_status;
+  const textoHist = !ativo ? null
+    : hist === "concluido" ? `Histórico importado: ${st.historico_mensagens} mensagens`
+    : hist === "recusado" ? "O histórico não foi liberado no celular (só as conversas novas aparecem)."
+    : `Histórico: importando conversas dos últimos 6 meses${st.historico_progresso ? ` · ${st.historico_progresso}%` : ""}${st.historico_mensagens ? ` · ${st.historico_mensagens} mensagens` : ""}`;
+
+  return (
+    <section style={cardStyle}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ width: 10, height: 10, borderRadius: 99, background: ativo ? "#2F8F5B" : "#8A8778" }} />
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: "#22231F" }}>
+            WhatsApp do Kong · {ativo ? "conectado" : "não conectado"}
+          </div>
+          <div style={{ fontSize: 12, color: "#8A8778" }}>
+            {ativo
+              ? `${numeroFmt}${st.nome ? ` · ${st.nome}` : ""}. App do celular e agente no mesmo número; ligações continuam no app.`
+              : "Conecte o número que já está no app WhatsApp Business. Nada é apagado; o agente está no número de teste."}
+          </div>
+        </div>
+        {editar && !ativo && (
+          <button onClick={conectar} disabled={trabalhando} style={btnPrimary}>
+            {trabalhando ? <Loader2 size={14} /> : <PlugZap size={14} />} Conectar WhatsApp do Kong
+          </button>
+        )}
+        {editar && ativo && (
+          <button onClick={desconectar} disabled={trabalhando} style={btnSecondary}>Voltar para o número de teste</button>
+        )}
+      </div>
+      {!ativo && editar && (
+        <div style={{ ...avisoStyle, marginTop: 12 }}>
+          <AlertTriangle size={16} style={{ flexShrink: 0 }} />
+          <div>
+            Na janela da Meta escolha <b>“Conectar app WhatsApp Business existente”</b>, digite o número do Kong e confirme no
+            celular do Kong (o app mostra o aviso/QR code). Deixe o celular por perto: a Meta dá 24 horas para terminar.
+          </div>
+        </div>
+      )}
+      {textoHist && <div style={{ marginTop: 10 }}><Linha ok={hist !== "recusado"} texto={textoHist} /></div>}
+      {ativo && st.contatos > 0 && <Linha ok texto={`Contatos do app: ${st.contatos}`} />}
+      {msg && <div style={{ marginTop: 10, background: "#E0EFE3", color: "#1F5134", borderRadius: 10, padding: 10, fontSize: 13 }}>{msg}</div>}
+      {erro && <div style={{ marginTop: 10, color: "#C4432B", fontSize: 13 }}>{erro}</div>}
+    </section>
   );
 }
 
