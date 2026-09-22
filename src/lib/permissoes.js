@@ -89,13 +89,32 @@ export function nomeDaChave(chave) {
 // nivel_acesso() faz no banco. As duas pontas precisam concordar.
 export async function carregarPermissoes(perfil) {
   if (perfil?.is_admin) return { admin: true, mapa: {}, cargoId: perfil.cargo_id || null };
+
+  // A permissão final NÃO é só a do cargo. Em Permissões → Pessoas dá para
+  // abrir uma exceção ("a Lidiane edita o CRM, os outros caixas não"). Essa
+  // exceção mora numa tabela própria, e é a função nivel_acesso() do banco
+  // que decide quem ganha — exceção manda mais que cargo.
+  //
+  // Antes esta tela lia SÓ cargo_permissoes. O admin marcava a exceção, via
+  // "EXCEÇÃO · Editar" na tela dele, e para a pessoa não mudava nada: o
+  // painel continuava mostrando a permissão do cargo. Agora pergunta ao
+  // banco a permissão já resolvida (migração 130).
+  const { data, error } = await supabase.rpc("minhas_permissoes", { p_chaves: TODAS_AS_CHAVES });
+  if (!error) {
+    const mapa = {};
+    (data || []).forEach((r) => { if (r.nivel && r.nivel !== "nenhum") mapa[r.chave] = r.nivel; });
+    return { admin: false, mapa, cargoId: perfil?.cargo_id || null };
+  }
+
+  // Enquanto a migração 130 não rodar, vale o comportamento antigo (só o
+  // cargo) — é menos do que a pessoa tem direito, nunca mais.
   if (!perfil?.cargo_id) return { admin: false, mapa: {}, cargoId: null };
-  const { data } = await supabase
+  const { data: doCargo } = await supabase
     .from("cargo_permissoes")
     .select("chave, nivel")
     .eq("cargo_id", perfil.cargo_id);
   const mapa = {};
-  (data || []).forEach((r) => { mapa[r.chave] = r.nivel; });
+  (doCargo || []).forEach((r) => { mapa[r.chave] = r.nivel; });
   return { admin: false, mapa, cargoId: perfil.cargo_id };
 }
 
