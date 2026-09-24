@@ -145,6 +145,7 @@ function AbaClientes({ permissoes }) {
   const [carregando, setCarregando] = useState(true);
   const [carregandoMais, setCarregandoMais] = useState(false);
   const [erro, setErro] = useState("");
+  const [exportando, setExportando] = useState(false);
   const [atualizando, setAtualizando] = useState(false);
   const [avisoAtualizacao, setAvisoAtualizacao] = useState("");
   const [aberto, setAberto] = useState(null);
@@ -165,6 +166,42 @@ function AbaClientes({ permissoes }) {
     }
     setResumo(data);
   }, []);
+
+  // Lista de telefones no formato do Gerenciador de Anúncios da Meta.
+  // Serve para criar um "público personalizado" e anunciar só para a sua
+  // base — o anúncio abre a conversa no WhatsApp, e quem clica passa a
+  // aceitar receber (a conversa fica grátis por 24h).
+  // Quem já disse que NÃO quer mensagem fica de fora.
+  const exportarMeta = async () => {
+    setExportando(true);
+    setErro("");
+    const linhas = [];
+    for (let de = 0; ; de += 1000) {
+      const { data, error } = await supabase
+        .from("clientes")
+        .select("telefone, nome")
+        .not("aceita_mensagens", "is", false)
+        .order("ultimo_dia", { ascending: false, nullsFirst: false })
+        .range(de, de + 999);
+      if (error) { setErro(error.message); setExportando(false); return; }
+      for (const c of data ?? []) {
+        const d = String(c.telefone || "").replace(/\D/g, "");
+        if (d.length < 10) continue;
+        const primeiro = String(c.nome ?? "").trim().split(/\s+/)[0] ?? "";
+        linhas.push(`+${d.startsWith("55") ? d : `55${d}`},${primeiro.toLowerCase().replace(/[",]/g, "")},br`);
+      }
+      if (!data || data.length < 1000) break;
+    }
+    if (!linhas.length) { setErro("Nenhum telefone para exportar."); setExportando(false); return; }
+    const csv = ["phone,fn,country", ...linhas].join("\n");
+    const url = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `mr-kong-publico-meta-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setExportando(false);
+  };
 
   const montarConsulta = useCallback((de) => {
     let q = supabase
@@ -310,6 +347,13 @@ function AbaClientes({ permissoes }) {
           </button>
         ))}
       </div>
+
+      {editar && (
+        <button onClick={exportarMeta} disabled={exportando} style={{ ...btnSecondary, alignSelf: "flex-start" }}>
+          {exportando ? <Loader2 size={14} /> : <Download size={14} />}
+          Exportar lista para anúncio na Meta
+        </button>
+      )}
 
       {/* ------------------------------------------------ lista */}
       {carregando ? (
