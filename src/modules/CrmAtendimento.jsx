@@ -29,6 +29,19 @@ const MOTIVOS = {
 
 const JANELA_24H = 24 * 60 * 60 * 1000;
 
+// Quanto falta da janela de 24h do WhatsApp. Passou disso, só com modelo pago:
+// por isso a tela avisa antes, enquanto ainda dá para responder de graça.
+function janelaInfo(c) {
+  if (!c?.ultima_msg_cliente_em) return null;
+  const resta = JANELA_24H - (Date.now() - new Date(c.ultima_msg_cliente_em).getTime());
+  if (resta <= 0) return { estado: "fechada", min: 0, txt: "Janela fechada", fundo: "#EFEADD", cor: "#6B6857" };
+  const min = Math.round(resta / 60000);
+  const txt = min >= 120 ? `Fecha em ${Math.floor(min / 60)}h` : `Fecha em ${min} min`;
+  if (min <= 120) return { estado: "urgente", min, txt, fundo: "#FBE3DC", cor: "#8A2E1F" };
+  if (min <= 360) return { estado: "atencao", min, txt, fundo: "#FBF3D9", cor: "#6B5A12" };
+  return { estado: "ok", min, txt, fundo: "#E0EFE3", cor: "#1F5134" };
+}
+
 function horaCurta(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -152,6 +165,10 @@ export default function CrmAtendimento({ permissoes }) {
   const paraVoce = conversas.filter((c) => c.status === "atendente");
   const comAgente = conversas.filter((c) => c.status === "agente");
   const lista = filtro === "para_voce" ? paraVoce : filtro === "agente" ? comAgente : conversas;
+  const fechando = conversas.filter((c) => {
+    const j = janelaInfo(c);
+    return j && j.estado === "urgente";
+  });
   const maisAntiga = paraVoce.length
     ? Math.max(...paraVoce.map((c) => minutosDesde(c.passada_em || c.ultima_msg_em) || 0))
     : null;
@@ -181,6 +198,15 @@ export default function CrmAtendimento({ permissoes }) {
         </div>
       )}
 
+      {fechando.length > 0 && (
+        <div style={avisoVermelho}>
+          {fechando.length === 1
+            ? "1 conversa fecha em menos de 2h"
+            : `${fechando.length} conversas fecham em menos de 2h`}
+          . Depois disso, só dá para falar com modelo pago.
+        </div>
+      )}
+
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0 }} />{erro}</div>}
 
       {carregando ? (
@@ -203,6 +229,7 @@ export default function CrmAtendimento({ permissoes }) {
 function LinhaConversa({ c, onAbrir }) {
   const comVoce = c.status === "atendente";
   const espera = comVoce ? minutosDesde(c.passada_em || c.ultima_msg_em) : null;
+  const janela = janelaInfo(c);
   const nome = c.nome || formataTelefone(c.telefone);
   const pill = comVoce
     ? { txt: `${MOTIVOS[c.motivo] || "Com a atendente"}${espera != null ? ` · ${espera} min` : ""}`, fundo: "#FBE3DC", cor: "#8A2E1F" }
@@ -221,8 +248,11 @@ function LinhaConversa({ c, onAbrir }) {
         <div style={{ fontSize: 13, color: "#5E5C52", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 2 }}>
           {c.ultima_previa || "—"}
         </div>
-        <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontSize: 11, fontWeight: 700, borderRadius: 999, padding: "3px 8px", background: pill.fundo, color: pill.cor }}>{pill.txt}</span>
+          {janela && janela.estado !== "ok" && (
+            <span style={{ fontSize: 11, fontWeight: 700, borderRadius: 999, padding: "3px 8px", background: janela.fundo, color: janela.cor }}>{janela.txt}</span>
+          )}
           {c.nao_lidas > 0 && (
             <span style={{ fontSize: 11, fontWeight: 800, borderRadius: 999, padding: "3px 7px", background: "#22231F", color: "#F3EFE3" }}>{c.nao_lidas}</span>
           )}
@@ -312,6 +342,7 @@ function Conversa({ id, conversaInicial, editar, onVoltar }) {
   const comVoce = conversa?.status === "atendente";
   const janelaAberta = conversa?.ultima_msg_cliente_em
     && Date.now() - new Date(conversa.ultima_msg_cliente_em).getTime() < JANELA_24H;
+  const janela = janelaInfo(conversa);
   const nome = conversa?.nome || cliente?.nome || formataTelefone(conversa?.telefone);
 
   return (
@@ -374,6 +405,11 @@ function Conversa({ id, conversaInicial, editar, onVoltar }) {
                 {enviando ? <Loader2 size={16} /> : <Send size={16} />}
               </button>
             </div>
+            {janela && janela.estado !== "ok" && (
+              <div style={{ fontSize: 12, fontWeight: 700, color: janela.cor }}>
+                {janela.txt} — depois disso, só com modelo pago.
+              </div>
+            )}
             {!comVoce && <div style={{ fontSize: 12, color: "#8A8778" }}>Se você escrever, a conversa passa para você e o agente fica em silêncio.</div>}
           </>
         ) : (
@@ -390,6 +426,25 @@ function Conversa({ id, conversaInicial, editar, onVoltar }) {
         </button>
       )}
     </div>
+  );
+}
+
+// Deixa clicável o que for link no meio do texto (o cardápio, por exemplo).
+function ComLinks({ texto }) {
+  const partes = String(texto ?? "").split(/(https?:\/\/[^\s]+)/g);
+  return (
+    <>
+      {partes.map((p, i) =>
+        /^https?:\/\//.test(p)
+          ? (
+            <a key={i} href={p} target="_blank" rel="noreferrer"
+              style={{ color: "#1F5134", textDecoration: "underline", wordBreak: "break-all" }}>
+              {p}
+            </a>
+          )
+          : <React.Fragment key={i}>{p}</React.Fragment>,
+      )}
+    </>
   );
 }
 
@@ -413,7 +468,7 @@ function Balao({ m }) {
       <div style={{ fontSize: 11, fontWeight: 700, color: doCliente ? "#8A8778" : "#1F5134", marginBottom: 2 }}>
         {quem} · {horaCurta(m.criado_em)}
       </div>
-      {m.texto}
+      <ComLinks texto={m.texto} />
       {m.status === "failed" && (
         <div style={{ fontSize: 11, color: "#C4432B", marginTop: 4 }}>Não enviada{m.erro ? `: ${m.erro}` : ""}</div>
       )}
@@ -448,6 +503,7 @@ const btnMini = {
   padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer",
 };
 const faixa = { display: "flex", alignItems: "center", gap: 8, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 600 };
+const avisoVermelho = { background: "#FBE3DC", border: "1px solid #E8B4A5", color: "#8A2E1F", borderRadius: 10, padding: "10px 12px", fontSize: 13, fontWeight: 600 };
 const avisoAmarelo = { background: "#FBF3D9", border: "1px solid #E8D48A", color: "#6B5A12", borderRadius: 10, padding: "10px 12px", fontSize: 13, fontWeight: 600 };
 const avisoStyle = {
   display: "flex", gap: 8, background: "#FBF3D9", border: "1px solid #E8D48A",
