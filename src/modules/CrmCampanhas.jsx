@@ -68,6 +68,35 @@ const MODELO = {
   rejeitado: { nome: "Recusada pela Meta", cor: "#C4432B" },
 };
 
+// Resultado do teste (migração 130). "enviado" = a Meta aceitou, mas ainda
+// não disse se entregou. O aviso de verdade chega pelo webhook.
+const TESTE = {
+  enviado: { nome: "A Meta aceitou. Esperando o aviso de entrega…", cor: "#6B4E00", fundo: "#FFF8E6" },
+  entregue: { nome: "Entregue no WhatsApp ✓", cor: "#1F5134", fundo: "#EAF5EE" },
+  lido: { nome: "Lida ✓✓", cor: "#1F5134", fundo: "#EAF5EE" },
+  falhou: { nome: "Não chegou", cor: "#C4432B", fundo: "#FDEDED" },
+};
+
+// A Meta manda um número. Aqui vira português.
+function motivoDaMeta(erro) {
+  const e = String(erro || "");
+  if (/131026/.test(e)) return "esse número não tem WhatsApp (ou não aceita mensagem de empresa).";
+  if (/131042/.test(e)) return "falta cadastrar a forma de pagamento na conta do WhatsApp.";
+  if (/131049|130472/.test(e)) return "a Meta segurou a mensagem para não encher o cliente de promoção. Tente outro número.";
+  if (/131047/.test(e)) return "precisa de modelo aprovado (a janela de 24h fechou).";
+  if (/132001/.test(e)) return "o modelo está em outra conta do WhatsApp. Refaça a campanha.";
+  if (/130497/.test(e)) return "o número de teste da Meta não pode mandar para o Brasil.";
+  if (/470|131047/.test(e)) return "a conversa expirou.";
+  return e || "a Meta não disse o motivo.";
+}
+
+const telBonito = (t) => {
+  const d = String(t || "").replace(/\D/g, "").replace(/^55/, "");
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return t || "";
+};
+
 const brl = (v) => (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const num = (v) => (Number(v) || 0).toLocaleString("pt-BR");
 
@@ -437,6 +466,7 @@ function Detalhe({ c, editar, recarregar, onVoltar, onEditar, onExcluido }) {
   const [ok, setOk] = useState("");
   const [telTeste, setTelTeste] = useState("");
   const [publico, setPublico] = useState(null);
+  const [teste, setTeste] = useState(null);
 
   const st = STATUS[c.status] || STATUS.rascunho;
   const md = MODELO[c.modelo_status] || MODELO.nao_enviado;
@@ -447,6 +477,26 @@ function Detalhe({ c, editar, recarregar, onVoltar, onEditar, onExcluido }) {
     supabase.rpc("crm_campanha_publico", { p_segmentos: c.segmentos, p_filtros: c.filtros || {} })
       .then(({ data }) => setPublico(data || null));
   }, [rascunho, c.segmentos, c.filtros]);
+
+  // Resultado do último teste (migração 130)
+  const verTeste = useCallback(async () => {
+    const { data } = await supabase.from("crm_campanhas")
+      .select("teste_status, teste_erro, teste_para, teste_wa_id, teste_em")
+      .eq("id", c.id).maybeSingle();
+    setTeste(data || null);
+    return data;
+  }, [c.id]);
+
+  useEffect(() => { verTeste(); }, [verTeste]);
+
+  // A Meta avisa "entregue" ou "falhou" em segundos. Confere por 1 minuto.
+  const acompanharTeste = async () => {
+    for (let i = 0; i < 20; i++) {
+      await new Promise((s) => setTimeout(s, 3000));
+      const d = await verTeste();
+      if (d?.teste_status && d.teste_status !== "enviado") return;
+    }
+  };
 
   const acao = async (nome, fn) => {
     setOcupado(nome); setErro(""); setOk("");
@@ -467,8 +517,10 @@ function Detalhe({ c, editar, recarregar, onVoltar, onEditar, onExcluido }) {
   });
   const testar = () => acao("teste", async () => {
     const r = await chamar({ acao: "teste", campanha_id: c.id, telefone: telTeste });
-    if (r.error) throw new Error(r.error);
-    setOk("Teste enviado. Confira no WhatsApp desse número.");
+    if (r.error) { await verTeste(); throw new Error(r.error); }
+    setOk("Mandado. O resultado aparece aqui embaixo em alguns segundos.");
+    await verTeste();
+    acompanharTeste();
   });
   const agendar = () => acao("agendar", async () => {
     const n = Number(publico?.elegiveis) || 0;
@@ -548,6 +600,21 @@ function Detalhe({ c, editar, recarregar, onVoltar, onEditar, onExcluido }) {
                 </button>
               </div>
               <div style={{ fontSize: 12, color: "#8A8778" }}>Libera depois da aprovação da Meta. Custa 1 mensagem.</div>
+              {teste?.teste_status && (() => {
+                const t = TESTE[teste.teste_status] || TESTE.enviado;
+                const outro = teste.teste_wa_id && teste.teste_wa_id.replace(/\D/g, "") !== String(teste.teste_para || "").replace(/\D/g, "");
+                return (
+                  <div style={{ background: t.fundo, border: `1px solid ${t.cor}33`, borderRadius: 10, padding: "8px 10px", fontSize: 13, color: t.cor }}>
+                    <b>{t.nome}</b>
+                    {teste.teste_status === "falhou" && <> — {motivoDaMeta(teste.teste_erro)}</>}
+                    <div style={{ fontSize: 12, color: "#8A8778", marginTop: 2 }}>
+                      Mandado para {telBonito(teste.teste_para)}
+                      {outro && <> · o WhatsApp entregou em {telBonito(teste.teste_wa_id)}</>}
+                      {teste.teste_em && <> · {new Date(teste.teste_em).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</>}
+                    </div>
+                  </div>
+                );
+              })()}
             </Passo>
 
             <Passo n="3" titulo="Aprovar e agendar" feito={false}>
