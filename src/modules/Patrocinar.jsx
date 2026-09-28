@@ -269,12 +269,12 @@ async function baixar(p) {
 
 // Tudo o que está rodando na conta agora — do painel, da agência, do Gerenciador.
 function NoAr({ lista }) {
-  const total = lista.reduce((s, x) => s + (Number(x.gasto) || 0), 0);
+  const semana = lista.reduce((s, x) => s + (Number(x.gasto_7d) || 0), 0);
   return (
     <div style={cardStyle}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
         <div style={sectionLabel}>No ar agora · {lista.length} {lista.length === 1 ? "anúncio" : "anúncios"}</div>
-        {lista.length > 0 && <div style={{ ...dica, fontWeight: 700 }}>gasto somado: {dinheiro(total)}</div>}
+        {lista.length > 0 && <div style={{ ...dica, fontWeight: 700 }}>gastaram {dinheiro(semana)} nos últimos 7 dias</div>}
       </div>
       {lista.length === 0 ? (
         <div style={dica}>Nenhum anúncio rodando na conta agora — nem pelo painel, nem pelo Gerenciador.</div>
@@ -285,7 +285,10 @@ function NoAr({ lista }) {
 
 function AnuncioNoAr({ a }) {
   const emAnalise = a.situacao !== "no ar";
-  const porConversa = a.conversas > 0 ? a.gasto / a.conversas : null;
+  // Conversa só é resultado quando o anúncio foi feito para isso. Num anúncio
+  // de alcance ou engajamento, "0 conversas" não é fracasso — é outra meta.
+  const deMensagem = !a.otimiza || a.otimiza === "CONVERSATIONS";
+  const porConversa = deMensagem && a.conversas > 0 ? a.gasto / a.conversas : null;
   const ctr = a.impressoes > 0 ? (a.cliques / a.impressoes) * 100 : null;
   const verba = a.painel ? Number(a.painel.valor) : a.orcamento_total;
   const usoVerba = verba ? Math.min(100, (a.gasto / verba) * 100) : null;
@@ -298,7 +301,7 @@ function AnuncioNoAr({ a }) {
   }
   const origem = a.painel
     ? `feito pelo painel · aprovado ${dataCurta(a.painel.aprovado_em)} · ${dinheiro(a.painel.valor)} em ${a.painel.dias} dias`
-    : `feito no Gerenciador · ${a.orcamento_diario ? `${dinheiro(a.orcamento_diario)} por dia` : a.orcamento_total ? `${dinheiro(a.orcamento_total)} no total` : "orçamento na campanha"}${a.inicio ? ` · desde ${dataCurta(a.inicio)}` : ""}`;
+    : `feito no Gerenciador${a.otimiza ? ` · busca ${OTIMIZA[a.otimiza] || a.otimiza.toLowerCase()}` : ""} · ${a.orcamento_diario ? `${dinheiro(a.orcamento_diario)} por dia` : a.orcamento_total ? `${dinheiro(a.orcamento_total)} no total` : "orçamento na campanha"}${a.inicio ? ` · desde ${dataCurta(a.inicio)}` : ""}`;
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 11, padding: "10px 0", borderTop: "1px solid #E8E2D2" }}>
@@ -316,8 +319,9 @@ function AnuncioNoAr({ a }) {
         </div>
         <div style={{ ...dica, marginBottom: 7 }}>{origem}</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))", gap: 6, opacity: emAnalise && !a.gasto ? 0.5 : 1 }}>
-          <Numero v={dinheiro(a.gasto)} r="gasto até agora" />
-          <Numero v={numero(a.conversas)} r="conversas no WhatsApp" />
+          <Numero v={dinheiro(a.gasto_7d)} r="gasto nos últimos 7 dias" />
+          <Numero v={dinheiro(a.gasto)} r="gasto desde o início" />
+          <Numero v={deMensagem ? numero(a.conversas) : "—"} r={deMensagem ? "conversas no WhatsApp" : "não busca conversas"} />
           <Numero v={porConversa != null ? dinheiro(porConversa) : "—"} r="por conversa" />
           <Numero v={a.alcance ? numero(a.alcance) : "—"} r="pessoas alcançadas" />
           <Numero v={ctr != null ? `${ctr.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%` : "—"} r="clicaram no link" />
@@ -336,6 +340,13 @@ function AnuncioNoAr({ a }) {
     </div>
   );
 }
+
+const OTIMIZA = {
+  CONVERSATIONS: "conversas", REACH: "alcance", IMPRESSIONS: "impressões",
+  LINK_CLICKS: "cliques", LANDING_PAGE_VIEWS: "visitas ao site", POST_ENGAGEMENT: "engajamento",
+  THRUPLAY: "vídeo assistido", OFFSITE_CONVERSIONS: "vendas", LEAD_GENERATION: "cadastros",
+  PROFILE_VISIT: "visitas ao perfil", VALUE: "valor de venda",
+};
 
 function Numero({ v, r }) {
   return (
