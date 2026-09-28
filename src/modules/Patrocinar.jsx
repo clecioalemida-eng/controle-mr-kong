@@ -220,8 +220,11 @@ function Post({ p, escolhido, onClick, clicavel }) {
         ) : (
           <span style={{ ...tagBase, color: "#555" }}>{cap(h.situacao || "encerrado")} · {dinheiro(h.gasto)}</span>
         )}
-        <div style={{ ...dica, marginTop: 4 }}>
-          {h ? `${numero(h.conversas)} conversas` : dataCurta(p.data)}
+        <div style={{ ...dica, marginTop: 5 }}>
+          {resumoPost(p)}
+        </div>
+        <div style={{ ...dica, marginTop: 2 }}>
+          {h ? `${numero(h.conversas)} conversas` : "sem anúncio"}
           {h?.no_ar && h.termina ? ` · até ${dataCurta(h.termina)}` : ""}
           {p.link && (
             <> · <a href={p.link} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
@@ -231,6 +234,16 @@ function Post({ p, escolhido, onClick, clicavel }) {
       </div>
     </div>
   );
+}
+
+// "vídeo · 8 curtidas · 1 comentário · 25/09", como no painel da Dinâmico.
+const TIPOS = { VIDEO: "vídeo", IMAGE: "foto", CAROUSEL_ALBUM: "carrossel" };
+function resumoPost(p) {
+  const partes = [TIPOS[p.tipo] || "post"];
+  if (p.curtidas != null) partes.push(`${numero(p.curtidas)} ${p.curtidas === 1 ? "curtida" : "curtidas"}`);
+  if (p.comentarios != null) partes.push(`${numero(p.comentarios)} ${p.comentarios === 1 ? "comentário" : "comentários"}`);
+  partes.push(dataCurta(p.data));
+  return partes.join(" · ");
 }
 
 function Configuracao({ cfg, podeEditar, aoSalvar }) {
@@ -265,7 +278,7 @@ function Configuracao({ cfg, podeEditar, aoSalvar }) {
   const campo = (k, rotulo, props = {}) => (
     <label style={{ display: "grid", gap: 3, fontSize: 11.5, color: "#8A8778" }}>
       {rotulo}
-      <input style={inputStyle} value={f[k] ?? ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} {...props} />
+      <input style={campoStyle} value={f[k] ?? ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} {...props} />
     </label>
   );
 
@@ -295,11 +308,11 @@ function Configuracao({ cfg, podeEditar, aoSalvar }) {
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
           {campo("ponto", "Ponto do restaurante (cole do Google Maps: botão direito no local → clicar nos números)", { placeholder: "-17.7923, -50.9194" })}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 8 }}>
             {campo("raio_km", "Raio (km)", { inputMode: "numeric" })}
             <label style={{ display: "grid", gap: 3, fontSize: 11.5, color: "#8A8778" }}>
               Quem conta
-              <select style={inputStyle} value={f.quem_conta} onChange={(e) => setF({ ...f, quem_conta: e.target.value })}>
+              <select style={campoStyle} value={f.quem_conta} onChange={(e) => setF({ ...f, quem_conta: e.target.value })}>
                 <option value="mora_ou_esteve">Mora ou esteve na área</option>
                 <option value="mora">Só quem mora</option>
               </select>
@@ -418,6 +431,8 @@ const inputStyle = {
   padding: "7px 9px", borderRadius: 8, border: "1px solid #E8E2D2",
   fontSize: 13, background: "#FFFFFF", color: "#22231F", boxSizing: "border-box",
 };
+// No formulário o campo ocupa a célula inteira e nunca passa da borda.
+const campoStyle = { ...inputStyle, width: "100%", minWidth: 0 };
 const chip = { border: "1px solid #E8E2D2", borderRadius: 999, padding: "3px 9px", fontWeight: 600 };
 const tagBase = {
   fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999,
