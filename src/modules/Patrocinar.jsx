@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  Loader2, AlertTriangle, CheckCircle2, Info, ExternalLink, Rocket, MapPin, RefreshCw,
+  Loader2, AlertTriangle, CheckCircle2, Info, ExternalLink, Rocket, MapPin, RefreshCw, Download,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
@@ -92,7 +92,7 @@ export default function Patrocinar() {
   if (erro) return <Aviso tipo="erro" texto={erro} />;
   if (!d) return null;
 
-  const { config: cfg, mes, posts, ultimos, avisos, pode_aprovar: podeAprovar } = d;
+  const { config: cfg, mes, posts, ultimos, avisos, pode_aprovar: podeAprovar, no_ar: noAr = [] } = d;
   const sobra = Math.max(0, (mes?.teto || 0) - (mes?.aprovado || 0));
   const pct = mes?.teto ? Math.min(100, (mes.aprovado / mes.teto) * 100) : 0;
   const valorNum = Number(String(valor).replace(",", "."));
@@ -102,6 +102,8 @@ export default function Patrocinar() {
     <div style={{ display: "grid", gap: 10, paddingBottom: sel ? 190 : 0 }}>
       {resultado && <Aviso tipo={resultado.tipo} texto={resultado.texto} />}
       {(avisos || []).map((a, i) => <Aviso key={i} tipo="info" texto={a} />)}
+
+      <NoAr lista={noAr} />
 
       <div style={cardStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -121,6 +123,12 @@ export default function Patrocinar() {
           O teto é barrado no banco: um patrocínio que passe dele é recusado antes de chegar na Meta.
           {!podeAprovar && " Você vê, mas não aprova: só quem está na lista de aprovadores."}
         </div>
+        {mes?.gasto_conta != null && (
+          <div style={{ ...dica, marginTop: 6, color: "#22231F" }}>
+            Gasto real da conta neste mês (painel + agência + Gerenciador): <strong>{dinheiro(mes.gasto_conta)}</strong>.
+            O teto acima só trava o que é aprovado aqui.
+          </div>
+        )}
       </div>
 
       <div style={cardStyle}>
@@ -230,8 +238,110 @@ function Post({ p, escolhido, onClick, clicavel }) {
             <> · <a href={p.link} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
                     style={{ color: "#8A8778" }}>ver <ExternalLink size={10} /></a></>
           )}
+          {p.arquivo && (
+            <> · <a href={p.arquivo} onClick={(e) => { e.stopPropagation(); e.preventDefault(); baixar(p); }}
+                    style={{ color: "#8A8778", cursor: "pointer" }}>baixar <Download size={10} /></a></>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Baixa o arquivo original do post. Se o navegador não deixar baixar direto
+// (o servidor do Instagram às vezes recusa), abre numa aba nova — aí é só
+// clicar com o botão direito e "Salvar como".
+async function baixar(p) {
+  const ext = p.tipo === "VIDEO" ? "mp4" : "jpg";
+  const nome = `mrkong-${(p.data || "").slice(0, 10)}-${p.id}.${ext}`;
+  try {
+    const r = await fetch(p.arquivo);
+    if (!r.ok) throw new Error(String(r.status));
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = nome;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch {
+    window.open(p.arquivo, "_blank", "noopener");
+  }
+}
+
+// Tudo o que está rodando na conta agora — do painel, da agência, do Gerenciador.
+function NoAr({ lista }) {
+  const total = lista.reduce((s, x) => s + (Number(x.gasto) || 0), 0);
+  return (
+    <div style={cardStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+        <div style={sectionLabel}>No ar agora · {lista.length} {lista.length === 1 ? "anúncio" : "anúncios"}</div>
+        {lista.length > 0 && <div style={{ ...dica, fontWeight: 700 }}>gasto somado: {dinheiro(total)}</div>}
+      </div>
+      {lista.length === 0 ? (
+        <div style={dica}>Nenhum anúncio rodando na conta agora — nem pelo painel, nem pelo Gerenciador.</div>
+      ) : lista.map((a) => <AnuncioNoAr key={a.anuncio_id} a={a} />)}
+    </div>
+  );
+}
+
+function AnuncioNoAr({ a }) {
+  const emAnalise = a.situacao !== "no ar";
+  const porConversa = a.conversas > 0 ? a.gasto / a.conversas : null;
+  const ctr = a.impressoes > 0 ? (a.cliques / a.impressoes) * 100 : null;
+  const verba = a.painel ? Number(a.painel.valor) : a.orcamento_total;
+  const usoVerba = verba ? Math.min(100, (a.gasto / verba) * 100) : null;
+  let prazo = null;
+  if (a.inicio && a.termina) {
+    const ini = new Date(a.inicio).getTime(), fim = new Date(a.termina).getTime();
+    const totalDias = Math.max(1, Math.round((fim - ini) / 86400000));
+    const passados = Math.min(totalDias, Math.max(0, Math.ceil((Date.now() - ini) / 86400000)));
+    prazo = `${passados} de ${totalDias} dias`;
+  }
+  const origem = a.painel
+    ? `feito pelo painel · aprovado ${dataCurta(a.painel.aprovado_em)} · ${dinheiro(a.painel.valor)} em ${a.painel.dias} dias`
+    : `feito no Gerenciador · ${a.orcamento_diario ? `${dinheiro(a.orcamento_diario)} por dia` : a.orcamento_total ? `${dinheiro(a.orcamento_total)} no total` : "orçamento na campanha"}${a.inicio ? ` · desde ${dataCurta(a.inicio)}` : ""}`;
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 11, padding: "10px 0", borderTop: "1px solid #E8E2D2" }}>
+      <div style={{ width: 84, height: 105, borderRadius: 9, background: "#F0ECE2", overflow: "hidden" }}>
+        {a.foto && <img src={a.foto} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 2 }}>
+          <span style={{ fontWeight: 700, fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
+            {a.texto || a.nome}
+          </span>
+          <span style={{ ...tagBase, ...(emAnalise ? tagAnalise : tagOk) }}>
+            {cap(a.situacao)}{!emAnalise ? (a.termina ? ` · termina ${dataCurta(a.termina)}` : " · contínuo") : ""}
+          </span>
+        </div>
+        <div style={{ ...dica, marginBottom: 7 }}>{origem}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))", gap: 6, opacity: emAnalise && !a.gasto ? 0.5 : 1 }}>
+          <Numero v={dinheiro(a.gasto)} r="gasto até agora" />
+          <Numero v={numero(a.conversas)} r="conversas no WhatsApp" />
+          <Numero v={porConversa != null ? dinheiro(porConversa) : "—"} r="por conversa" />
+          <Numero v={a.alcance ? numero(a.alcance) : "—"} r="pessoas alcançadas" />
+          <Numero v={ctr != null ? `${ctr.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%` : "—"} r="clicaram no link" />
+        </div>
+        {usoVerba != null && (
+          <>
+            <div style={{ height: 6, background: "#F0ECE2", borderRadius: 99, overflow: "hidden", marginTop: 8 }}>
+              <div style={{ width: `${usoVerba}%`, height: "100%", background: "#22231F" }} />
+            </div>
+            <div style={{ ...dica, marginTop: 3 }}>
+              {Math.round(usoVerba)}% da verba usada{prazo ? ` · ${prazo}` : ""}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Numero({ v, r }) {
+  return (
+    <div style={{ background: "#F6F1E7", borderRadius: 8, padding: "6px 8px" }}>
+      <div style={{ fontWeight: 800, fontSize: 14 }}>{v}</div>
+      <div style={{ fontSize: 10, color: "#8A8778" }}>{r}</div>
     </div>
   );
 }
@@ -438,6 +548,7 @@ const tagBase = {
   fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 999,
   border: "1px solid #E8E2D2", background: "#F6F1E7", display: "inline-block",
 };
+const tagAnalise = { color: "#8A6E12", borderColor: "#C9A227", background: "#C9A22722" };
 const tagOk = { color: "#2F8F5B", borderColor: "#2F8F5B", background: "#2F8F5B14" };
 const barraFixa = {
   position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 50,
