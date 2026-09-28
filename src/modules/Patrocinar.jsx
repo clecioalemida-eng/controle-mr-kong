@@ -36,10 +36,8 @@ export default function Patrocinar() {
   const [d, setD] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
-  const [sel, setSel] = useState(null);
-  const [valor, setValor] = useState("");
-  const [dias, setDias] = useState("");
-  const [confirmo, setConfirmo] = useState(false);
+  // Posts escolhidos (até 3). Um só = patrocínio simples; mais = teste lado a lado.
+  const [sel, setSel] = useState([]);
   const [enviando, setEnviando] = useState(false);
   const [resultado, setResultado] = useState(null);
 
@@ -53,30 +51,26 @@ export default function Patrocinar() {
 
   useEffect(() => { carregar(); }, [carregar]);
 
-  const escolher = (post) => {
-    setSel(post);
-    setValor(String(d?.config?.valor_padrao ?? ""));
-    setDias(String(d?.config?.dias_padrao ?? ""));
-    setConfirmo(false);
+  const alternar = (post) => {
     setResultado(null);
+    setSel((atual) => {
+      if (atual.some((p) => p.id === post.id)) return atual.filter((p) => p.id !== post.id);
+      if (atual.length >= 3) return atual;
+      return [...atual, post];
+    });
   };
 
-  const aprovar = async () => {
-    if (!sel || !confirmo) return;
+  const aprovar = async (pedido) => {
     setEnviando(true);
     setResultado(null);
-    const r = await chamarProxy("patrocinar", {
-      midia_id: sel.id,
-      valor: Number(String(valor).replace(",", ".")),
-      dias: Number(dias),
-      confirmo: true,
-    });
+    const r = await chamarProxy("patrocinar", { ...pedido, midia_ids: sel.map((p) => p.id), confirmo: true });
     setEnviando(false);
     if (r.erro) {
       setResultado({ tipo: "erro", texto: r.erro });
     } else if (r.data?.ok) {
-      setResultado({ tipo: "ok", texto: `No ar. Termina em ${dataBR(r.data.termina)}. A Meta ainda analisa o anúncio; costuma levar de minutos a algumas horas.` });
-      setSel(null);
+      const comeca = new Date(r.data.comeca) > new Date(Date.now() + 3600000) ? `Começa em ${dataBR(r.data.comeca)}, ` : "No ar. ";
+      setResultado({ tipo: "ok", texto: `${comeca}termina em ${dataBR(r.data.termina)}. A Meta ainda analisa o anúncio; costuma levar de minutos a algumas horas.` });
+      setSel([]);
       await carregar();
     } else {
       const feitas = (r.data?.etapas || []).map((e) => e.etapa).join(", ");
@@ -95,11 +89,10 @@ export default function Patrocinar() {
   const { config: cfg, mes, posts, ultimos, avisos, pode_aprovar: podeAprovar, no_ar: noAr = [] } = d;
   const sobra = Math.max(0, (mes?.teto || 0) - (mes?.aprovado || 0));
   const pct = mes?.teto ? Math.min(100, (mes.aprovado / mes.teto) * 100) : 0;
-  const valorNum = Number(String(valor).replace(",", "."));
   const semPonto = cfg.centro_lat == null;
 
   return (
-    <div style={{ display: "grid", gap: 10, paddingBottom: sel ? 190 : 0 }}>
+    <div style={{ display: "grid", gap: 10, paddingBottom: sel.length ? 260 : 0 }}>
       {resultado && <Aviso tipo={resultado.tipo} texto={resultado.texto} />}
       {(avisos || []).map((a, i) => <Aviso key={i} tipo="info" texto={a} />)}
 
@@ -138,12 +131,13 @@ export default function Patrocinar() {
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))", gap: 9 }}>
             {posts.map((p) => (
-              <Post key={p.id} p={p} escolhido={sel?.id === p.id}
-                    onClick={() => podeAprovar && !semPonto && escolher(p)} clicavel={podeAprovar && !semPonto} />
+              <Post key={p.id} p={p} ordem={sel.findIndex((x) => x.id === p.id) + 1}
+                    onClick={() => podeAprovar && !semPonto && alternar(p)} clicavel={podeAprovar && !semPonto} />
             ))}
           </div>
         )}
         <div style={{ ...dica, marginTop: 8 }}>
+          Clique em até 3 posts: com mais de um, eles dividem a verba e a Meta empurra o que funcionar melhor.
           Quer patrocinar um vídeo novo? Poste primeiro no Instagram; ele aparece aqui sozinho.
         </div>
       </div>
@@ -155,7 +149,8 @@ export default function Patrocinar() {
             <div key={u.id} style={{ borderTop: "1px solid #E8E2D2", padding: "7px 0", fontSize: 12.5 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {u.midia_texto || `post ${u.midia_id}`}
+                  {u.midias?.length > 1 ? `${u.midias.length} posts testados` : (u.midia_texto || `post ${u.midia_id}`)}
+                  {u.objetivo === "cardapio" ? " · cardápio" : ""}
                 </span>
                 <span style={{ whiteSpace: "nowrap", fontWeight: 700 }}>
                   {dinheiro(u.valor)} · {u.dias}d · <Estado e={u.estado} />
@@ -172,47 +167,25 @@ export default function Patrocinar() {
 
       <Configuracao cfg={cfg} podeEditar={podeAprovar} aoSalvar={carregar} />
 
-      {sel && (
-        <div style={barraFixa}>
-          <div style={{ maxWidth: 980, margin: "0 auto", padding: "11px 16px", display: "grid", gap: 8 }}>
-            <div style={{ fontWeight: 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              Patrocinar: “{sel.texto?.slice(0, 70) || `post ${sel.id}`}”
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12.5 }}>
-              <label>Valor R$ <input style={{ ...inputStyle, width: 80 }} inputMode="decimal"
-                     value={valor} onChange={(e) => { setValor(e.target.value); setConfirmo(false); }} /></label>
-              <label>Dias <input style={{ ...inputStyle, width: 56 }} inputMode="numeric"
-                     value={dias} onChange={(e) => { setDias(e.target.value); setConfirmo(false); }} /></label>
-              <span style={chip}>{cfg.raio_km} km</span>
-              <span style={chip}>{cfg.idade_min}–{cfg.idade_max} anos</span>
-              <span style={chip}>WhatsApp</span>
-            </div>
-            <label style={{ fontSize: 12.5, display: "flex", gap: 7, alignItems: "flex-start" }}>
-              <input type="checkbox" checked={confirmo} onChange={(e) => setConfirmo(e.target.checked)} />
-              <span>
-                Confirmo gastar até <strong>{dinheiro(valorNum)}</strong> em <strong>{dias || "?"} dias</strong>
-                {Number.isFinite(valorNum) && ` (sobram ${dinheiro(Math.max(0, sobra - valorNum))} no mês depois deste)`}.
-              </span>
-            </label>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button style={btnSecondary} onClick={() => setSel(null)} disabled={enviando}>Cancelar</button>
-              <button style={{ ...btnPrimary, opacity: confirmo ? 1 : 0.45 }} onClick={aprovar} disabled={!confirmo || enviando}>
-                {enviando ? <Loader2 size={13} /> : <Rocket size={13} />} {enviando ? "Criando na Meta…" : "Aprovar e patrocinar"}
-              </button>
-            </div>
-          </div>
-        </div>
+      {sel.length > 0 && (
+        <BarraAprovacao sel={sel} cfg={cfg} sobra={sobra} curva={d.curva_pedidos}
+                        enviando={enviando} aoCancelar={() => setSel([])} aoAprovar={aprovar} />
       )}
     </div>
   );
 }
 
-function Post({ p, escolhido, onClick, clicavel }) {
+function Post({ p, ordem, onClick, clicavel }) {
   const h = p.historico;
   return (
     <div onClick={onClick}
-         style={{ background: "#fff", border: escolhido ? "2px solid #22231F" : "1px solid #E8E2D2",
-                  borderRadius: 11, overflow: "hidden", cursor: clicavel ? "pointer" : "default" }}>
+         style={{ background: "#fff", border: ordem ? "2px solid #22231F" : "1px solid #E8E2D2",
+                  borderRadius: 11, overflow: "hidden", cursor: clicavel ? "pointer" : "default", position: "relative" }}>
+      {ordem > 0 && (
+        <div style={{ position: "absolute", top: 7, right: 7, width: 22, height: 22, borderRadius: 99,
+                      background: "#22231F", color: "#F3EFE3", fontSize: 12, fontWeight: 800,
+                      display: "flex", alignItems: "center", justifyContent: "center" }}>{ordem}</div>
+      )}
       <div style={{ aspectRatio: "4 / 5", background: "#F0ECE2" }}>
         {p.foto && <img src={p.foto} alt="" loading="lazy"
                         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />}
@@ -245,6 +218,212 @@ function Post({ p, escolhido, onClick, clicavel }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Barra de aprovação. O básico fica sempre à vista (valor e dias); o resto
+// ("Mais opções") começa no padrão, que é exatamente o patrocínio simples.
+// ---------------------------------------------------------------------------
+const OBJ = [
+  { v: "whatsapp", n: "Mensagens no WhatsApp", d: "A pessoa chama no WhatsApp." },
+  { v: "cardapio", n: "Visitas ao cardápio", d: "Leva direto ao link de pedido." },
+  { v: "vendas", n: "Vendas", d: "A Meta busca quem compra.", trava: "precisa do Pixel no CardápioWeb" },
+];
+const POS = [
+  { v: "auto", n: "Automático" },
+  { v: "stories_reels", n: "Só Reels e Stories" },
+  { v: "feed", n: "Só feed" },
+];
+const PUB = [
+  { v: "raio", n: "Todo mundo no raio" },
+  { v: "raio_engajou", n: "Só quem já interagiu com o @" },
+  { v: "raio_sem_engajou", n: "Raio, sem quem já interagiu" },
+];
+
+// Sugestão: horas com pelo menos 25% do pico de pedidos, mais a hora antes de
+// cada bloco (a pessoa vê o anúncio e pede em seguida).
+function sugerirHoras(curva) {
+  if (!curva) return null;
+  const pico = Math.max(...curva);
+  if (!pico) return null;
+  const fortes = new Set(curva.map((v, h) => (v >= pico * 0.25 ? h : null)).filter((h) => h != null));
+  for (const h of [...fortes]) if (h > 0 && !fortes.has(h - 1)) fortes.add(h - 1);
+  return [...fortes].sort((a, b) => a - b);
+}
+
+function descreverHoras(horas) {
+  if (!horas || horas.length === 24) return "o dia todo";
+  const h = [...horas].sort((a, b) => a - b);
+  const blocos = [];
+  for (const x of h) {
+    const u = blocos[blocos.length - 1];
+    if (u && u[1] === x) u[1] = x + 1; else blocos.push([x, x + 1]);
+  }
+  return blocos.map(([a, b]) => `${a}h–${b === 24 ? "0" : b}h`).join(", ");
+}
+
+function hojeISO() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+}
+
+function BarraAprovacao({ sel, cfg, sobra, curva, enviando, aoCancelar, aoAprovar }) {
+  const [valor, setValor] = useState(String(cfg.valor_padrao ?? ""));
+  const [dias, setDias] = useState(String(cfg.dias_padrao ?? ""));
+  const [mais, setMais] = useState(false);
+  const [objetivo, setObjetivo] = useState("whatsapp");
+  const [posicionamento, setPosicionamento] = useState("auto");
+  const [publico, setPublico] = useState("raio");
+  const [inicio, setInicio] = useState("");
+  const [horas, setHoras] = useState(null); // null = o dia todo
+  const [confirmo, setConfirmo] = useState(false);
+
+  const mexeu = (fn) => (...a) => { fn(...a); setConfirmo(false); };
+  // Trocou os posts escolhidos: a confirmação anterior não vale mais.
+  const chave = sel.map((p) => p.id).join(",");
+  useEffect(() => { setConfirmo(false); }, [chave]);
+  const valorNum = Number(String(valor).replace(",", "."));
+  const sugestao = sugerirHoras(curva);
+  const semCardapio = objetivo === "cardapio" && !cfg.cardapio_url;
+
+  const alternarHora = mexeu((h) => {
+    const atual = new Set(horas ?? Array.from({ length: 24 }, (_, i) => i));
+    if (atual.has(h)) atual.delete(h); else atual.add(h);
+    const lista = [...atual].sort((a, b) => a - b);
+    setHoras(lista.length === 24 ? null : lista.length ? lista : null);
+  });
+
+  const enviar = () => aoAprovar({
+    valor: valorNum,
+    dias: Number(dias),
+    objetivo, posicionamento, publico,
+    inicio: inicio || null,
+    horas,
+  });
+
+  const resumo = [
+    OBJ.find((o) => o.v === objetivo).n,
+    `${sel.length} post${sel.length > 1 ? "s" : ""}`,
+    POS.find((o) => o.v === posicionamento).n.toLowerCase(),
+    PUB.find((o) => o.v === publico).n.toLowerCase(),
+    inicio ? `começa ${inicio.split("-").reverse().slice(0, 2).join("/")}` : "começa agora",
+    descreverHoras(horas),
+  ].join(" · ");
+
+  return (
+    <div style={barraFixa}>
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: "11px 16px", display: "grid", gap: 8, maxHeight: "75vh", overflowY: "auto" }}>
+        <div style={{ fontWeight: 700, fontSize: 13 }}>
+          {sel.length === 1
+            ? <>Patrocinar: “{sel[0].texto?.slice(0, 70) || `post ${sel[0].id}`}”</>
+            : <>Testar {sel.length} posts juntos, dividindo a verba</>}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12.5 }}>
+          <label>Valor R$ <input style={{ ...inputStyle, width: 80 }} inputMode="decimal"
+                 value={valor} onChange={(e) => mexeu(setValor)(e.target.value)} /></label>
+          <label>Dias <input style={{ ...inputStyle, width: 56 }} inputMode="numeric"
+                 value={dias} onChange={(e) => mexeu(setDias)(e.target.value)} /></label>
+          <span style={chip}>{cfg.raio_km} km</span>
+          <span style={chip}>{cfg.idade_min}–{cfg.idade_max} anos</span>
+          <button style={btnGhost} onClick={() => setMais(!mais)}>{mais ? "Menos opções" : "Mais opções"}</button>
+        </div>
+
+        {mais && (
+          <div style={{ display: "grid", gap: 10, borderTop: "1px solid #E8E2D2", paddingTop: 9 }}>
+            <Grupo titulo="O que você quer que aconteça">
+              {OBJ.map((o) => (
+                <Opcao key={o.v} ativo={objetivo === o.v} travado={!!o.trava}
+                       onClick={() => !o.trava && mexeu(setObjetivo)(o.v)} nome={o.n} desc={o.trava || o.d} />
+              ))}
+            </Grupo>
+            {semCardapio && <Aviso tipo="info" texto="Cadastre o link do cardápio na Configuração do patrocínio (Editar) para usar esse objetivo." />}
+
+            <Grupo titulo="Onde aparece">
+              {POS.map((o) => <Opcao key={o.v} ativo={posicionamento === o.v} onClick={() => mexeu(setPosicionamento)(o.v)} nome={o.n} />)}
+            </Grupo>
+            <div style={dica}>Post que é Reel serve para Stories e Reels. Foto quadrada em Stories fica com faixa em volta — por isso o padrão é automático.</div>
+
+            <Grupo titulo="Quem vê">
+              {PUB.map((o) => <Opcao key={o.v} ativo={publico === o.v} onClick={() => mexeu(setPublico)(o.v)} nome={o.n} />)}
+            </Grupo>
+            <div style={dica}>Sempre dentro do raio de {cfg.raio_km} km. "Quem já interagiu" é quem curtiu, comentou, salvou ou mandou mensagem ao @ no último ano; o público é criado na primeira vez que você usar.</div>
+
+            <Grupo titulo="Quando começa">
+              <Opcao ativo={!inicio} onClick={() => mexeu(setInicio)("")} nome="Agora" />
+              <input type="date" style={{ ...inputStyle, height: 34 }} min={hojeISO()} value={inicio}
+                     onChange={(e) => mexeu(setInicio)(e.target.value)} />
+            </Grupo>
+
+            <div>
+              <div style={{ ...dica, fontWeight: 700, color: "#22231F", marginBottom: 5 }}>
+                Horário do dia em que roda: {descreverHoras(horas)}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(24, 1fr)", gap: 2 }}>
+                {Array.from({ length: 24 }, (_, h) => {
+                  const on = !horas || horas.includes(h);
+                  return (
+                    <button key={h} onClick={() => alternarHora(h)} title={`${h}h`}
+                            style={{ height: 26, border: 0, borderRadius: 3, cursor: "pointer", padding: 0, fontSize: 9,
+                                     background: on ? "#22231F" : "#F0ECE2", color: on ? "#F3EFE3" : "#8A8778" }}>
+                      {h % 3 === 0 ? h : ""}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                <button style={btnGhost} onClick={() => mexeu(setHoras)(null)}>O dia todo</button>
+                {sugestao && (
+                  <button style={btnGhost} onClick={() => mexeu(setHoras)(sugestao.length === 24 ? null : sugestao)}>
+                    Usar horário dos pedidos ({descreverHoras(sugestao)})
+                  </button>
+                )}
+              </div>
+              <div style={{ ...dica, marginTop: 4 }}>
+                {sugestao ? "A sugestão vem dos pedidos do CardápioWeb nos últimos 30 dias, com uma hora antes de cada pico." : "Sem curva de pedidos ainda: rode \"Buscar ontem\" em Ajustes para ter sugestão."}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ ...dica, color: "#22231F" }}>{resumo}</div>
+        <label style={{ fontSize: 12.5, display: "flex", gap: 7, alignItems: "flex-start" }}>
+          <input type="checkbox" checked={confirmo} onChange={(e) => setConfirmo(e.target.checked)} />
+          <span>
+            Confirmo gastar até <strong>{dinheiro(valorNum)}</strong> em <strong>{dias || "?"} dias</strong>
+            {Number.isFinite(valorNum) && ` (sobram ${dinheiro(Math.max(0, sobra - valorNum))} no mês depois deste)`}.
+          </span>
+        </label>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button style={btnSecondary} onClick={aoCancelar} disabled={enviando}>Cancelar</button>
+          <button style={{ ...btnPrimary, opacity: confirmo && !semCardapio ? 1 : 0.45 }} onClick={enviar}
+                  disabled={!confirmo || enviando || semCardapio}>
+            {enviando ? <Loader2 size={13} /> : <Rocket size={13} />} {enviando ? "Criando na Meta…" : sel.length > 1 ? "Aprovar e criar campanha" : "Aprovar e patrocinar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Grupo({ titulo, children }) {
+  return (
+    <div>
+      <div style={{ ...dica, fontWeight: 700, color: "#22231F", marginBottom: 5 }}>{titulo}</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "stretch" }}>{children}</div>
+    </div>
+  );
+}
+
+function Opcao({ ativo, travado, onClick, nome, desc }) {
+  return (
+    <button onClick={onClick} disabled={travado}
+            style={{ textAlign: "left", border: ativo ? "2px solid #22231F" : "1px solid #E8E2D2", borderRadius: 9,
+                     background: ativo ? "#FBF9F4" : "#fff", padding: ativo ? "6px 10px" : "7px 11px",
+                     cursor: travado ? "not-allowed" : "pointer", opacity: travado ? 0.5 : 1, color: "#22231F" }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700 }}>{nome}</div>
+      {desc && <div style={{ fontSize: 10.5, color: travado ? "#8A6E12" : "#8A8778" }}>{desc}</div>}
+    </button>
   );
 }
 
@@ -300,7 +479,7 @@ function AnuncioNoAr({ a }) {
     prazo = `${passados} de ${totalDias} dias`;
   }
   const origem = a.painel
-    ? `feito pelo painel · aprovado ${dataCurta(a.painel.aprovado_em)} · ${dinheiro(a.painel.valor)} em ${a.painel.dias} dias`
+    ? `feito pelo painel · aprovado ${dataCurta(a.painel.aprovado_em)} · ${dinheiro(a.painel.valor)} em ${a.painel.dias} dias${a.painel.varios ? " (verba dividida entre os posts do teste)" : ""}`
     : `feito no Gerenciador${a.otimiza ? ` · busca ${OTIMIZA[a.otimiza] || a.otimiza.toLowerCase()}` : ""} · ${a.orcamento_diario ? `${dinheiro(a.orcamento_diario)} por dia` : a.orcamento_total ? `${dinheiro(a.orcamento_total)} no total` : "orçamento na campanha"}${a.inicio ? ` · desde ${dataCurta(a.inicio)}` : ""}`;
 
   return (
@@ -377,6 +556,7 @@ function Configuracao({ cfg, podeEditar, aoSalvar }) {
     raio_km: cfg.raio_km, quem_conta: cfg.quem_conta,
     idade_min: cfg.idade_min, idade_max: cfg.idade_max,
     teto_mensal: cfg.teto_mensal, valor_padrao: cfg.valor_padrao, dias_padrao: cfg.dias_padrao,
+    cardapio_url: cfg.cardapio_url ?? "",
   });
 
   const salvar = async () => {
@@ -390,6 +570,7 @@ function Configuracao({ cfg, podeEditar, aoSalvar }) {
       raio_km: n(f.raio_km), quem_conta: f.quem_conta,
       idade_min: n(f.idade_min), idade_max: n(f.idade_max),
       teto_mensal: n(f.teto_mensal), valor_padrao: n(f.valor_padrao), dias_padrao: n(f.dias_padrao),
+      cardapio_url: String(f.cardapio_url || "").trim() || null,
     }).eq("conta_id", cfg.conta_id);
     setSalvando(false);
     if (error) setMsg({ tipo: "erro", texto: traduzir(error.message) });
@@ -415,7 +596,10 @@ function Configuracao({ cfg, podeEditar, aoSalvar }) {
         <>
           <Linha nome="Página" valor={cfg.pagina_nome || "—"} />
           <Linha nome="Instagram" valor={cfg.instagram_usuario ? `@${cfg.instagram_usuario}` : "—"} />
-          <Linha nome="Para onde a pessoa vai" valor="WhatsApp ligado à Página" />
+          <Linha nome="Para onde a pessoa vai" valor="WhatsApp ligado à Página, ou o cardápio" />
+          <Linha nome="Link do cardápio" valor={cfg.cardapio_url
+            ? <a style={{ color: "#22231F" }} href={cfg.cardapio_url} target="_blank" rel="noreferrer">{cfg.cardapio_url.replace(/^https:\/\//, "").slice(0, 40)}</a>
+            : <span style={{ color: "#8A8778" }}>não cadastrado</span>} />
           <Linha nome="Onde" valor={cfg.centro_lat != null
             ? <a style={{ color: "#22231F" }} target="_blank" rel="noreferrer"
                  href={`https://www.google.com/maps?q=${cfg.centro_lat},${cfg.centro_lng}`}>
@@ -428,6 +612,7 @@ function Configuracao({ cfg, podeEditar, aoSalvar }) {
         </>
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
+          {campo("cardapio_url", "Link do cardápio para pedir (usado no objetivo \"Visitas ao cardápio\")", { placeholder: "https://…" })}
           {campo("ponto", "Ponto do restaurante (cole do Google Maps: botão direito no local → clicar nos números)", { placeholder: "-17.7923, -50.9194" })}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 8 }}>
             {campo("raio_km", "Raio (km)", { inputMode: "numeric" })}
@@ -467,6 +652,7 @@ function traduzir(m) {
   if (/pc_raio/.test(m)) return "Raio de 1 a 80 km.";
   if (/pc_dias/.test(m)) return "Dias padrão de 1 a 30.";
   if (/pc_centro/.test(m)) return "O ponto tem que estar no Brasil.";
+  if (/pc_cardapio/.test(m)) return "O link do cardápio tem que começar com https://";
   if (/permission|policy|row-level/i.test(m)) return "Só quem aprova patrocínio muda esta configuração.";
   return m;
 }
