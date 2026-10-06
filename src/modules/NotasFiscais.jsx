@@ -636,6 +636,20 @@ export default function NotasFiscais() {
   if (tela === "regras") {
     return <RegrasProduto onVoltar={() => setTela("lista")} />;
   }
+  if (tela === "historico") {
+    return (
+      <HistoricoNotas
+        onVoltar={() => { setTela("lista"); carregar(); }}
+        onAbrir={(d) => {
+          // Mesma regra da lista: nota conferida abre travada, nota em
+          // aberto abre pra conferir. Sem isso o histórico viraria um
+          // atalho pra editar por cima do que já virou estoque.
+          if (d.status === "confirmado") { setTela("lista"); setNotaConfirmada(d); }
+          else if (d.status === "aguardando_confirmacao") { setDocumentoAtual(d); setTela("conferencia"); }
+        }}
+      />
+    );
+  }
   if (tela === "manual") {
     return (
       <CompraManual
@@ -1003,7 +1017,10 @@ export default function NotasFiscais() {
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={{ ...sectionLabel, marginBottom: 0 }}>Documentos recebidos</div>
-        <button onClick={() => setTela("regras")} style={{ ...linkBtn, fontSize: 12 }}>Regras de produto</button>
+        <div style={{ display: "flex", gap: 12 }}>
+          <button onClick={() => setTela("historico")} style={{ ...linkBtn, fontSize: 12 }}>Histórico</button>
+          <button onClick={() => setTela("regras")} style={{ ...linkBtn, fontSize: 12 }}>Regras de produto</button>
+        </div>
       </div>
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
@@ -1077,12 +1094,315 @@ export default function NotasFiscais() {
             </div>
           ))}
           {documentos.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum documento enviado ainda.</div>}
+          {documentos.length >= 30 && (
+            <div style={{ fontSize: 11.5, color: "#8A8778", gridColumn: "1 / -1" }}>
+              Mostrando as 30 últimas. Nota de mês passado está em{" "}
+              <button onClick={() => setTela("historico")} style={{ ...linkBtn, fontSize: 11.5 }}>Histórico</button>.
+            </div>
+          )}
         </div>
       )}
 
     </div>
   );
 }
+// ---------------------------------------------------------------------------
+// HISTÓRICO DE NOTAS
+//
+// A lista da tela inicial mostra as 30 últimas, de propósito: ela existe
+// pra você ver o que chegou hoje e conferir. Procurar "aquela nota da
+// WL de agosto, de uns mil e pouco" naquela lista é impossível.
+//
+// Aqui o filtro vai ao banco, não à tela: período, fornecedor, faixa de
+// valor e situação viram condições da consulta. Por isso acha nota de
+// qualquer mês, não só das 30 últimas.
+//
+// Duas datas, e a diferença importa:
+//   data da nota  — a que a IA leu do papel, e que às vezes vem errada
+//   entrada       — quando o valor entrou no estoque e no caixa
+// O DRE do mês se explica pela ENTRADA, por isso ela é o padrão.
+// ---------------------------------------------------------------------------
+const POR_PAGINA = 100;
+
+function primeiroDiaDoMes(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+}
+function ymdLocal(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function somarDias(n) {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return ymdLocal(d);
+}
+
+function HistoricoNotas({ onVoltar, onAbrir }) {
+  const [base, setBase] = useState("entrada");           // entrada | nota
+  const [de, setDe] = useState(primeiroDiaDoMes());
+  const [ate, setAte] = useState(ymdLocal(new Date()));
+  const [fornecedor, setFornecedor] = useState("");
+  const [vMin, setVMin] = useState("");
+  const [vMax, setVMax] = useState("");
+  const [status, setStatus] = useState("todos");
+  const [linhas, setLinhas] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [pagina, setPagina] = useState(0);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+
+  const colunaData = base === "nota" ? "data_documento" : "criado_em";
+
+  const buscar = useCallback(async (p = 0, acumular = false) => {
+    setCarregando(true);
+    setErro("");
+    let q = supabase
+      .from("documentos_compra")
+      .select("*", { count: "exact" })
+      .order(colunaData, { ascending: false, nullsFirst: false })
+      .range(p * POR_PAGINA, p * POR_PAGINA + POR_PAGINA - 1);
+
+    if (de) q = q.gte(colunaData, base === "nota" ? de : `${de}T00:00:00`);
+    // O "até" inclui o dia inteiro: sem isso, uma nota das 15h do dia
+    // escolhido some da busca e a pessoa jura que o sistema perdeu.
+    if (ate) q = q.lte(colunaData, base === "nota" ? ate : `${ate}T23:59:59.999`);
+    if (fornecedor.trim()) q = q.ilike("fornecedor", `%${fornecedor.trim()}%`);
+    if (vMin !== "") q = q.gte("valor_total", Number(String(vMin).replace(",", ".")) || 0);
+    if (vMax !== "") q = q.lte("valor_total", Number(String(vMax).replace(",", ".")) || 0);
+    if (status !== "todos") q = q.eq("status", status);
+
+    const { data, error, count } = await q;
+    setCarregando(false);
+    if (error) { setErro(error.message); return; }
+    setTotal(count || 0);
+    setPagina(p);
+    setLinhas((atual) => (acumular ? [...atual, ...(data || [])] : (data || [])));
+  }, [colunaData, base, de, ate, fornecedor, vMin, vMax, status]);
+
+  useEffect(() => { buscar(0, false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const somaNaTela = linhas.reduce((s, d) => s + (Number(d.valor_total) || 0), 0);
+
+  // Quem mais pesou no que está filtrado. Responde "gastei quanto com a
+  // WL nesse mês" sem precisar somar na mão.
+  const porFornecedor = useMemo(() => {
+    const m = new Map();
+    linhas.forEach((d) => {
+      const nome = d.fornecedor || "Fornecedor não identificado";
+      const x = m.get(nome) || { nome, valor: 0, qtd: 0 };
+      x.valor += Number(d.valor_total) || 0;
+      x.qtd += 1;
+      m.set(nome, x);
+    });
+    return [...m.values()].sort((a, b) => b.valor - a.valor);
+  }, [linhas]);
+
+  const preset = (rotulo, novoDe, novoAte) => (
+    <button key={rotulo}
+      onClick={() => { setDe(novoDe); setAte(novoAte); }}
+      style={{ ...btnSecondary, padding: "6px 11px", fontSize: 12,
+               ...(de === novoDe && ate === novoAte ? { background: "#22231F", color: "#F3EFE3", borderColor: "#22231F" } : {}) }}>
+      {rotulo}
+    </button>
+  );
+
+  const baixarCsv = () => {
+    const cabecalho = ["Fornecedor", "Data da nota", "Entrada", "Valor", "Situação"];
+    const linhasCsv = linhas.map((d) => [
+      (d.fornecedor || "Fornecedor não identificado").replace(/;/g, ","),
+      d.data_documento ? fmtData(d.data_documento) : "",
+      fmtDataHora(d.confirmado_em || d.criado_em),
+      String(Number(d.valor_total) || 0).replace(".", ","),
+      STATUS_LABEL[d.status] || d.status,
+    ].join(";"));
+    // ponto e vírgula + BOM: é assim que o Excel em português abre certo
+    const blob = new Blob(["﻿" + [cabecalho.join(";"), ...linhasCsv].join("\n")],
+                          { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `notas_${de}_a_${ate}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const campo = { width: "100%", boxSizing: "border-box", padding: "9px 10px", borderRadius: 8,
+                  border: "1px solid #E8E2D2", fontSize: 13, background: "#FFFFFF", color: "#22231F",
+                  fontFamily: "inherit" };
+  const rotulo = { fontSize: 11, color: "#8A8778", fontWeight: 700, marginBottom: 3, display: "block" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <button onClick={onVoltar} style={{ ...btnSecondary, display: "flex", alignItems: "center", gap: 6 }}>
+          <ChevronLeft size={16} /> Voltar
+        </button>
+        <div style={{ fontWeight: 800, fontSize: 16, color: "#22231F" }}>Histórico de notas</div>
+      </div>
+
+      <div style={{ ...cardStyle, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+          {preset("Este mês", primeiroDiaDoMes(), ymdLocal(new Date()))}
+          {preset("Últimos 30 dias", somarDias(-30), ymdLocal(new Date()))}
+          {preset("Últimos 90 dias", somarDias(-90), ymdLocal(new Date()))}
+          {preset("Este ano", `${new Date().getFullYear()}-01-01`, ymdLocal(new Date()))}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+          <div>
+            <label style={rotulo}>De</label>
+            <input type="date" value={de} onChange={(e) => setDe(e.target.value)} style={campo} />
+          </div>
+          <div>
+            <label style={rotulo}>Até</label>
+            <input type="date" value={ate} onChange={(e) => setAte(e.target.value)} style={campo} />
+          </div>
+          <div>
+            <label style={rotulo}>Contar pela</label>
+            <select value={base} onChange={(e) => setBase(e.target.value)} style={campo}>
+              <option value="entrada">data da entrada</option>
+              <option value="nota">data da nota</option>
+            </select>
+          </div>
+          <div>
+            <label style={rotulo}>Fornecedor</label>
+            <input value={fornecedor} onChange={(e) => setFornecedor(e.target.value)}
+              placeholder="parte do nome" style={campo} />
+          </div>
+          <div>
+            <label style={rotulo}>Valor de</label>
+            <input value={vMin} onChange={(e) => setVMin(e.target.value)} inputMode="decimal"
+              placeholder="R$ mínimo" style={campo} />
+          </div>
+          <div>
+            <label style={rotulo}>Valor até</label>
+            <input value={vMax} onChange={(e) => setVMax(e.target.value)} inputMode="decimal"
+              placeholder="R$ máximo" style={campo} />
+          </div>
+          <div>
+            <label style={rotulo}>Situação</label>
+            <select value={status} onChange={(e) => setStatus(e.target.value)} style={campo}>
+              <option value="todos">todas</option>
+              <option value="confirmado">Confirmada</option>
+              <option value="aguardando_confirmacao">Aguardando conferência</option>
+              <option value="processando">Lendo com IA</option>
+              <option value="erro">Erro na leitura</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <button onClick={() => buscar(0, false)} disabled={carregando}
+            style={{ ...btnPrimary, flex: 1, minWidth: 150, padding: "10px 16px" }}>
+            {carregando ? <Loader2 size={15} /> : <Search size={15} />} Buscar
+          </button>
+          <button onClick={() => {
+              setDe(primeiroDiaDoMes()); setAte(ymdLocal(new Date()));
+              setFornecedor(""); setVMin(""); setVMax(""); setStatus("todos"); setBase("entrada");
+            }}
+            style={{ ...btnSecondary, padding: "10px 16px" }}>
+            Limpar
+          </button>
+          {linhas.length > 0 && (
+            <button onClick={baixarCsv} style={{ ...btnSecondary, padding: "10px 16px" }}>
+              Baixar CSV
+            </button>
+          )}
+        </div>
+      </div>
+
+      {erro && (
+        <div style={avisoStyle}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+          <div style={{ fontSize: 13 }}>{erro}</div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <div style={{ ...cardStyle, flex: 1, minWidth: 150 }}>
+          <div style={{ fontSize: 11, color: "#8A8778", fontWeight: 700 }}>Notas encontradas</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: "#22231F", fontVariantNumeric: "tabular-nums" }}>{total}</div>
+        </div>
+        <div style={{ ...cardStyle, flex: 1, minWidth: 150 }}>
+          <div style={{ fontSize: 11, color: "#8A8778", fontWeight: 700 }}>
+            Somando as {linhas.length} na tela
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: "#22231F", fontVariantNumeric: "tabular-nums" }}>{brl(somaNaTela)}</div>
+        </div>
+      </div>
+
+      {porFornecedor.length > 1 && (
+        <div style={{ ...cardStyle, marginBottom: 12, padding: 0, overflow: "hidden" }}>
+          <div style={{ ...sectionLabel, margin: 0, padding: "10px 14px 6px" }}>Por fornecedor</div>
+          {porFornecedor.slice(0, 8).map((f) => (
+            <div key={f.nome} style={{ display: "flex", justifyContent: "space-between", gap: 10,
+                                       padding: "7px 14px", borderTop: "1px solid #F0EBDD", fontSize: 12.5 }}>
+              <button onClick={() => { setFornecedor(f.nome); }}
+                style={{ ...linkBtn, color: "#22231F", fontWeight: 600, overflow: "hidden",
+                         textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}
+                title="filtrar só esse fornecedor">
+                {f.nome} <span style={{ color: "#8A8778", fontWeight: 400 }}>· {f.qtd}</span>
+              </button>
+              <b style={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{brl(f.valor)}</b>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {carregando && linhas.length === 0 ? (
+        <div style={{ fontSize: 13, color: "#8A8778" }}>Buscando…</div>
+      ) : linhas.length === 0 ? (
+        <div style={{ ...cardStyle, textAlign: "center", color: "#8A8778", fontSize: 13 }}>
+          Nenhuma nota nesse filtro. Experimente alargar o período, ou trocar
+          "data da entrada" por "data da nota" — nota antiga lançada agora só
+          aparece pela entrada.
+        </div>
+      ) : (
+        <div className="list-grid">
+          {linhas.map((d) => (
+            <div key={d.id} style={itemRow}>
+              <div style={iconBox}><FileText size={16} color="#8A8778" /></div>
+              <button onClick={() => onAbrir && onAbrir(d)}
+                style={{ display: "flex", alignItems: "center", minWidth: 0, flex: 1, background: "none",
+                         border: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#22231F", overflow: "hidden",
+                                textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {d.fornecedor || "Fornecedor não identificado"}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#8A8778" }}>
+                    <b style={{ color: "#22231F", fontWeight: 700 }}>{brl(d.valor_total)}</b>
+                    {d.data_documento ? ` · nota de ${fmtData(d.data_documento)}` : ""}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 1 }}>
+                    {d.confirmado_em ? `entrada em ${fmtDataHora(d.confirmado_em)}`
+                                     : `enviada em ${fmtDataHora(d.criado_em)}`}
+                  </div>
+                </div>
+              </button>
+              {d.arquivo_path && (
+                <button onClick={() => abrirPreview(d.arquivo_path)} style={ghostIconBtn}
+                  aria-label="Abrir a nota em outra aba" title="Abrir a nota em outra aba">
+                  <Eye size={16} />
+                </button>
+              )}
+              <span style={{ ...pill, ...STATUS_ESTILO[d.status], whiteSpace: "nowrap", flexShrink: 0 }}>
+                {STATUS_LABEL[d.status]}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {linhas.length > 0 && linhas.length < total && (
+        <button onClick={() => buscar(pagina + 1, true)} disabled={carregando}
+          style={{ ...btnSecondary, width: "100%", marginTop: 12, padding: "11px 16px" }}>
+          {carregando ? "Carregando…" : `Carregar mais (faltam ${total - linhas.length})`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Nota que JÁ teve entrada — ver e, se precisar, voltar a editar
 //
