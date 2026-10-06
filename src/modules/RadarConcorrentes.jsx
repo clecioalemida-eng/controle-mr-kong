@@ -52,6 +52,8 @@ function milhar(n) {
 
 export default function RadarConcorrentes() {
   const [perfis, setPerfis] = useState([]);
+  const [comparativo, setComparativo] = useState([]);
+  const [serie, setSerie] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
   const [aberto, setAberto] = useState(null);       // perfil sendo detalhado
@@ -63,17 +65,26 @@ export default function RadarConcorrentes() {
   const [resultado, setResultado] = useState(null);
   const timer = useRef(null);
 
+  // v_perfis_radar continua sendo a lista de quem EXISTE — inclusive perfil
+  // cadastrado que ainda não foi coletado, que é o aviso de primeira semana.
+  // Os números comparativos vêm das views da 046, que fazem a conta inteira
+  // em SQL: a tela compara oito perfis entre si e não pode ter aritmética
+  // espalhada por ela.
   const carregar = useCallback(async () => {
     setCarregando(true);
     setErro(null);
-    const { data, error } = await supabase
-      .from("v_perfis_radar")
-      .select("*")
-      .order("eh_proprio", { ascending: false })
-      .order("seguidores", { ascending: false, nullsFirst: false });
+    const [r, c, s] = await Promise.all([
+      supabase.from("v_perfis_radar").select("*")
+        .order("eh_proprio", { ascending: false })
+        .order("seguidores", { ascending: false, nullsFirst: false }),
+      supabase.from("v_radar_comparativo").select("*"),
+      supabase.from("v_radar_serie").select("perfil_id, usuario, eh_proprio, dia, indice"),
+    ]);
     setCarregando(false);
-    if (error) { setErro(error.message); return; }
-    setPerfis(data || []);
+    if (r.error) { setErro(r.error.message); return; }
+    setPerfis(r.data || []);
+    setComparativo(c.data || []);
+    setSerie(s.data || []);
   }, []);
 
   useEffect(() => { carregar(); }, [carregar]);
@@ -192,25 +203,7 @@ export default function RadarConcorrentes() {
         </div>
       )}
 
-      {/* ----------------------------------------------------- números do topo */}
-      {!carregando && perfis.length > 0 && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-          <div style={statBox}>
-            <div style={statNum}>{perfis.filter((p) => p.ativo).length}</div>
-            <div style={statLabel}>perfis monitorados</div>
-          </div>
-          <div style={statBox}>
-            <div style={statNum}>{proprio?.engajamento_pct != null ? `${proprio.engajamento_pct}%` : "—"}</div>
-            <div style={statLabel}>nosso engajamento</div>
-          </div>
-          <div style={statBox}>
-            <div style={statNum}>{proprio?.posts_7d ?? 0}</div>
-            <div style={statLabel}>nossos posts na semana</div>
-          </div>
-        </div>
-      )}
-
-      {/* ----------------------------------------------------- lista */}
+      {/* ----------------------------------------------------- onde estamos */}
       {carregando ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A8778", fontSize: 13 }}>
           <Loader2 size={16} /> Carregando…
@@ -223,58 +216,320 @@ export default function RadarConcorrentes() {
             <Plus size={14} /> Cadastrar perfis
           </button>
         </div>
+      ) : semColeta || comparativo.length === 0 ? (
+        <div style={avisoStyle}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+          <div>
+            Os perfis estão cadastrados, mas ainda não há coleta suficiente para
+            comparar. Clique em <b>Coletar agora</b> — com duas coletas o
+            crescimento já aparece.
+          </div>
+        </div>
       ) : (
-        <>
-          {semColeta && (
-            <div style={{ ...avisoStyle, marginBottom: 12 }}>
-              <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
-              <div>
-                Os perfis estão cadastrados, mas nenhuma coleta rodou ainda.
-                Clique em <b>Coletar agora</b> para preencher a primeira semana.
-              </div>
-            </div>
-          )}
-
-          <div className="list-grid">
-            {perfis.map((p) => (
-              <button key={p.id} onClick={() => setAberto(p)} style={linhaPerfil}>
-                <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
-                  <div style={{ ...avatarStyle, ...(p.eh_proprio ? avatarProprio : {}) }}>
-                    {(p.nome || p.usuario).slice(0, 2).toUpperCase()}
-                  </div>
-                  <div style={{ minWidth: 0, textAlign: "left" }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: "#22231F", display: "flex", alignItems: "center", gap: 5 }}>
-                      @{p.usuario}
-                      {p.eh_proprio && <span style={selo}>nós</span>}
-                    </div>
-                    <div style={{ fontSize: 11, color: "#8A8778" }}>
-                      {p.posts_7d} posts na semana
-                      {p.engajamento_pct != null && ` · ${p.engajamento_pct}% eng.`}
-                    </div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: "#22231F", fontVariantNumeric: "tabular-nums" }}>
-                      {milhar(p.seguidores)}
-                    </div>
-                    <Variacao valor={p.variacao_seguidores} />
-                  </div>
-                  <ChevronRight size={15} color="#8A8778" />
-                </div>
-              </button>
-            ))}
-          </div>
-
-          <div style={{ fontSize: 11, color: "#8A8778", marginTop: 12, lineHeight: 1.5 }}>
-            Última coleta: {dataHora(perfis.map((p) => p.ultima_coleta).filter(Boolean).sort().reverse()[0])}.
-            Alcance e salvamentos de concorrente não aparecem aqui porque não
-            existem em fonte nenhuma — nem na API oficial da Meta.
-          </div>
-        </>
+        <OndeEstamos
+          linhas={comparativo}
+          serie={serie}
+          onAbrir={(l) => setAberto({
+            id: l.perfil_id, usuario: l.usuario, nome: l.nome,
+            seguidores: l.seg_fim, posts_30d: l.publicacoes,
+          })}
+        />
       )}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// ONDE ESTAMOS — o comparativo da praça
+//
+// A tela antiga listava oito cartões ordenados por seguidores. Isso punha o
+// maior em cima para sempre e escondia a única pergunta que importa: quem
+// anda mais rápido. Aqui a ordem é por crescimento, e o gráfico indexa todo
+// mundo a 100 — a única forma de comparar 5 mil seguidores com 28 mil.
+//
+// Nenhum número é calculado aqui. Tudo vem de v_radar_comparativo e
+// v_radar_serie, inclusive as medianas da praça.
+// ---------------------------------------------------------------------------
+function OndeEstamos({ linhas, serie, onAbrir }) {
+  const nos = linhas.find((l) => l.eh_proprio) || null;
+  const posicaoPub = nos
+    ? [...linhas].sort((a, b) => b.publicacoes - a.publicacoes)
+        .findIndex((l) => l.eh_proprio) + 1
+    : null;
+  const dias = [...new Set(serie.map((s) => s.dia))].sort();
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: "#22231F" }}>Onde estamos</div>
+        <div style={{ fontSize: 10.5, color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>
+          {dias.length > 0 && <>coletando desde {dataCurta(dias[0])} · {dias.length} coleta{dias.length > 1 ? "s" : ""} · última {dataCurta(dias[dias.length - 1])}</>}
+        </div>
+      </div>
+
+      {nos && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 1, background: "#E8E2D2", border: "1px solid #E8E2D2", marginBottom: 14 }}>
+          <Cartao rotulo="Nossos seguidores" valor={milhar(nos.seg_fim)}
+            apoio={`${nos.ganho >= 0 ? "+" : "−"}${milhar(Math.abs(nos.ganho))} na janela`}
+            cor={nos.ganho >= 0 ? "#2F8F5B" : "#C4432B"}
+            pe={`de ${dataCurta(nos.dia_ini)} a ${dataCurta(nos.dia_fim)}`} />
+          <Cartao rotulo="Nosso crescimento" valor={pctBR(nos.crescimento_pct)}
+            cor={nos.crescimento_pct >= 0 ? "#2F8F5B" : "#C4432B"}
+            apoio={nos.vezes_a_mediana != null ? `${numBR(nos.vezes_a_mediana)}× a mediana` : null}
+            corApoio={nos.vezes_a_mediana >= 1 ? "#2F8F5B" : "#C4432B"}
+            pe={`mediana dos concorrentes: ${pctBR(nos.mediana_crescimento)}`} />
+          <Cartao rotulo="Nossas publicações" valor={nos.publicacoes}
+            apoio={posicaoPub ? `${posicaoPub}º entre ${linhas.length} perfis` : null}
+            pe={`mediana da praça: ${numBR(nos.mediana_publicacoes)}`} />
+          <Cartao rotulo="Nosso engajamento"
+            valor={nos.engajamento_pct != null ? `${numBR(nos.engajamento_pct)}%` : "—"}
+            apoio={nos.engajamento_pct != null && nos.mediana_engajamento > 0
+              ? `${numBR(Math.round(10 * nos.engajamento_pct / nos.mediana_engajamento) / 10)}× a mediana` : null}
+            corApoio={nos.engajamento_pct >= nos.mediana_engajamento ? "#2F8F5B" : "#C4432B"}
+            pe={`mediana do mercado: ${numBR(nos.mediana_engajamento)}%`} />
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12, marginBottom: 14 }}>
+        <div style={cardStyle}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: "#22231F", marginBottom: 2 }}>
+            Crescimento na janela
+          </div>
+          <div style={{ fontSize: 10.5, color: "#8A8778", lineHeight: 1.45, marginBottom: 8 }}>
+            cada perfil começa em 100 — é a única forma de comparar perfis de
+            tamanhos diferentes
+          </div>
+          <GraficoIndexado serie={serie} linhas={linhas} />
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: "#22231F", marginBottom: 2 }}>
+            Quem publicou
+          </div>
+          <div style={{ fontSize: 10.5, color: "#8A8778", lineHeight: 1.45, marginBottom: 8 }}>
+            na mesma janela, por formato
+          </div>
+          <BarrasPublicacao linhas={linhas} />
+        </div>
+      </div>
+
+      <TabelaComparativa linhas={linhas} onAbrir={onAbrir} />
+
+      <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 12, lineHeight: 1.55, display: "grid", gap: 7 }}>
+        <div>
+          <b style={{ color: "#22231F" }}>Ordenado por crescimento, não por tamanho.</b>{" "}
+          Seguidor em número absoluto não compara nada — um perfil pode ser cinco
+          vezes maior que o nosso e estar perdendo seguidor.
+        </div>
+        <div>
+          <b style={{ color: "#22231F" }}>A régua é a mediana, não a média.</b>{" "}
+          Um perfil muito maior move a média e não move a mediana.
+        </div>
+        <div>
+          <b style={{ color: "#22231F" }}>Por publicação</b> divide o que o perfil
+          ganhou pelo que ele publicou, na mesma janela. Quem não publicou aparece
+          com traço. Isso é correlação e não prova: a coleta vê o perfil, não sabe
+          qual post trouxe qual seguidor.
+        </div>
+        <div>
+          Alcance e salvamentos de concorrente não aparecem porque não existem em
+          fonte nenhuma — nem na API oficial da Meta.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Cartao({ rotulo, valor, apoio, pe, cor, corApoio }) {
+  return (
+    <div style={{ background: "#FFFFFF", padding: "11px 13px", display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: 0.5, textTransform: "uppercase", color: "#8A8778" }}>{rotulo}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: -0.5, color: cor || "#22231F", fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>{valor}</div>
+      {apoio && <div style={{ fontSize: 11, fontWeight: 700, color: corApoio || cor || "#22231F" }}>{apoio}</div>}
+      {pe && <div style={{ fontSize: 10, color: "#8A8778", marginTop: 2, lineHeight: 1.35 }}>{pe}</div>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// O gráfico indexado
+//
+// O eixo X é por DATA, não por posição da coleta. As coletas são semanais e
+// desiguais (6, 7, 9, 5 dias entre elas) — espaçar igual inclinaria as retas
+// errado e faria uma semana parada parecer igual a uma semana de alta.
+// ---------------------------------------------------------------------------
+function GraficoIndexado({ serie, linhas }) {
+  if (!serie || serie.length === 0) return null;
+
+  const W = 680, H = 290, L = 44, R = 148, T = 16, B = 32;
+  const dias = [...new Set(serie.map((s) => s.dia))].sort();
+  const t0 = Date.parse(dias[0] + "T12:00:00");
+  const span = Math.max(1, (Date.parse(dias[dias.length - 1] + "T12:00:00") - t0) / 86400000);
+
+  const vals = serie.map((s) => Number(s.indice)).filter((v) => Number.isFinite(v));
+  let lo = Math.min(100, ...vals), hi = Math.max(100, ...vals);
+  const folga = Math.max(0.4, (hi - lo) * 0.12);
+  lo -= folga; hi += folga;
+
+  const X = (dia) => L + (W - R - L) * ((Date.parse(dia + "T12:00:00") - t0) / 86400000) / span;
+  const Y = (v) => (H - B) - (H - B - T) * (v - lo) / (hi - lo);
+
+  // uma linha por perfil
+  const porPerfil = {};
+  serie.forEach((s) => {
+    (porPerfil[s.perfil_id] = porPerfil[s.perfil_id] || { usuario: s.usuario, nos: s.eh_proprio, pts: [] })
+      .pts.push(s);
+  });
+  Object.values(porPerfil).forEach((p) => p.pts.sort((a, b) => a.dia.localeCompare(b.dia)));
+  const grupos = Object.values(porPerfil).sort((a, b) => (a.nos ? 1 : 0) - (b.nos ? 1 : 0));
+
+  // grade em números inteiros dentro do intervalo
+  const grade = [];
+  for (let g = Math.ceil(lo); g <= Math.floor(hi); g++) grade.push(g);
+
+  // rótulos à direita, empurrados para não colidir
+  const crescDe = {};
+  (linhas || []).forEach((l) => { crescDe[l.perfil_id] = l.crescimento_pct; });
+  const alvos = grupos
+    .map((g) => ({ g, y: Y(Number(g.pts[g.pts.length - 1].indice)) }))
+    .sort((a, b) => a.y - b.y);
+  const MIN = 12.5;
+  alvos.forEach((a, i) => { if (i > 0 && a.y - alvos[i - 1].y < MIN) a.y = alvos[i - 1].y + MIN; });
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block", overflow: "visible" }}
+      role="img" aria-label="Crescimento indexado a 100 de cada perfil na janela coletada.">
+      {grade.map((g) => (
+        <g key={g}>
+          <line x1={L} y1={Y(g)} x2={W - R} y2={Y(g)}
+            stroke={g === 100 ? "#8A8778" : "#E8E2D2"} strokeWidth="1"
+            strokeDasharray={g === 100 ? "3 3" : undefined} />
+          <text x={L - 7} y={Y(g) + 3.4} textAnchor="end" fill="#8A8778"
+            style={{ fontSize: 9.5, fontVariantNumeric: "tabular-nums" }}>{g}</text>
+        </g>
+      ))}
+      {dias.map((d) => (
+        <text key={d} x={X(d)} y={H - 10} textAnchor="middle" fill="#8A8778"
+          style={{ fontSize: 9.5, fontVariantNumeric: "tabular-nums" }}>{dataCurta(d)}</text>
+      ))}
+      {grupos.map((g, i) => (
+        <polyline key={i} fill="none"
+          stroke={g.nos ? "#22231F" : "#C9C4B6"} strokeWidth={g.nos ? 2.4 : 1.4}
+          strokeLinejoin="round" strokeLinecap="round"
+          points={g.pts.map((s) => `${X(s.dia).toFixed(1)},${Y(Number(s.indice)).toFixed(2)}`).join(" ")} />
+      ))}
+      {grupos.map((g, i) => g.pts.map((s, j) => (
+        <circle key={`${i}-${j}`} cx={X(s.dia)} cy={Y(Number(s.indice))} r={g.nos ? 2.6 : 1.7}
+          fill={g.nos ? "#22231F" : "#C9C4B6"} />
+      )))}
+      {alvos.map(({ g, y }, i) => {
+        const yr = Y(Number(g.pts[g.pts.length - 1].indice));
+        const c = crescDe[g.pts[0].perfil_id];
+        return (
+          <g key={i}>
+            <line x1={W - R} y1={yr} x2={W - R + 9} y2={y} stroke={g.nos ? "#22231F" : "#C9C4B6"} strokeWidth="1" />
+            <text x={W - R + 13} y={y + 3.3} fill={g.nos ? "#22231F" : "#8A8778"}
+              style={{ fontSize: 10, fontWeight: g.nos ? 700 : 400 }}>
+              @{g.usuario.length > 17 ? g.usuario.slice(0, 16) + "…" : g.usuario}
+              {c != null && <tspan style={{ fontWeight: 600 }}>  {pctBR(c)}</tspan>}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function BarrasPublicacao({ linhas }) {
+  const max = Math.max(1, ...linhas.map((l) => l.publicacoes));
+  const ordenado = [...linhas].sort((a, b) => b.publicacoes - a.publicacoes);
+  const faixa = (n, cor) => n > 0 && (
+    <span style={{ display: "block", height: "100%", width: `${(100 * n) / max}%`, background: cor, float: "left" }} />
+  );
+  return (
+    <div style={{ display: "grid", gap: 5 }}>
+      {ordenado.map((l) => (
+        <div key={l.perfil_id} style={{ display: "grid", gridTemplateColumns: "1fr 62px 16px", gap: 7, alignItems: "center" }}>
+          <span style={{
+            fontSize: 10.5, color: l.eh_proprio ? "#22231F" : "#8A8778",
+            fontWeight: l.eh_proprio ? 700 : 400,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>@{l.usuario}</span>
+          <span style={{ height: 7, background: "#F6F1E7", border: "1px solid #E8E2D2", display: "block", overflow: "hidden" }}>
+            {faixa(l.reels, l.eh_proprio ? "#22231F" : "#A9A496")}
+            {faixa(l.carrossel, l.eh_proprio ? "#5A5B52" : "#C9C4B6")}
+            {faixa(l.outros, l.eh_proprio ? "#8A8778" : "#E0DCCE")}
+          </span>
+          <b style={{ fontSize: 10.5, textAlign: "right", color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>
+            {l.publicacoes}
+          </b>
+        </div>
+      ))}
+      <div style={{ fontSize: 9.5, color: "#8A8778", marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <Legenda cor="#A9A496" texto="reels" />
+        <Legenda cor="#C9C4B6" texto="carrossel" />
+        <Legenda cor="#E0DCCE" texto="outros" />
+      </div>
+    </div>
+  );
+}
+
+function Legenda({ cor, texto }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      <span style={{ width: 8, height: 8, background: cor, border: "1px solid #E8E2D2" }} />{texto}
+    </span>
+  );
+}
+
+function TabelaComparativa({ linhas, onAbrir }) {
+  const cel = { textAlign: "right", padding: "8px 10px", borderBottom: "1px solid #E8E2D2", fontSize: 12, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
+  const cab = { ...cel, fontSize: 9, letterSpacing: 0.5, textTransform: "uppercase", color: "#8A8778", fontWeight: 700, background: "#F6F1E7" };
+  return (
+    <div style={{ overflowX: "auto", border: "1px solid #E8E2D2", background: "#FFFFFF" }}>
+      <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 580 }}>
+        <thead>
+          <tr>
+            <th style={{ ...cab, textAlign: "left" }}>Perfil</th>
+            <th style={cab}>Seguidores</th>
+            <th style={cab}>Ganho</th>
+            <th style={cab}>Na janela</th>
+            <th style={cab}>Publicações</th>
+            <th style={cab}>Eng.</th>
+            <th style={cab}>Por publicação</th>
+          </tr>
+        </thead>
+        <tbody>
+          {linhas.map((l) => {
+            const cor = l.crescimento_pct > 0 ? "#2F8F5B" : l.crescimento_pct < 0 ? "#C4432B" : "#8A8778";
+            return (
+              <tr key={l.perfil_id} onClick={() => onAbrir && onAbrir(l)}
+                style={{ cursor: onAbrir ? "pointer" : "default", background: l.eh_proprio ? "#F6F1E7" : "transparent" }}>
+                <td style={{ ...cel, textAlign: "left" }}>
+                  @{l.usuario}
+                  {l.eh_proprio && <span style={{ ...selo, marginLeft: 5 }}>nós</span>}
+                </td>
+                <td style={cel}>{milhar(l.seg_fim)}</td>
+                <td style={{ ...cel, color: cor }}>{l.ganho > 0 ? "+" : l.ganho < 0 ? "−" : ""}{milhar(Math.abs(l.ganho))}</td>
+                <td style={{ ...cel, color: cor, fontWeight: 800 }}>{pctBR(l.crescimento_pct)}</td>
+                <td style={cel}>{l.publicacoes}</td>
+                <td style={cel}>{l.engajamento_pct != null ? `${numBR(l.engajamento_pct)}%` : "—"}</td>
+                <td style={cel}>{l.ganho_por_publicacao != null ? numBR(l.ganho_por_publicacao) : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function numBR(v) {
+  if (v === null || v === undefined) return "—";
+  return String(v).replace(".", ",");
+}
+function pctBR(v) {
+  if (v === null || v === undefined) return "—";
+  return `${v >= 0 ? "+" : "−"}${numBR(Math.abs(v))}%`;
 }
 
 // ---------------------------------------------------------------------------
