@@ -970,24 +970,34 @@ function PainelGerencia({ dias }) {
 }
 
 function Corrida({ onVoltar, isAdmin }) {
+  const [aba, setAba] = useState("agora");          // agora | mensal | historico
   const [placar, setPlacar] = useState([]);
   const [dias, setDias] = useState([]);
+  const [mensal, setMensal] = useState([]);
+  const [historico, setHistorico] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const [premio, setPremio] = useState("");
   const [editandoPremio, setEditandoPremio] = useState(false);
+  const [confirmandoZerar, setConfirmandoZerar] = useState(false);
+  const [premioNovo, setPremioNovo] = useState("");
+  const [zerando, setZerando] = useState(false);
+  const [recado, setRecado] = useState("");
 
   const carregar = useCallback(async () => {
-    const [{ data: p, error: e1 }, { data: d, error: e2 }] = await Promise.all([
+    const [{ data: p, error: e1 }, { data: d, error: e2 }, { data: m }, { data: h }] = await Promise.all([
       supabase.rpc("corrida_placar"),
       supabase.rpc("corrida_dia_a_dia", { p_dias: 14 }),
+      // mensal e histórico são da migração 132; sem ela as abas só ficam vazias
+      supabase.rpc("corrida_mensal", { p_meses: 6 }),
+      supabase.rpc("corrida_historico"),
     ]);
-    // O placar já vem sem quem está fora da corrida. O dia a dia vem com
-    // todo mundo — é dele que sai o painel da gerência.
     if (e1) setErro(e1.message);
     if (e2) setErro(e2.message);
     setPlacar(p || []);
     setDias(d || []);
+    setMensal(m || []);
+    setHistorico(h || []);
     setPremio((p && p[0]?.premio) || "");
     setCarregando(false);
   }, []);
@@ -1001,6 +1011,24 @@ function Corrida({ onVoltar, isAdmin }) {
       .is("encerrada_em", null);
     if (error) { setErro(error.message); return; }
     setEditandoPremio(false);
+    carregar();
+  };
+
+  const zerar = async () => {
+    setZerando(true); setErro(""); setRecado("");
+    const { data, error } = await supabase.rpc("encerrar_corrida", {
+      p_meta: null, p_premio: premioNovo.trim() || null,
+    });
+    setZerando(false);
+    setConfirmandoZerar(false);
+    if (error) {
+      setErro(/does not exist|schema cache/i.test(error.message)
+        ? "Falta rodar a migração 132 no banco."
+        : error.message);
+      return;
+    }
+    setPremioNovo("");
+    setRecado(typeof data === "string" ? data : "Corrida zerada.");
     carregar();
   };
 
@@ -1027,11 +1055,10 @@ function Corrida({ onVoltar, isAdmin }) {
 
   const meta = Number(placar[0].meta) || 200;
   const inicio = placar[0].inicio;
+  const lider = placar[0];
+  const segundo = placar[1];
+  const maior = Math.max(meta, ...placar.map((p) => Number(p.total) || 0), 1);
   const diasUnicos = [...new Set(dias.map((d) => d.dia))].sort().slice(-7);
-  // A tabela do dia a dia mostra TODO MUNDO que preenche, inclusive quem
-  // está fora da corrida — senão a gerência preencheria todo dia e não
-  // apareceria em lugar nenhum. Sequência e bônus ficam em branco pra ela,
-  // porque não valem nada.
   const vistos = new Set(placar.map((p) => p.departamento));
   const forasDaCorrida = [];
   dias.forEach((d) => {
@@ -1041,6 +1068,52 @@ function Corrida({ onVoltar, isAdmin }) {
   });
   const linhasDiaADia = [...placar, ...forasDaCorrida];
 
+  // mensal vem achatado do banco; aqui vira {mes: [linhas]}
+  const meses = [];
+  const porMes = new Map();
+  mensal.forEach((l) => {
+    if (!porMes.has(l.mes)) { porMes.set(l.mes, []); meses.push(l.mes); }
+    porMes.get(l.mes).push(l);
+  });
+
+  const Aba = ({ chave, children }) => (
+    <button onClick={() => setAba(chave)}
+      style={{
+        border: "1px solid " + (aba === chave ? "#22231F" : "#E8E2D2"),
+        background: aba === chave ? "#22231F" : "#FFFFFF",
+        color: aba === chave ? "#F3EFE3" : "#55534A",
+        borderRadius: 999, padding: "7px 14px", fontSize: 13, fontWeight: 700,
+        cursor: "pointer", fontFamily: "inherit",
+      }}>
+      {children}
+    </button>
+  );
+
+  // Uma linha do placar. Sem bandeira quadriculada, sem emoji dentro de
+  // bolinha: só posição, nome, barra e pontos. A corrida já é a metáfora;
+  // a tela não precisa repetir isso em desenho.
+  const LinhaPlacar = ({ p, pos, pontos, direita, barra }) => {
+    const cor = CORES_DEP[p.departamento] || "#C72B2E";
+    const pct = Math.max(2, Math.min(100, (barra / maior) * 100));
+    return (
+      <div style={{ padding: "11px 0", borderTop: pos === 1 ? "none" : "1px solid #F4EEE3" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 9 }}>
+          <span style={{ fontSize: 12, fontWeight: 800, color: pos === 1 ? "#22231F" : "#B9B2A4",
+                         width: 16, fontVariantNumeric: "tabular-nums" }}>{pos}</span>
+          <span style={{ fontSize: pos === 1 ? 15 : 14, fontWeight: pos === 1 ? 800 : 600,
+                         color: "#22231F", flex: 1, minWidth: 0 }}>{p.label}</span>
+          <span style={{ fontSize: pos === 1 ? 17 : 15, fontWeight: 800, color: "#22231F",
+                         fontVariantNumeric: "tabular-nums" }}>{pontos}</span>
+          {direita && <span style={{ fontSize: 11, color: "#8A8778", width: 54, textAlign: "right" }}>{direita}</span>}
+        </div>
+        <div style={{ height: 6, borderRadius: 99, background: "#F1EBDF", marginTop: 7,
+                      marginLeft: 25, overflow: "hidden" }}>
+          <div style={{ width: pct + "%", height: "100%", background: cor, borderRadius: 99 }} />
+        </div>
+      </div>
+    );
+  };
+
   return (
     <Shell titulo="Corrida do checklist"
       subtitulo={`desde ${formatDiaLabel(inicio)} · chegada em ${meta} pontos`}
@@ -1049,162 +1122,278 @@ function Corrida({ onVoltar, isAdmin }) {
       {erro && <div style={{ ...avisoBloqueio, background: "#FDECEA", borderColor: "#F0C0B8", color: "#A32D2D", marginBottom: 12 }}>
         <AlertTriangle size={16} /> {erro}
       </div>}
+      {recado && <div style={{ ...avisoBloqueio, background: "#E8F5EE", borderColor: "#A9D9BF", color: "#1F6B43", marginBottom: 12 }}>
+        <Check size={16} /> {recado}
+      </div>}
 
-      {/* prêmio */}
-      <div style={{ ...cardStyle, marginBottom: 14, background: premio ? "#FFF9E8" : "#FFFFFF",
-                    borderColor: premio ? "#E8D48A" : "#E8E2D2" }}>
-        <div style={{ fontSize: 11, fontWeight: 800, color: "#8A8778", textTransform: "uppercase",
-                      letterSpacing: 0.5, marginBottom: 5 }}>
-          Prêmio
-        </div>
-        {editandoPremio ? (
-          <div style={{ display: "flex", gap: 8 }}>
-            <input value={premio} onChange={(e) => setPremio(e.target.value)} autoFocus
-              placeholder="Ex: R$ 200 pro departamento, ou folga no domingo"
-              onKeyDown={(e) => e.key === "Enter" && salvarPremio()}
-              style={{ ...inputStyle, flex: 1 }} />
-            <button onClick={salvarPremio} style={btnPrimary}><Check size={14} /></button>
-          </div>
-        ) : premio ? (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-            <div style={{ fontSize: 15, fontWeight: 700 }}>{premio}</div>
-            {isAdmin && (
-              <button onClick={() => setEditandoPremio(true)} style={ghostIconBtn}><Pencil size={14} /></button>
-            )}
-          </div>
-        ) : (
-          <div style={{ fontSize: 13, color: "#8A8778" }}>
-            Ainda sem prêmio.{" "}
-            {isAdmin && (
-              <button onClick={() => setEditandoPremio(true)}
-                style={{ ...ghostIconBtn, display: "inline", color: "#C72B2E", fontWeight: 700, textDecoration: "underline" }}>
-                definir agora
-              </button>
-            )}
-            <div style={{ marginTop: 4 }}>
-              Corrida sem prêmio dito antes vira placar que ninguém olha.
-            </div>
-          </div>
-        )}
+      <div style={{ display: "flex", gap: 7, marginBottom: 14, flexWrap: "wrap" }}>
+        <Aba chave="agora">Agora</Aba>
+        <Aba chave="mensal">Mês a mês</Aba>
+        <Aba chave="historico">Temporadas</Aba>
       </div>
 
-      {/* pista */}
-      <div style={{ ...cardStyle, marginBottom: 14, position: "relative", overflow: "hidden" }}>
-        <div style={{ position: "absolute", right: 14, top: 10, bottom: 10, width: 10, borderRadius: 3,
-                      background: "repeating-linear-gradient(45deg,#22231F,#22231F 5px,#fff 5px,#fff 10px)" }} />
-        <div style={{ position: "absolute", right: 30, top: 6, fontSize: 9.5, fontWeight: 800,
-                      color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.6 }}>
-          chegada
-        </div>
-        <div style={{ marginTop: 14 }}>
-          {placar.map((p) => {
-            const cor = CORES_DEP[p.departamento] || "#C72B2E";
-            const pct = Math.min(100, (Number(p.total) / meta) * 100);
-            return (
-              <div key={p.departamento} style={{
-                display: "grid", gridTemplateColumns: "84px 1fr 44px", gap: 8,
-                alignItems: "center", marginBottom: 12,
-              }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 5 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 99, background: cor, flexShrink: 0 }} />
-                  {p.label}
+      {aba === "agora" && (
+        <>
+          {/* Quem está ganhando, numa frase. É o que a equipe quer saber
+              em dois segundos olhando o tablet de passagem. */}
+          <div style={{ ...cardStyle, marginBottom: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "#8A8778", textTransform: "uppercase",
+                          letterSpacing: 0.5 }}>Liderança</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+              <span style={{ fontSize: 24, fontWeight: 800, color: "#22231F" }}>{lider.label}</span>
+              <span style={{ fontSize: 15, fontWeight: 800, color: "#8A6A0F",
+                             fontVariantNumeric: "tabular-nums" }}>{lider.total} pts</span>
+            </div>
+            <div style={{ fontSize: 12.5, color: "#8A8778", marginTop: 2 }}>
+              {segundo
+                ? `${Number(lider.total) - Number(segundo.total)} à frente do ${segundo.label}`
+                : "sozinho na corrida"}
+              {Number(lider.total) >= meta
+                ? " · já passou da chegada"
+                : ` · faltam ${meta - Number(lider.total)} pra chegada`}
+            </div>
+          </div>
+
+          {/* prêmio, em uma linha */}
+          <div style={{ ...cardStyle, marginBottom: 10,
+                        background: premio ? "#FFF9E8" : "#FFFFFF",
+                        borderColor: premio ? "#E8D48A" : "#E8E2D2" }}>
+            {editandoPremio ? (
+              <div style={{ display: "flex", gap: 8 }}>
+                <input value={premio} onChange={(e) => setPremio(e.target.value)} autoFocus
+                  placeholder="Ex: R$ 200 pro departamento, ou folga no domingo"
+                  onKeyDown={(e) => e.key === "Enter" && salvarPremio()}
+                  style={{ ...inputStyle, flex: 1 }} />
+                <button onClick={salvarPremio} style={btnPrimary}><Check size={14} /></button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div style={{ minWidth: 0 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: "#8A8778",
+                                 textTransform: "uppercase", letterSpacing: 0.5, marginRight: 8 }}>Prêmio</span>
+                  <span style={{ fontSize: 14, fontWeight: premio ? 700 : 400, color: premio ? "#22231F" : "#8A8778" }}>
+                    {premio || "ainda sem prêmio — corrida sem prêmio vira placar que ninguém olha"}
+                  </span>
                 </div>
-                <div style={{ position: "relative", height: 22, background: "#F1EBDF",
-                              borderRadius: 99, marginRight: 26 }}>
-                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 99,
-                                width: pct + "%", background: cor, opacity: 0.25 }} />
-                  <div style={{
-                    position: "absolute", top: -5, left: pct + "%", transform: "translateX(-15px)",
-                    width: 30, height: 30, borderRadius: 99, background: "#fff",
-                    border: "2px solid " + cor, display: "flex", alignItems: "center",
-                    justifyContent: "center", fontSize: 13,
-                  }}>
-                    {EMOJI_DEP[p.departamento] || "\u2022"}
+                {isAdmin && (
+                  <button onClick={() => setEditandoPremio(true)} style={ghostIconBtn}><Pencil size={14} /></button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div style={{ ...cardStyle, marginBottom: 14 }}>
+            {placar.map((p, i) => (
+              <LinhaPlacar key={p.departamento} p={p} pos={i + 1} pontos={p.total}
+                barra={Number(p.total) || 0}
+                direita={Number(p.sequencia_dias) > 0 ? `${p.sequencia_dias}d seguidos` : ""} />
+            ))}
+          </div>
+
+          <PainelGerencia dias={dias} />
+
+          <div style={{ ...cardStyle, marginBottom: 14, overflowX: "auto" }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "#8A8778", textTransform: "uppercase",
+                          letterSpacing: 0.5, marginBottom: 8 }}>
+              Últimos 7 dias
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", padding: "0 6px 7px", color: "#8A8778", fontSize: 10.5 }}>Depto</th>
+                  {diasUnicos.map((d) => (
+                    <th key={d} style={{ textAlign: "right", padding: "0 6px 7px", color: "#8A8778", fontSize: 10.5 }}>
+                      {String(d).slice(8, 10)}/{String(d).slice(5, 7)}
+                    </th>
+                  ))}
+                  <th style={{ textAlign: "right", padding: "0 6px 7px", color: "#8A8778", fontSize: 10.5 }}>Seq.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {linhasDiaADia.map((p) => (
+                  <tr key={p.departamento}>
+                    <td style={{ padding: "8px 6px", borderTop: "1px solid #F4EEE3", fontWeight: 600 }}>
+                      {p.label}
+                      {p.fora_da_corrida && (
+                        <span style={{ fontSize: 9.5, fontWeight: 800, color: "#4C3E77", background: "#EAE4F7",
+                                       borderRadius: 999, padding: "2px 7px", marginLeft: 6, whiteSpace: "nowrap" }}>
+                          fora
+                        </span>
+                      )}
+                    </td>
+                    {diasUnicos.map((d) => {
+                      const r = dias.find((x) => x.dia === d && x.departamento === p.departamento);
+                      const v = Number(r?.pontos || 0);
+                      return (
+                        <td key={d} style={{
+                          padding: "8px 6px", borderTop: "1px solid #F4EEE3", textAlign: "right",
+                          fontVariantNumeric: "tabular-nums", fontWeight: v === 20 ? 700 : 400,
+                          color: v === 0 ? "#C3B8A7" : v === 20 ? "#2F8F5B" : "#B3701A",
+                        }}>
+                          {v}
+                        </td>
+                      );
+                    })}
+                    <td style={{ padding: "8px 6px", borderTop: "1px solid #F4EEE3", textAlign: "right",
+                                 fontVariantNumeric: "tabular-nums" }}>
+                      {p.fora_da_corrida
+                        ? "—"
+                        : `${p.sequencia_dias}d${Number(p.bonus) > 0 ? ` +${p.bonus}` : ""}`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* As regras não precisam ocupar meia tela todo dia: quem quer
+              conferir, abre. */}
+          <details style={{ ...cardStyle, marginBottom: 14 }}>
+            <summary style={{ fontSize: 12.5, fontWeight: 700, color: "#22231F", cursor: "pointer" }}>
+              Como pontua
+            </summary>
+            <div style={{ fontSize: 12.5, color: "#8A8778", lineHeight: 1.7, marginTop: 8 }}>
+              <div><b style={{ color: "#22231F" }}>+10</b> preencheu dentro do horário</div>
+              <div><b style={{ color: "#22231F" }}>+5</b> preencheu depois do horário</div>
+              <div><b style={{ color: "#22231F" }}>+3</b> a cada 3 dias seguidos sem furo</div>
+              <div><b style={{ color: "#22231F" }}>0</b> não preencheu — e não existe ponto negativo</div>
+              <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px dashed #EFE7D9" }}>
+                <b style={{ color: "#22231F" }}>Não pontua por "está tudo certo".</b> Item marcado como
+                não conforme, com a observação escrita, vale igual a um conforme. O que dá ponto é
+                fazer e relatar.
+              </div>
+            </div>
+          </details>
+
+          {/* Zerar: fecha a temporada e começa outra. O placar de hoje
+              vira história em vez de sumir. */}
+          {isAdmin && (
+            <div style={{ marginBottom: 14 }}>
+              {!confirmandoZerar ? (
+                <button onClick={() => setConfirmandoZerar(true)}
+                  style={{ ...btnSecondary, width: "100%", color: "#A32D2D", borderColor: "#EBC9C1" }}>
+                  Zerar corrida e começar temporada nova
+                </button>
+              ) : (
+                <div style={{ ...cardStyle, borderColor: "#EBC9C1", background: "#FDF4F1" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#8E2420", marginBottom: 4 }}>
+                    Encerrar a temporada de hoje?
+                  </div>
+                  <div style={{ fontSize: 12, color: "#6B6558", lineHeight: 1.55, marginBottom: 10 }}>
+                    O placar atual é guardado em <b>Temporadas</b>, com o campeão
+                    ({lider.label}, {lider.total} pontos), e todo mundo recomeça do zero hoje.
+                    Os pontos do mês a mês continuam valendo — isso não apaga histórico.
+                  </div>
+                  <input value={premioNovo} onChange={(e) => setPremioNovo(e.target.value)}
+                    placeholder="Prêmio da nova temporada (opcional)"
+                    style={{ ...inputStyle, marginBottom: 10 }} />
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setConfirmandoZerar(false)} style={{ ...btnSecondary }}>
+                      Deixa quieto
+                    </button>
+                    <button onClick={zerar} disabled={zerando}
+                      style={{ ...btnPrimary, flex: 1, background: "#C4432B" }}>
+                      {zerando ? "Zerando…" : "Zerar agora"}
+                    </button>
                   </div>
                 </div>
-                <div style={{ textAlign: "right", fontWeight: 800, fontSize: 14,
-                              fontVariantNumeric: "tabular-nums" }}>
-                  {p.total}
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {aba === "mensal" && (
+        <>
+          {meses.length === 0 ? (
+            <div style={avisoBloqueio}>
+              <AlertTriangle size={16} />
+              Sem pontos por mês ainda. Se a tela já tem placar, falta rodar a migração 132.
+            </div>
+          ) : meses.map((mes) => {
+            const linhas = [...porMes.get(mes)].sort((a, b) => b.pontos - a.pontos);
+            const topo = Math.max(...linhas.map((l) => Number(l.pontos) || 0), 1);
+            const [ano, m] = mes.split("-");
+            return (
+              <div key={mes} style={{ ...cardStyle, marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                              marginBottom: 2 }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "#8A8778",
+                                textTransform: "uppercase", letterSpacing: 0.5 }}>
+                    {NOMES_MES_CORRIDA[Number(m) - 1]} de {ano}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#8A8778" }}>
+                    campeão do mês: <b style={{ color: "#22231F" }}>{linhas[0].label}</b>
+                  </div>
                 </div>
+                {linhas.map((l, i) => (
+                  <LinhaPlacar key={l.departamento}
+                    p={{ departamento: l.departamento, label: l.label }}
+                    pos={i + 1} pontos={l.pontos} barra={Number(l.pontos) || 0}
+                    direita={`${l.dias_com_ponto} dias`} />
+                ))}
               </div>
             );
           })}
-        </div>
-      </div>
+        </>
+      )}
 
-      {/* painel da gerência — quem ainda não preencheu hoje */}
-      <PainelGerencia dias={dias} />
+      {aba === "historico" && (
+        <>
+          {historico.length === 0 ? (
+            <div style={{ ...cardStyle, fontSize: 13, color: "#8A8778", lineHeight: 1.6 }}>
+              Nenhuma temporada encerrada ainda. Quando você zerar a corrida, o placar daquele
+              momento fica guardado aqui, com o campeão e o prêmio.
+            </div>
+          ) : historico.map((t) => {
+            const pod = Array.isArray(t.posicoes) ? t.posicoes : [];
+            return (
+              <div key={t.temporada_id} style={{ ...cardStyle, marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>
+                    {t.inicio ? `${formatDiaLabel(t.inicio)} a ` : "encerrada em "}{formatDiaLabel(t.fim)}
+                  </div>
+                  {t.meta ? (
+                    <div style={{ fontSize: 12, color: "#8A8778" }}>chegada em {t.meta} pontos</div>
+                  ) : null}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 8 }}>
+                  <Trophy size={16} color="#C9A227" />
+                  <span style={{ fontSize: 15, fontWeight: 800, color: "#22231F" }}>{t.campeao || "—"}</span>
+                  <span style={{ fontSize: 13, color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>
+                    {t.campeao_pontos || 0} pts
+                  </span>
+                </div>
+                {t.premio && (
+                  <div style={{ fontSize: 12, color: "#8A6A0F", marginTop: 2 }}>prêmio: {t.premio}</div>
+                )}
+                {pod.length > 1 && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #F4EEE3",
+                                fontSize: 12, color: "#8A8778", lineHeight: 1.8 }}>
+                    {pod.slice(1).map((r) => (
+                      <div key={r.posicao} style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span>{r.posicao}º {r.label}</span>
+                        <span style={{ fontVariantNumeric: "tabular-nums" }}>{r.total}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
 
-      {/* dia a dia */}
-      <div style={{ ...cardStyle, marginBottom: 14, overflowX: "auto" }}>
-        <div style={{ fontSize: 11, fontWeight: 800, color: "#8A8778", textTransform: "uppercase",
-                      letterSpacing: 0.5, marginBottom: 8 }}>
-          Dia a dia
-        </div>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left", padding: "0 6px 7px", color: "#8A8778", fontSize: 10.5 }}>Depto</th>
-              {diasUnicos.map((d) => (
-                <th key={d} style={{ textAlign: "right", padding: "0 6px 7px", color: "#8A8778", fontSize: 10.5 }}>
-                  {String(d).slice(8, 10)}/{String(d).slice(5, 7)}
-                </th>
-              ))}
-              <th style={{ textAlign: "right", padding: "0 6px 7px", color: "#8A8778", fontSize: 10.5 }}>Seq.</th>
-            </tr>
-          </thead>
-          <tbody>
-            {linhasDiaADia.map((p) => (
-              <tr key={p.departamento}>
-                <td style={{ padding: "8px 6px", borderTop: "1px solid #F4EEE3", fontWeight: 600 }}>
-                  {p.label}
-                  {p.fora_da_corrida && (
-                    <span style={{ fontSize: 9.5, fontWeight: 800, color: "#4C3E77", background: "#EAE4F7",
-                                   borderRadius: 999, padding: "2px 7px", marginLeft: 6, whiteSpace: "nowrap" }}>
-                      fora
-                    </span>
-                  )}
-                </td>
-                {diasUnicos.map((d) => {
-                  const r = dias.find((x) => x.dia === d && x.departamento === p.departamento);
-                  const v = Number(r?.pontos || 0);
-                  return (
-                    <td key={d} style={{
-                      padding: "8px 6px", borderTop: "1px solid #F4EEE3", textAlign: "right",
-                      fontVariantNumeric: "tabular-nums", fontWeight: v === 20 ? 700 : 400,
-                      color: v === 0 ? "#C3B8A7" : v === 20 ? "#2F8F5B" : "#B3701A",
-                    }}>
-                      {v}
-                    </td>
-                  );
-                })}
-                <td style={{ padding: "8px 6px", borderTop: "1px solid #F4EEE3", textAlign: "right",
-                             fontVariantNumeric: "tabular-nums" }}>
-                  {p.fora_da_corrida
-                    ? "—"
-                    : `${p.sequencia_dias}d${Number(p.bonus) > 0 ? ` +${p.bonus}` : ""}`}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* regras */}
-      <div style={{ ...cardStyle, fontSize: 12.5, color: "#8A8778", lineHeight: 1.7 }}>
-        <div><b style={{ color: "#22231F" }}>+10</b> preencheu dentro do horário</div>
-        <div><b style={{ color: "#22231F" }}>+5</b> preencheu depois do horário</div>
-        <div><b style={{ color: "#22231F" }}>+3</b> a cada 3 dias seguidos sem furo</div>
-        <div><b style={{ color: "#22231F" }}>0</b> não preencheu — e não existe ponto negativo</div>
-        <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px dashed #EFE7D9" }}>
-          <b style={{ color: "#22231F" }}>Não pontua por "está tudo certo".</b> Item marcado como
-          não conforme, com a observação escrita, vale igual a um conforme. O que dá ponto é
-          fazer e relatar.
-        </div>
-      </div>
+      <button onClick={onVoltar} style={{ ...btnSecondary, width: "100%", display: "flex",
+                                          alignItems: "center", justifyContent: "center", gap: 6 }}>
+        <ChevronLeft size={15} /> Voltar ao checklist
+      </button>
     </Shell>
   );
 }
+
+const NOMES_MES_CORRIDA = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
 // ---------------------------------------------------------------------------
 // Contagem de estoque do setor
