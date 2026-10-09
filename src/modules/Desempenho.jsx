@@ -845,6 +845,8 @@ function Despacho({ setores, fixada, semMemoria, onFixar, onTrocar, onVoltar }) 
 function Hoje() {
   const [linhas, setLinhas] = useState([]);
   const [espera, setEspera] = useState(null);
+  const [ranking, setRanking] = useState([]);
+  const [piores, setPiores] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const dia = hojeISO();
@@ -852,15 +854,22 @@ function Hoje() {
   useEffect(() => {
     let vivo = true;
     (async () => {
-      const [{ data: est, error: e1 }, { data: esp, error: e2 }] = await Promise.all([
+      const [{ data: est, error: e1 }, { data: esp, error: e2 },
+              { data: rank }, { data: piores }] = await Promise.all([
         supabase.rpc("desempenho_estacoes", { p_inicio: dia, p_fim: dia }),
         supabase.rpc("espera_montagem", { p_inicio: dia, p_fim: dia }),
+        // A 048 e opcional para esta tela: se ainda nao rodou, os blocos
+        // novos somem e o resto continua igual. Erro aqui nao quebra nada.
+        supabase.rpc("kds_ranking_pratos", { p_inicio: dia, p_fim: dia }),
+        supabase.rpc("kds_pedidos_espera", { p_inicio: dia, p_fim: dia, p_limite: 6 }),
       ]);
       if (!vivo) return;
       if (e1) setErro(e1.message);
       if (e2) setErro(e2.message);
       setLinhas(est || []);
       setEspera(Array.isArray(esp) ? esp[0] : esp);
+      setRanking(rank || []);
+      setPiores(piores || []);
       setCarregando(false);
     })();
     return () => { vivo = false; };
@@ -942,8 +951,235 @@ function Hoje() {
               </div>
             </>
           )}
+
+          <PioresPedidos pedidos={piores} />
+          <RankingPratos pratos={ranking} />
         </>
       )}
+    </div>
+  );
+}
+
+// =====================================================================
+// PIORES PEDIDOS — onde a comida mais esperou hoje
+//
+// A tabela de estações diz ONDE o tempo vai. Esta lista diz em QUAL pedido,
+// e abre a linha do tempo dele. Sem isso, "a espera média foi 7 minutos"
+// não aponta para nada que dê pra investigar na segunda-feira.
+// =====================================================================
+function PioresPedidos({ pedidos }) {
+  const [aberto, setAberto] = useState(null);
+  if (!pedidos || pedidos.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6,
+                    color: "#8A8778", fontWeight: 800, marginBottom: 8 }}>
+        Pedidos que mais esperaram
+      </div>
+      <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+        <table style={tabela}>
+          <thead>
+            <tr>
+              <th style={th}>Pedido</th>
+              <th style={{ ...th, textAlign: "right" }}>Estações</th>
+              <th style={{ ...th, textAlign: "right" }}>Total</th>
+              <th style={{ ...th, textAlign: "right" }}>Esperando</th>
+              <th style={{ ...th, textAlign: "right" }}>Do pedido</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pedidos.map((p) => {
+              const grave = Number(p.espera_pct) >= 50;
+              return (
+                <React.Fragment key={p.pedido_id}>
+                  <tr onClick={() => setAberto(aberto === p.pedido_id ? null : p.pedido_id)}
+                      style={{ cursor: "pointer" }}>
+                    <td style={td}>
+                      <b>{p.pedido_id}</b>
+                      <div style={{ fontSize: 11, color: "#8A8778" }}>
+                        {p.itens} itens · {aberto === p.pedido_id ? "fechar" : "ver a linha do tempo"}
+                      </div>
+                    </td>
+                    <td style={{ ...td, textAlign: "right" }}>{p.estacoes}</td>
+                    <td style={{ ...td, textAlign: "right" }}>{min1(p.total_min)}</td>
+                    <td style={{ ...td, textAlign: "right", fontWeight: 800,
+                                 color: grave ? "#C4432B" : "#22231F" }}>{min1(p.espera_min)}</td>
+                    <td style={{ ...td, textAlign: "right",
+                                 color: grave ? "#C4432B" : "#8A8778" }}>
+                      {p.espera_pct == null ? "—" : `${p.espera_pct}%`}
+                    </td>
+                  </tr>
+                  {aberto === p.pedido_id && (
+                    <tr>
+                      <td colSpan={5} style={{ ...td, background: "#F6F1E7", padding: "12px 14px" }}>
+                        <LinhaDoTempo pedido={p.pedido_id} />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 9, lineHeight: 1.6 }}>
+        <b>Esperando</b> é quanto tempo já havia comida pronta na janela enquanto o resto
+        do pedido não saía. <b>Do pedido</b> é o quanto isso representou do tempo total:
+        acima de 50% quer dizer que a maior parte do pedido foi comida parada, não comida
+        sendo feita. Clique numa linha para ver em qual estação o tempo foi embora.
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// A LINHA DO TEMPO DE UM PEDIDO
+//
+// Uma barra por item, posicionada pelo relógio. A faixa vermelha é o
+// intervalo em que já havia comida pronta esperando — é o desenho que
+// mostra que o problema costuma ser QUANDO a estação foi acionada, não a
+// velocidade dela.
+// =====================================================================
+function LinhaDoTempo({ pedido }) {
+  const [itens, setItens] = useState(null);
+  const [erro, setErro] = useState("");
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const { data, error } = await supabase.rpc("kds_pedido_linha", { p_pedido: pedido });
+      if (!vivo) return;
+      if (error) { setErro(error.message); setItens([]); return; }
+      setItens(data || []);
+    })();
+    return () => { vivo = false; };
+  }, [pedido]);
+
+  if (erro) return <div style={{ fontSize: 12, color: "#C4432B" }}>{erro}</div>;
+  if (!itens) return <div style={{ fontSize: 12, color: "#8A8778" }}>Carregando…</div>;
+  if (itens.length === 0) return <div style={{ fontSize: 12, color: "#8A8778" }}>Sem itens.</div>;
+
+  const total = Math.max(1, Number(itens[0].total_seg) || 1);
+  const prim = Number(itens[0].primeiro_pronto) || 0;
+  const ult = Number(itens[0].ultimo_pronto) || total;
+  const pc = (s) => `${(100 * Number(s)) / total}%`;
+  const corDe = (setor) =>
+    setor === "chapa" ? "#22231F" : setor === "cozinha" ? "#6E6F63" : "#A9A496";
+
+  return (
+    <div>
+      <div style={{ position: "relative", display: "grid", gap: 5 }}>
+        {/* a faixa da espera, atrás de tudo */}
+        {ult > prim && (
+          <div aria-hidden="true" style={{
+            position: "absolute", left: pc(prim), width: pc(ult - prim),
+            top: 0, bottom: 0, background: "#C4432B", opacity: 0.09, pointerEvents: "none",
+          }} />
+        )}
+        {itens.map((i, k) => (
+          <div key={k} style={{ display: "grid", gridTemplateColumns: "minmax(90px,150px) 1fr 54px",
+                                gap: 8, alignItems: "center", position: "relative" }}>
+            <span style={{ fontSize: 11, color: "#22231F", overflow: "hidden",
+                           textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{i.nome}</span>
+            <span style={{ position: "relative", height: 16, background: "#FFFFFF",
+                           border: "1px solid #E8E2D2", display: "block" }}>
+              <span style={{
+                position: "absolute", top: 0, bottom: 0,
+                left: pc(i.inicio_seg),
+                width: `max(3px, ${(100 * (Number(i.fim_seg) - Number(i.inicio_seg))) / total}%)`,
+                background: i.aberto ? "#C9A227" : corDe(i.setor),
+              }} />
+            </span>
+            <span style={{ fontSize: 10.5, color: "#8A8778", textAlign: "right",
+                           fontVariantNumeric: "tabular-nums" }}>
+              {i.aberto ? "aberto" : `${min1(i.producao_min)}m`}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8, lineHeight: 1.5 }}>
+        A faixa vermelha é o intervalo com comida pronta esperando. Barra que começa
+        tarde não é estação lenta — é estação acionada tarde.
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// RANKING POR PRATO
+//
+// O módulo media por estação e nunca por prato. A coluna FILA é a que
+// costuma explicar o problema: prato com produção curta e fila longa não
+// é difícil de fazer, é esquecido na comanda.
+//
+// Prato que não foi produzido não aparece: sem produção não existe tempo
+// para medir. O que não vendeu é pergunta do fechamento mensal.
+// =====================================================================
+function RankingPratos({ pratos }) {
+  if (!pratos || pratos.length === 0) return null;
+  const comAmostra = pratos.filter((p) => Number(p.itens) > 0);
+  if (comAmostra.length === 0) return null;
+
+  // Com poucos pratos, duas listas mostrariam os MESMOS itens dos dois
+  // lados — "mais lento" e "mais rápido" do mesmo conjunto de cinco é
+  // ridículo. Abaixo de seis pratos vira uma lista só, ordenada.
+  const poucos = comAmostra.length < 6;
+  const n = Math.min(5, Math.floor(comAmostra.length / 2));
+  const lentos = comAmostra.slice(0, n);
+  const rapidos = comAmostra.slice(comAmostra.length - n).reverse();
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6,
+                    color: "#8A8778", fontWeight: 800, marginBottom: 8 }}>
+        Tempo por prato
+      </div>
+      {poucos ? (
+        <ListaPratos titulo="Do mais lento ao mais rápido" itens={comAmostra} />
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 10 }}>
+          <ListaPratos titulo="Mais lentos" itens={lentos} />
+          <ListaPratos titulo="Mais rápidos" itens={rapidos} />
+        </div>
+      )}
+      <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 9, lineHeight: 1.6 }}>
+        <b>Produção</b> é do "peguei" ao "terminei". <b>Fila</b> é quanto o item esperou
+        desde a abertura do pedido até alguém pegar. Prato com produção curta e fila longa
+        não é difícil de fazer — é esquecido. Prato que não foi produzido hoje não aparece
+        aqui; o que não vendeu é assunto do fechamento mensal.
+      </div>
+    </div>
+  );
+}
+
+function ListaPratos({ titulo, itens }) {
+  return (
+    <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+      <div style={{ padding: "9px 12px", borderBottom: "1px solid #E8E2D2",
+                    fontSize: 12.5, fontWeight: 800 }}>{titulo}</div>
+      {itens.map((p, k) => {
+        const filaAlta = Number(p.fila_mediana) > Number(p.producao_mediana);
+        return (
+          <div key={k} style={{ padding: "9px 12px",
+                                borderTop: k === 0 ? "none" : "1px solid #E8E2D2" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+              <span style={{ fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis",
+                             whiteSpace: "nowrap" }}>{p.nome}</span>
+              <b style={{ fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{min1(p.producao_mediana)}m</b>
+            </div>
+            <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2 }}>
+              {p.setor} · {p.itens} {Number(p.itens) === 1 ? "medição" : "medições"}
+              {" · pior "}{min1(p.producao_pior)}m
+              {filaAlta && (
+                <span style={{ color: "#C4432B", fontWeight: 700 }}>
+                  {" · fila "}{min1(p.fila_mediana)}m
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
