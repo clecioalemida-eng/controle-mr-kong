@@ -893,43 +893,7 @@ function Hoje() {
         </div>
       ) : (
         <>
-          <div style={{ ...cardStyle, marginBottom: 12, padding: 0, overflow: "hidden" }}>
-            <table style={tabela}>
-              <thead>
-                <tr>
-                  <th style={th}>Estação</th>
-                  <th style={{ ...th, textAlign: "right" }}>Produção</th>
-                  <th style={{ ...th, textAlign: "right" }}>P90</th>
-                  <th style={{ ...th, textAlign: "right" }}>Fila</th>
-                  <th style={{ ...th, textAlign: "right" }}>Segurou</th>
-                </tr>
-              </thead>
-              <tbody>
-                {comDado.map((l) => (
-                  <tr key={l.setor}>
-                    <td style={td}><b>{l.label}</b><div style={{ fontSize: 11, color: "#8A8778" }}>{l.itens} itens</div></td>
-                    <td style={{ ...td, textAlign: "right" }}>{min1(l.producao_media)}</td>
-                    <td style={{ ...td, textAlign: "right" }}>{min1(l.producao_p90)}</td>
-                    <td style={{ ...td, textAlign: "right" }}>{min1(l.fila_media)}</td>
-                    <td style={{ ...td, textAlign: "right",
-                                 color: Number(l.segurou_pct) >= 50 ? "#C4432B" : "#22231F",
-                                 fontWeight: Number(l.segurou_pct) >= 50 ? 800 : 400 }}>
-                      {l.segurou_pct == null ? "—" : `${l.segurou_pct}%`}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div style={{ fontSize: 11.5, color: "#8A8778", marginBottom: 16, lineHeight: 1.6 }}>
-            <b>Produção</b> é do "peguei" ao "terminei" — a estação em si.
-            <b> Fila</b> é o tempo antes de alguém pegar, que é falta de gente, não da estação.
-            <b> P90</b> é o pior 1 em cada 10: média boa com P90 alto quer dizer que
-            às vezes trava feio, e é desse "às vezes" que o cliente reclama.
-            <b> Segurou</b> é quantas vezes aquela estação foi a última a terminar —
-            é essa coluna que decide onde entra gente.
-          </div>
+          <CartoesEstacao linhas={comDado} />
 
           {espera && Number(espera.pedidos_com_varias) > 0 && (
             <>
@@ -1429,6 +1393,244 @@ function Shell({ titulo, subtitulo, children, onVoltar }) {
         </div>
         {children}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// CARTÕES DE ESTAÇÃO
+//
+// Isto aqui era uma tabela com quatro colunas de jargão e números sem
+// unidade. "0,1" e "34,8" na mesma linha não dizem nada: o bar levava
+// 6 segundos para tirar uma bebida que tinha ficado 35 minutos parada,
+// e isso — que é o achado mais caro do dia — se perdia entre as colunas.
+//
+// Agora cada estação é uma barra e uma frase. A barra mostra o caminho
+// do item: quanto ficou parado na fila e quanto a estação trabalhou de
+// fato. São dois problemas diferentes com dois remédios diferentes:
+// fila grande é gente e ordem de acionar, produção grande é processo.
+// A tabela crua continua embaixo, dobrada, para conferência.
+// ---------------------------------------------------------------------
+function tempoCurto(min) {
+  const v = Number(min);
+  if (min === null || min === undefined || Number.isNaN(v)) return "—";
+  if (v > 0 && v < 1) return `${Math.round(v * 60)} s`;
+  return `${min1(v)} min`;
+}
+
+function diagnostico(l) {
+  const prod = Number(l.producao_media) || 0;
+  const fila = Number(l.fila_media) || 0;
+  const seg = l.segurou_pct == null ? null : Number(l.segurou_pct);
+
+  // Estação rápida com fila enorme: o problema não é ela, é que ninguém
+  // apertou "peguei". É o tempo mais fácil de recuperar da casa.
+  if (prod < 1 && fila >= 5) {
+    return { texto: "Ninguém olha a tela", tom: "ruim", causa: "fila" };
+  }
+  if (fila > prod && fila >= 5) {
+    return { texto: "Demora pra começar", tom: "aviso", causa: "fila" };
+  }
+  if (seg !== null && seg >= 50) {
+    return { texto: "É aqui que o pedido trava", tom: "ruim", causa: "producao" };
+  }
+  if (seg !== null && seg >= 30) {
+    return { texto: "Segura o pedido às vezes", tom: "aviso", causa: "producao" };
+  }
+  return { texto: "Fluindo", tom: "ok", causa: null };
+}
+
+function CartaoEstacao({ l }) {
+  const prod = Number(l.producao_media) || 0;
+  const fila = Number(l.fila_media) || 0;
+  const total = prod + fila;
+  const seg = l.segurou_pct == null ? null : Number(l.segurou_pct);
+  const dg = diagnostico(l);
+  const nome = l.label || l.setor;
+
+  // Piso de 3% para que um lado minúsculo (bebida: 6 s contra 35 min)
+  // ainda apareça como um traço em vez de sumir.
+  let pctFila = total > 0 ? (fila / total) * 100 : 0;
+  if (fila > 0 && pctFila < 3) pctFila = 3;
+  if (fila > 0 && pctFila > 97) pctFila = 97;
+  const pctProd = 100 - pctFila;
+  const filaGrave = dg.causa === "fila";
+
+  // Só vale falar de P90 quando ele de fato se afasta da média. Com o bar
+  // (média 0,1 e P90 0,1) a frase virava "levou 6 s em vez de 6 s".
+  const p90 = Number(l.producao_p90) || 0;
+  const instavel = p90 >= prod * 1.3 && p90 - prod >= 0.5;
+
+  const tons = {
+    ruim: { fundo: "#F7E2DD", texto: "#C4432B" },
+    aviso: { fundo: "#F6EDD3", texto: "#8A6F13" },
+    ok: { fundo: "#E2F0E8", texto: "#2F8F5B" },
+  }[dg.tom];
+
+  return (
+    <div style={{ ...cardStyle, marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8,
+                    flexWrap: "wrap", marginBottom: 12 }}>
+        <span style={{ fontSize: 17, fontWeight: 800 }}>{nome}</span>
+        <span style={{ fontSize: 12, color: "#8A8778" }}>
+          {l.itens} {Number(l.itens) === 1 ? "item" : "itens"} hoje
+        </span>
+        <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 800,
+                       padding: "3px 9px", borderRadius: 999, letterSpacing: 0.3,
+                       background: tons.fundo, color: tons.texto }}>
+          {dg.texto}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", height: 26, borderRadius: 6, overflow: "hidden",
+                    border: "1px solid #E8E2D2", background: "#F7F1E6", marginBottom: 6 }}>
+        {fila > 0 && (
+          <div style={{ width: `${pctFila}%`, background: filaGrave ? "#C4432B" : "#B9B4A2",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: 11, fontWeight: 700, color: "#FFFFFF", whiteSpace: "nowrap" }}>
+            {pctFila >= 22 ? `esperou ${tempoCurto(fila)}` : ""}
+          </div>
+        )}
+        {prod > 0 && (
+          <div style={{ width: `${pctProd}%`, background: "#2F8F5B",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: 11, fontWeight: 700, color: "#FFFFFF", whiteSpace: "nowrap" }}>
+            {pctProd >= 22 ? `fez em ${tempoCurto(prod)}` : ""}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11,
+                    color: "#8A8778", marginBottom: 12 }}>
+        <span>
+          <i style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2,
+                      marginRight: 5, verticalAlign: "middle",
+                      background: filaGrave ? "#C4432B" : "#B9B4A2" }} />
+          parado, esperando alguém pegar — {tempoCurto(fila)}
+        </span>
+        <span>
+          <i style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2,
+                      marginRight: 5, verticalAlign: "middle", background: "#2F8F5B" }} />
+          {String(nome).toLowerCase()} trabalhando — {tempoCurto(prod)}
+        </span>
+      </div>
+
+      <div style={{ fontSize: 14, lineHeight: 1.65, marginBottom: 10 }}>
+        Cada item ficou{" "}
+        <b style={{ color: filaGrave ? "#C4432B" : "#22231F" }}>{tempoCurto(fila)}</b>{" "}
+        parado até alguém apertar "peguei", e depois a estação levou{" "}
+        <b>{tempoCurto(prod)}</b> pra fazer.
+        {seg !== null && (
+          <>
+            {" "}Em{" "}
+            <b style={{ color: seg >= 50 ? "#C4432B" : "#22231F" }}>{seg}% dos pedidos</b>{" "}
+            ela foi a última a terminar — o resto da comida ficou esperando.
+          </>
+        )}
+        {dg.causa === "fila" && prod < 1 && (
+          <>
+            {" "}<b>Não é a estação que está lenta</b> — ela só é acionada quando o
+            pedido já vai sair. É o tempo mais fácil de recuperar da casa.
+          </>
+        )}
+        {dg.causa === "fila" && prod >= 1 && (
+          <>
+            {" "}<b>A maior parte do tempo foi item na fila</b>, não comida sendo feita:
+            isso é falta de gente ou de alguém olhando a tela, não lentidão da estação.
+          </>
+        )}
+      </div>
+
+      <div style={{ fontSize: 12.5, color: "#8A8778", borderTop: "1px dashed #E8E2D2",
+                    paddingTop: 10 }}>
+        {instavel ? (
+          <>
+            No pior dia-a-dia: 1 em cada 10 itens levou{" "}
+            <b style={{ color: "#22231F" }}>{tempoCurto(l.producao_p90)}</b> em vez de{" "}
+            {tempoCurto(prod)}. É desse item que o cliente reclama.
+          </>
+        ) : (
+          <>
+            Tempo estável: o pior caso ({tempoCurto(l.producao_p90)}) é praticamente
+            igual à média. Quando a estação trabalha, ela trabalha sempre no mesmo tempo.
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CartoesEstacao({ linhas }) {
+  // Pior primeiro: onde o item passou mais tempo no total, somando a
+  // fila com a produção. É a ordem de quem está procurando o que doeu.
+  const ordenadas = [...linhas].sort(
+    (a, b) =>
+      ((Number(b.fila_media) || 0) + (Number(b.producao_media) || 0)) -
+      ((Number(a.fila_media) || 0) + (Number(a.producao_media) || 0))
+  );
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6,
+                    color: "#8A8778", fontWeight: 800, marginBottom: 8 }}>
+        Onde o tempo foi embora
+      </div>
+
+      {ordenadas.map((l) => <CartaoEstacao key={l.setor} l={l} />)}
+
+      <div style={{ fontSize: 12.5, color: "#8A8778", lineHeight: 1.7, marginTop: 12 }}>
+        <b style={{ color: "#22231F" }}>Como ler:</b> a barra é o caminho de um item.
+        A parte clara é o tempo que ele ficou parado na fila; a verde é a estação
+        trabalhando de fato. Barra com muito cinza ou vermelho é problema de{" "}
+        <b style={{ color: "#22231F" }}>gente e ordem de acionar</b>. Barra verde e
+        comprida é problema de <b style={{ color: "#22231F" }}>processo da estação</b>.
+        São dois remédios diferentes.
+      </div>
+
+      <details style={{ marginTop: 14, borderTop: "1px solid #E8E2D2", paddingTop: 12 }}>
+        <summary style={{ fontSize: 11, color: "#8A8778", cursor: "pointer", fontWeight: 800,
+                          textTransform: "uppercase", letterSpacing: 0.5 }}>
+          Ver os números crus
+        </summary>
+        <div style={{ ...cardStyle, marginTop: 10, padding: 0, overflow: "hidden" }}>
+          <table style={tabela}>
+            <thead>
+              <tr>
+                <th style={th}>Estação</th>
+                <th style={{ ...th, textAlign: "right" }}>Itens</th>
+                <th style={{ ...th, textAlign: "right" }}>Produção</th>
+                <th style={{ ...th, textAlign: "right" }}>P90</th>
+                <th style={{ ...th, textAlign: "right" }}>Fila</th>
+                <th style={{ ...th, textAlign: "right" }}>Segurou</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ordenadas.map((l) => (
+                <tr key={l.setor}>
+                  <td style={td}><b>{l.label || l.setor}</b></td>
+                  <td style={{ ...td, textAlign: "right" }}>{l.itens}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{min1(l.producao_media)}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{min1(l.producao_p90)}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{min1(l.fila_media)}</td>
+                  <td style={{ ...td, textAlign: "right",
+                               color: Number(l.segurou_pct) >= 50 ? "#C4432B" : "#22231F",
+                               fontWeight: Number(l.segurou_pct) >= 50 ? 800 : 400 }}>
+                    {l.segurou_pct == null ? "—" : `${l.segurou_pct}%`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 10, lineHeight: 1.6 }}>
+          <b>Produção</b> é do "peguei" ao "terminei" — a estação em si.
+          <b> Fila</b> é o tempo antes de alguém pegar, que é falta de gente, não da estação.
+          <b> P90</b> é o pior 1 em cada 10: média boa com P90 alto quer dizer que
+          às vezes trava feio, e é desse "às vezes" que o cliente reclama.
+          <b> Segurou</b> é quantas vezes aquela estação foi a última a terminar —
+          é essa coluna que decide onde entra gente. Tudo em minutos.
+        </div>
+      </details>
     </div>
   );
 }
