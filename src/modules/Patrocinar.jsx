@@ -252,6 +252,34 @@ function sugerirHoras(curva) {
   return [...fortes].sort((a, b) => a - b);
 }
 
+// A tela escrevia so o que estava LIGADO — "0h-17h, 21h-0h" — e quem olha
+// tem que fazer a conta de cabeca para perceber que 18h, 19h e 20h sumiram.
+// Foi exatamente assim que o jantar inteiro de uma hamburgueria ficou fora
+// do ar sem ninguem notar. Agora o desligado tambem e escrito, em vermelho.
+function horasDesligadas(horas) {
+  if (!horas || horas.length === 24) return [];
+  const ligadas = new Set(horas);
+  return Array.from({ length: 24 }, (_, h) => h).filter((h) => !ligadas.has(h));
+}
+
+// As janelas em que um restaurante vende. Nao sao palpite sobre o negocio:
+// sao os dois momentos em que alguem decide o que vai comer. Desligar o
+// anuncio dentro de uma delas quase nunca e proposital.
+const REFEICOES = [
+  { nome: "almoço", de: 11, ate: 14 },
+  { nome: "jantar", de: 18, ate: 22 },
+];
+
+function refeicoesDesligadas(horas) {
+  if (!horas || horas.length === 24) return [];
+  const ligadas = new Set(horas);
+  return REFEICOES.filter((r) => {
+    let fora = 0, total = 0;
+    for (let h = r.de; h < r.ate; h++) { total++; if (!ligadas.has(h)) fora++; }
+    return fora >= Math.ceil(total / 2);   // metade ou mais da refeicao fora
+  });
+}
+
 function descreverHoras(horas) {
   if (!horas || horas.length === 24) return "o dia todo";
   const h = [...horas].sort((a, b) => a - b);
@@ -284,6 +312,8 @@ function BarraAprovacao({ sel, cfg, sobra, curva, enviando, aoCancelar, aoAprova
   useEffect(() => { setConfirmo(false); }, [chave]);
   const valorNum = Number(String(valor).replace(",", "."));
   const sugestao = sugerirHoras(curva);
+  const desligadas = horasDesligadas(horas);
+  const semRefeicao = refeicoesDesligadas(horas);
   const semCardapio = objetivo === "cardapio" && !cfg.cardapio_url;
 
   const alternarHora = mexeu((h) => {
@@ -359,6 +389,11 @@ function BarraAprovacao({ sel, cfg, sobra, curva, enviando, aoCancelar, aoAprova
               <div style={{ ...dica, fontWeight: 700, color: "#22231F", marginBottom: 5 }}>
                 Horário do dia em que roda: {descreverHoras(horas)}
               </div>
+              {desligadas.length > 0 && (
+                <div style={{ ...dica, color: "#C4432B", fontWeight: 700, marginBottom: 5 }}>
+                  Fora do ar: {descreverHoras(desligadas)}
+                </div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(24, 1fr)", gap: 2 }}>
                 {Array.from({ length: 24 }, (_, h) => {
                   const on = !horas || horas.includes(h);
@@ -379,8 +414,19 @@ function BarraAprovacao({ sel, cfg, sobra, curva, enviando, aoCancelar, aoAprova
                   </button>
                 )}
               </div>
+              {semRefeicao.length > 0 && (
+                <div style={{ border: "1px solid #E7BDB2", background: "#FBF0ED",
+                              borderRadius: 8, padding: "9px 11px", marginTop: 7,
+                              fontSize: 12, lineHeight: 1.55, color: "#22231F" }}>
+                  <b style={{ color: "#C4432B" }}>
+                    O anúncio não roda na hora do {semRefeicao.map((r) => r.nome).join(" nem do ")}.
+                  </b>{" "}
+                  É quando a pessoa decide o que vai comer. Se não foi de propósito,
+                  toque nas horas apagadas acima ou use "O dia todo".
+                </div>
+              )}
               <div style={{ ...dica, marginTop: 4 }}>
-                {sugestao ? "A sugestão vem dos pedidos do CardápioWeb nos últimos 30 dias, com uma hora antes de cada pico." : "Sem curva de pedidos ainda: rode \"Buscar ontem\" em Ajustes para ter sugestão."}
+                {sugestao ? "A sugestão vem dos pedidos do CardápioWeb nos últimos 30 dias, com uma hora antes de cada pico." : "Sem curva de pedidos ainda: rode \"Buscar ontem\" em Ajustes para ter sugestão — enquanto isso, a faixa acima é escolha sua, não recomendação do painel."}
               </div>
             </div>
           </div>
