@@ -858,7 +858,7 @@ function Hoje() {
     (async () => {
       const [{ data: est, error: e1 }, { data: esp, error: e2 },
               { data: rank }, { data: piores }, { data: linhasProd },
-              { data: cfg }] = await Promise.all([
+              { data: cfg }, { data: tempos }] = await Promise.all([
         supabase.rpc("desempenho_estacoes", { p_inicio: dia, p_fim: dia }),
         supabase.rpc("espera_montagem", { p_inicio: dia, p_fim: dia }),
         // 048, 049 e 050 sao opcionais para esta tela: se ainda nao rodaram,
@@ -868,11 +868,19 @@ function Hoje() {
         supabase.rpc("kds_pedidos_espera", { p_inicio: dia, p_fim: dia, p_limite: 6 }),
         supabase.rpc("kds_ranking_linhas", { p_inicio: dia, p_fim: dia }),
         supabase.from("kds_config").select("inicio_medicao").maybeSingle(),
+        supabase.rpc("kds_tempo_estacao", { p_inicio: dia, p_fim: dia }),
       ]);
       if (!vivo) return;
       if (e1) setErro(e1.message);
       if (e2) setErro(e2.message);
-      setLinhas(est || []);
+      // desempenho_estacoes continua sendo a fonte de "segurou", que depende
+      // de comparar itens do mesmo pedido. kds_tempo_estacao (051) traz o
+      // tempo de um item medido item a item, que e o que nao dava pra obter
+      // somando duas medias. Se a 051 nao rodou, `tempos` vem vazio e a
+      // coluna cai no total antigo — a tela nao quebra, so fica menos exata.
+      const porSetor = {};
+      for (const t of tempos || []) porSetor[t.setor] = t;
+      setLinhas((est || []).map((l) => ({ ...l, tempo: porSetor[l.setor] || null })));
       setEspera(Array.isArray(esp) ? esp[0] : esp);
       setRanking(rank || []);
       setPiores(piores || []);
@@ -898,7 +906,7 @@ function Hoje() {
 
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between",
                     gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        <div style={{ ...rotulo, marginBottom: 0 }}>Onde o tempo foi</div>
+        <div style={{ ...rotulo, marginBottom: 0 }}>Tempo médio de um item</div>
         {corte && (
           <div style={{ fontSize: 11, color: "#8A8778" }}>
             medindo desde {corte.toLocaleString("pt-BR", {
@@ -955,7 +963,7 @@ function Hoje() {
           <PontosMelhoria estacoes={comDado} porLinha={porLinha} />
 
           <PioresPedidos pedidos={piores} />
-          <RankingPratos pratos={ranking} />
+          <MaisLentosRapidos pratos={ranking} />
 
           <ComoLer estacoes={comDado} temLinhas={porLinha.length > 0} />
         </>
@@ -1111,16 +1119,20 @@ function LinhaDoTempo({ pedido }) {
 }
 
 // =====================================================================
-// RANKING POR PRATO
+// MAIS LENTOS E MAIS RÁPIDOS
 //
 // O módulo media por estação e nunca por prato. A coluna FILA é a que
 // costuma explicar o problema: prato com produção curta e fila longa não
-// é difícil de fazer, é esquecido na comanda.
+// é difícil de fazer, é esquecido na comanda — e aí aparecer entre os
+// "mais rápidos" não quer dizer nada de bom.
 //
 // Prato que não foi produzido não aparece: sem produção não existe tempo
 // para medir. O que não vendeu é pergunta do fechamento mensal.
+//
+// A mediana, e não a média: um pedido travado sozinho entorta a média de
+// um prato feito cinco vezes.
 // =====================================================================
-function RankingPratos({ pratos }) {
+function MaisLentosRapidos({ pratos }) {
   if (!pratos || pratos.length === 0) return null;
   const comAmostra = pratos.filter((p) => Number(p.itens) > 0);
   if (comAmostra.length === 0) return null;
@@ -1134,24 +1146,23 @@ function RankingPratos({ pratos }) {
   const rapidos = comAmostra.slice(comAmostra.length - n).reverse();
 
   return (
-    <div style={{ marginTop: 20 }}>
-      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6,
-                    color: "#8A8778", fontWeight: 800, marginBottom: 8 }}>
-        Tempo por prato
+    <div style={{ marginTop: 34 }}>
+      <div style={rotulo}>
+        {poucos ? "Do mais lento ao mais rápido" : "Mais lentos e mais rápidos"}
       </div>
       {poucos ? (
-        <ListaPratos titulo="Do mais lento ao mais rápido" itens={comAmostra} />
+        <ListaPratos itens={comAmostra} />
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 10 }}>
+        <div style={{ display: "grid", gap: 26,
+                      gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
           <ListaPratos titulo="Mais lentos" itens={lentos} />
           <ListaPratos titulo="Mais rápidos" itens={rapidos} />
         </div>
       )}
-      <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 9, lineHeight: 1.6 }}>
-        <b>Produção</b> é do "peguei" ao "terminei". <b>Fila</b> é quanto o item esperou
-        desde a abertura do pedido até alguém pegar. Prato com produção curta e fila longa
-        não é difícil de fazer — é esquecido. Prato que não foi produzido hoje não aparece
-        aqui; o que não vendeu é assunto do fechamento mensal.
+      <div style={{ ...paragrafo, marginTop: 12 }}>
+        O número é a <b style={forte}>mediana da produção</b> daquele prato — do
+        "peguei" ao "terminei". Prato com produção curta e <b style={forte}>fila</b> longa
+        não é difícil de fazer, é esquecido: estar entre os rápidos aí não é elogio.
       </div>
     </div>
   );
@@ -1159,28 +1170,42 @@ function RankingPratos({ pratos }) {
 
 function ListaPratos({ titulo, itens }) {
   return (
-    <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
-      <div style={{ padding: "9px 12px", borderBottom: "1px solid #E8E2D2",
-                    fontSize: 12.5, fontWeight: 800 }}>{titulo}</div>
+    <div>
+      {titulo && (
+        <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 4,
+                      letterSpacing: -0.1 }}>
+          {titulo}{" "}
+          <span style={{ fontWeight: 400, color: "#8A8778", fontSize: 11 }}>
+            · mediana por prato
+          </span>
+        </div>
+      )}
       {itens.map((p, k) => {
         const filaAlta = Number(p.fila_mediana) > Number(p.producao_mediana);
         return (
-          <div key={k} style={{ padding: "9px 12px",
-                                borderTop: k === 0 ? "none" : "1px solid #E8E2D2" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-              <span style={{ fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis",
-                             whiteSpace: "nowrap" }}>{p.nome}</span>
-              <b style={{ fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{min1(p.producao_mediana)}m</b>
-            </div>
-            <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2 }}>
-              {p.setor} · {p.itens} {Number(p.itens) === 1 ? "medição" : "medições"}
-              {" · pior "}{min1(p.producao_pior)}m
-              {filaAlta && (
-                <span style={{ color: "#C4432B", fontWeight: 700 }}>
-                  {" · fila "}{min1(p.fila_mediana)}m
-                </span>
-              )}
-            </div>
+          <div key={k} style={{ display: "flex", alignItems: "baseline", gap: 8,
+                                padding: "9px 0", fontSize: 12.5,
+                                borderTop: "1px solid #E8E2D2" }}>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: "block", overflow: "hidden",
+                             textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {p.nome}
+              </span>
+              <small style={{ display: "block", fontSize: 10.5, color: "#8A8778",
+                              fontVariantNumeric: "tabular-nums" }}>
+                {p.setor} · {p.itens} {Number(p.itens) === 1 ? "medição" : "medições"}
+                {" · pior "}{min1(p.producao_pior)}m
+                {filaAlta && (
+                  <b style={{ color: "#C4432B" }}>
+                    {" · fila "}{min1(p.fila_mediana)}m
+                  </b>
+                )}
+              </small>
+            </span>
+            <b style={{ flex: "none", fontVariantNumeric: "tabular-nums",
+                        color: filaAlta ? "#C4432B" : "#22231F" }}>
+              {min1(p.producao_mediana)}m
+            </b>
           </div>
         );
       })}
@@ -1487,7 +1512,14 @@ function esperaDomina(l) {
 const ALTURA_TORRE = 150;
 
 function ColunasEstacao({ linhas }) {
-  const total = (l) => (Number(l.fila_media) || 0) + (Number(l.producao_media) || 0);
+  // O tempo de um item vem medido item a item pela 051. Somar a fila media
+  // com a producao media NAO devolve isso: com medianas a soma nem e valida
+  // (mediana de a + mediana de b nao e a mediana de a+b). A soma fica so
+  // como ultimo recurso, para a tela nao ficar vazia antes da 051 rodar.
+  const total = (l) =>
+    l.tempo && l.tempo.total_medio != null
+      ? Number(l.tempo.total_medio)
+      : (Number(l.fila_media) || 0) + (Number(l.producao_media) || 0);
   const ordenadas = [...linhas].sort((a, b) => total(b) - total(a));
   const teto = Math.max(...ordenadas.map(total), 0.0001);
 
@@ -1500,14 +1532,25 @@ function ColunasEstacao({ linhas }) {
           const fila = Number(l.fila_media) || 0;
           const seg = l.segurou_pct == null ? null : Number(l.segurou_pct);
           const grave = esperaDomina(l);
+          // A torre tem a altura do tempo medido, repartida na proporcao
+          // entre fila e producao. Sem reescalar, uma coluna cujo total
+          // medido e menor que fila+producao estouraria a propria altura.
+          const soma = fila + prod;
+          const escala = soma > 0 ? total(l) / soma : 0;
           return (
             <div key={l.setor} style={{ display: "flex", flexDirection: "column",
                                         alignItems: "center", textAlign: "center" }}>
-              <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 7,
+              <div style={{ fontSize: 18, fontWeight: 700,
                             fontVariantNumeric: "tabular-nums", letterSpacing: -0.3 }}>
                 {min1(total(l))}
                 <span style={{ fontSize: 11, color: "#8A8778", fontWeight: 400,
                                marginLeft: 1 }}>min</span>
+              </div>
+              <div style={{ fontSize: 10, color: "#8A8778", marginBottom: 7,
+                            letterSpacing: 0.2, minHeight: 13 }}>
+                {l.tempo && l.tempo.total_mediana != null
+                  ? `mediana ${min1(l.tempo.total_mediana)}`
+                  : ""}
               </div>
 
               <div style={{ width: 44, height: ALTURA_TORRE, display: "flex",
@@ -1517,10 +1560,10 @@ function ColunasEstacao({ linhas }) {
                     some da coluna e a legenda promete um verde que nao existe */}
                 <div style={{ width: "100%", background: grave ? "#C4432B" : "#C9C3B1",
                               height: fila > 0
-                                ? `max(2px, ${(fila / teto) * ALTURA_TORRE}px)` : 0 }} />
+                                ? `max(2px, ${(fila * escala / teto) * ALTURA_TORRE}px)` : 0 }} />
                 <div style={{ width: "100%", background: "#2F8F5B",
                               height: prod > 0
-                                ? `max(2px, ${(prod / teto) * ALTURA_TORRE}px)` : 0 }} />
+                                ? `max(2px, ${(prod * escala / teto) * ALTURA_TORRE}px)` : 0 }} />
               </div>
 
               <div style={{ marginTop: 9, paddingTop: 9, width: "100%",
@@ -1723,6 +1766,13 @@ function ComoLer({ estacoes, temLinhas }) {
           problema de <b style={forte}>gente e ordem de acionar</b>. Coluna alta e verde
           é problema de <b style={forte}>processo da estação</b>. São dois remédios
           diferentes.
+          <br /><br />
+          O número grande de cada coluna é o <b style={forte}>tempo médio de um item</b>{" "}
+          — medido de uma vez só, da abertura do pedido até o item ficar pronto, item a
+          item, e só então tirada a média. Não é a soma da fila com a produção: somar
+          duas médias não devolve o tempo de nada. A <b style={forte}>mediana</b> logo
+          abaixo é o item do meio, e quando ela fica bem menor que a média é porque um
+          item travado está puxando o dia.
           <br /><br />
           <b style={forte}>Segurou</b> é quantas vezes a estação foi a última a terminar
           o pedido — é esse número que decide onde entra gente. <b style={forte}>P90</b>{" "}
