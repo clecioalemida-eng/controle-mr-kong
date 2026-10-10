@@ -847,6 +847,8 @@ function Hoje() {
   const [espera, setEspera] = useState(null);
   const [ranking, setRanking] = useState([]);
   const [piores, setPiores] = useState([]);
+  const [porLinha, setPorLinha] = useState([]);
+  const [inicioMedicao, setInicioMedicao] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const dia = hojeISO();
@@ -855,13 +857,17 @@ function Hoje() {
     let vivo = true;
     (async () => {
       const [{ data: est, error: e1 }, { data: esp, error: e2 },
-              { data: rank }, { data: piores }] = await Promise.all([
+              { data: rank }, { data: piores }, { data: linhasProd },
+              { data: cfg }] = await Promise.all([
         supabase.rpc("desempenho_estacoes", { p_inicio: dia, p_fim: dia }),
         supabase.rpc("espera_montagem", { p_inicio: dia, p_fim: dia }),
-        // A 048 e opcional para esta tela: se ainda nao rodou, os blocos
-        // novos somem e o resto continua igual. Erro aqui nao quebra nada.
+        // 048, 049 e 050 sao opcionais para esta tela: se ainda nao rodaram,
+        // os blocos novos somem e o resto continua igual. Erro aqui nao
+        // quebra nada — por isso nenhum destes tem `error` lido.
         supabase.rpc("kds_ranking_pratos", { p_inicio: dia, p_fim: dia }),
         supabase.rpc("kds_pedidos_espera", { p_inicio: dia, p_fim: dia, p_limite: 6 }),
+        supabase.rpc("kds_ranking_linhas", { p_inicio: dia, p_fim: dia }),
+        supabase.from("kds_config").select("inicio_medicao").maybeSingle(),
       ]);
       if (!vivo) return;
       if (e1) setErro(e1.message);
@@ -870,6 +876,8 @@ function Hoje() {
       setEspera(Array.isArray(esp) ? esp[0] : esp);
       setRanking(rank || []);
       setPiores(piores || []);
+      setPorLinha(linhasProd || []);
+      setInicioMedicao(cfg?.inicio_medicao || null);
       setCarregando(false);
     })();
     return () => { vivo = false; };
@@ -878,10 +886,37 @@ function Hoje() {
   if (carregando) return <div style={vazio}><Loader2 size={16} /> Carregando…</div>;
 
   const comDado = linhas.filter((l) => Number(l.itens) > 0);
+  // O KDS foi zerado: numero de antes do corte e fila presa e treino, nao
+  // desempenho. Se o dia aberto e anterior ao corte, a tela diz isso em vez
+  // de deixar alguem ler um 34,8 min de fila como se fosse real.
+  const corte = inicioMedicao ? new Date(inicioMedicao) : null;
+  const antesDoCorte = corte && new Date(dia + "T23:59:59") < corte;
 
   return (
     <div>
       {erro && <div style={avisoErro}><AlertTriangle size={16} /> {erro}</div>}
+
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between",
+                    gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+        <div style={{ ...rotulo, marginBottom: 0 }}>Onde o tempo foi</div>
+        {corte && (
+          <div style={{ fontSize: 11, color: "#8A8778" }}>
+            medindo desde {corte.toLocaleString("pt-BR", {
+              day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+            })}
+          </div>
+        )}
+      </div>
+
+      {antesDoCorte && (
+        <div style={avisoAmarelo}>
+          <AlertTriangle size={16} />
+          <div>
+            Este dia é anterior ao início da medição. O que aparece aqui é do período
+            de treino e de fila presa — não vale como desempenho.
+          </div>
+        </div>
+      )}
 
       {comDado.length === 0 ? (
         <div style={avisoAmarelo}>
@@ -893,7 +928,7 @@ function Hoje() {
         </div>
       ) : (
         <>
-          <CartoesEstacao linhas={comDado} />
+          <ColunasEstacao linhas={comDado} />
 
           {espera && Number(espera.pedidos_com_varias) > 0 && (
             <>
@@ -916,8 +951,13 @@ function Hoje() {
             </>
           )}
 
+          <MaisLentoPorLinha linhas={porLinha} />
+          <PontosMelhoria estacoes={comDado} porLinha={porLinha} />
+
           <PioresPedidos pedidos={piores} />
           <RankingPratos pratos={ranking} />
+
+          <ComoLer estacoes={comDado} temLinhas={porLinha.length > 0} />
         </>
       )}
     </div>
@@ -1411,6 +1451,23 @@ function Shell({ titulo, subtitulo, children, onVoltar }) {
 // fila grande é gente e ordem de acionar, produção grande é processo.
 // A tabela crua continua embaixo, dobrada, para conferência.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// COLUNAS DE ESTAÇÃO
+//
+// Isto era uma tabela com quatro colunas de jargão e números sem unidade.
+// "0,1" e "34,8" na mesma linha não dizem nada: o bar levava 6 segundos
+// para tirar uma bebida que tinha ficado 35 minutos parada, e isso — que
+// é o achado mais caro do dia — se perdia entre as colunas.
+//
+// Agora cada estação é uma coluna, TODAS NA MESMA ESCALA: a mais alta do
+// dia define a altura e as outras ficam proporcionais a ela. Essa
+// comparação entre estações é a coisa mais útil da tela e não existia,
+// porque antes cada barra ia de 0 a 100% dela mesma.
+//
+// Verde embaixo é a estação trabalhando; o bloco de cima é o item parado
+// na fila. São dois problemas com dois remédios: fila é gente e ordem de
+// acionar, produção é processo da estação.
+// ---------------------------------------------------------------------
 function tempoCurto(min) {
   const v = Number(min);
   if (min === null || min === undefined || Number.isNaN(v)) return "—";
@@ -1418,200 +1475,298 @@ function tempoCurto(min) {
   return `${min1(v)} min`;
 }
 
-function diagnostico(l) {
+// A espera só é o problema quando ela domina o tempo do item. Estação que
+// faz em 7 min e espera 5 está equilibrada; a que faz em 6 segundos e
+// espera 35 minutos não é lenta, é esquecida.
+function esperaDomina(l) {
   const prod = Number(l.producao_media) || 0;
   const fila = Number(l.fila_media) || 0;
-  const seg = l.segurou_pct == null ? null : Number(l.segurou_pct);
-
-  // Estação rápida com fila enorme: o problema não é ela, é que ninguém
-  // apertou "peguei". É o tempo mais fácil de recuperar da casa.
-  if (prod < 1 && fila >= 5) {
-    return { texto: "Ninguém olha a tela", tom: "ruim", causa: "fila" };
-  }
-  if (fila > prod && fila >= 5) {
-    return { texto: "Demora pra começar", tom: "aviso", causa: "fila" };
-  }
-  if (seg !== null && seg >= 50) {
-    return { texto: "É aqui que o pedido trava", tom: "ruim", causa: "producao" };
-  }
-  if (seg !== null && seg >= 30) {
-    return { texto: "Segura o pedido às vezes", tom: "aviso", causa: "producao" };
-  }
-  return { texto: "Fluindo", tom: "ok", causa: null };
+  return fila >= 5 && fila > prod;
 }
 
-function CartaoEstacao({ l }) {
-  const prod = Number(l.producao_media) || 0;
-  const fila = Number(l.fila_media) || 0;
-  const total = prod + fila;
-  const seg = l.segurou_pct == null ? null : Number(l.segurou_pct);
-  const dg = diagnostico(l);
-  const nome = l.label || l.setor;
+const ALTURA_TORRE = 150;
 
-  // Piso de 3% para que um lado minúsculo (bebida: 6 s contra 35 min)
-  // ainda apareça como um traço em vez de sumir.
-  let pctFila = total > 0 ? (fila / total) * 100 : 0;
-  if (fila > 0 && pctFila < 3) pctFila = 3;
-  if (fila > 0 && pctFila > 97) pctFila = 97;
-  const pctProd = 100 - pctFila;
-  const filaGrave = dg.causa === "fila";
-
-  // Só vale falar de P90 quando ele de fato se afasta da média. Com o bar
-  // (média 0,1 e P90 0,1) a frase virava "levou 6 s em vez de 6 s".
-  const p90 = Number(l.producao_p90) || 0;
-  const instavel = p90 >= prod * 1.3 && p90 - prod >= 0.5;
-
-  const tons = {
-    ruim: { fundo: "#F7E2DD", texto: "#C4432B" },
-    aviso: { fundo: "#F6EDD3", texto: "#8A6F13" },
-    ok: { fundo: "#E2F0E8", texto: "#2F8F5B" },
-  }[dg.tom];
+function ColunasEstacao({ linhas }) {
+  const total = (l) => (Number(l.fila_media) || 0) + (Number(l.producao_media) || 0);
+  const ordenadas = [...linhas].sort((a, b) => total(b) - total(a));
+  const teto = Math.max(...ordenadas.map(total), 0.0001);
 
   return (
-    <div style={{ ...cardStyle, marginBottom: 10 }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8,
-                    flexWrap: "wrap", marginBottom: 12 }}>
-        <span style={{ fontSize: 17, fontWeight: 800 }}>{nome}</span>
-        <span style={{ fontSize: 12, color: "#8A8778" }}>
-          {l.itens} {Number(l.itens) === 1 ? "item" : "itens"} hoje
-        </span>
-        <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 800,
-                       padding: "3px 9px", borderRadius: 999, letterSpacing: 0.3,
-                       background: tons.fundo, color: tons.texto }}>
-          {dg.texto}
-        </span>
+    <div>
+      <div style={{ display: "grid", gap: 14, alignItems: "end",
+                    gridTemplateColumns: `repeat(${Math.max(ordenadas.length, 1)}, 1fr)` }}>
+        {ordenadas.map((l) => {
+          const prod = Number(l.producao_media) || 0;
+          const fila = Number(l.fila_media) || 0;
+          const seg = l.segurou_pct == null ? null : Number(l.segurou_pct);
+          const grave = esperaDomina(l);
+          return (
+            <div key={l.setor} style={{ display: "flex", flexDirection: "column",
+                                        alignItems: "center", textAlign: "center" }}>
+              <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 7,
+                            fontVariantNumeric: "tabular-nums", letterSpacing: -0.3 }}>
+                {min1(total(l))}
+                <span style={{ fontSize: 11, color: "#8A8778", fontWeight: 400,
+                               marginLeft: 1 }}>min</span>
+              </div>
+
+              <div style={{ width: 44, height: ALTURA_TORRE, display: "flex",
+                            flexDirection: "column", justifyContent: "flex-end",
+                            borderRadius: 4, overflow: "hidden" }}>
+                {/* piso de 2px: sem ele a bebida (6 s contra 35 min de fila)
+                    some da coluna e a legenda promete um verde que nao existe */}
+                <div style={{ width: "100%", background: grave ? "#C4432B" : "#C9C3B1",
+                              height: fila > 0
+                                ? `max(2px, ${(fila / teto) * ALTURA_TORRE}px)` : 0 }} />
+                <div style={{ width: "100%", background: "#2F8F5B",
+                              height: prod > 0
+                                ? `max(2px, ${(prod / teto) * ALTURA_TORRE}px)` : 0 }} />
+              </div>
+
+              <div style={{ marginTop: 9, paddingTop: 9, width: "100%",
+                            borderTop: "1px solid #E8E2D2" }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{l.label || l.setor}</div>
+                <div style={{ fontSize: 11, color: "#8A8778", marginTop: 1 }}>
+                  {l.itens} {Number(l.itens) === 1 ? "item" : "itens"}
+                </div>
+                <div style={{ fontSize: 11, color: "#8A8778", marginTop: 7,
+                              lineHeight: 1.65, fontVariantNumeric: "tabular-nums" }}>
+                  <span style={grave ? { color: "#C4432B", fontWeight: 700 } : undefined}>
+                    {tempoCurto(fila)} esperando
+                  </span><br />
+                  {tempoCurto(prod)} fazendo<br />
+                  {seg === null ? "—" : (
+                    <span style={seg >= 50 ? { color: "#C4432B", fontWeight: 700 } : undefined}>
+                      segurou {seg}%
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      <div style={{ display: "flex", height: 26, borderRadius: 6, overflow: "hidden",
-                    border: "1px solid #E8E2D2", background: "#F7F1E6", marginBottom: 6 }}>
-        {fila > 0 && (
-          <div style={{ width: `${pctFila}%`, background: filaGrave ? "#C4432B" : "#B9B4A2",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        fontSize: 11, fontWeight: 700, color: "#FFFFFF", whiteSpace: "nowrap" }}>
-            {pctFila >= 22 ? `esperou ${tempoCurto(fila)}` : ""}
-          </div>
-        )}
-        {prod > 0 && (
-          <div style={{ width: `${pctProd}%`, background: "#2F8F5B",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        fontSize: 11, fontWeight: 700, color: "#FFFFFF", whiteSpace: "nowrap" }}>
-            {pctProd >= 22 ? `fez em ${tempoCurto(prod)}` : ""}
-          </div>
-        )}
-      </div>
-
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11,
-                    color: "#8A8778", marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 18,
+                    fontSize: 11, color: "#8A8778", flexWrap: "wrap" }}>
         <span>
           <i style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2,
-                      marginRight: 5, verticalAlign: "middle",
-                      background: filaGrave ? "#C4432B" : "#B9B4A2" }} />
-          parado, esperando alguém pegar — {tempoCurto(fila)}
+                      marginRight: 5, verticalAlign: -1, background: "#C9C3B1" }} />
+          parado na fila
         </span>
         <span>
           <i style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2,
-                      marginRight: 5, verticalAlign: "middle", background: "#2F8F5B" }} />
-          {String(nome).toLowerCase()} trabalhando — {tempoCurto(prod)}
+                      marginRight: 5, verticalAlign: -1, background: "#C4432B" }} />
+          fila dominando o tempo
         </span>
-      </div>
-
-      <div style={{ fontSize: 14, lineHeight: 1.65, marginBottom: 10 }}>
-        Cada item ficou{" "}
-        <b style={{ color: filaGrave ? "#C4432B" : "#22231F" }}>{tempoCurto(fila)}</b>{" "}
-        parado até alguém apertar "peguei", e depois a estação levou{" "}
-        <b>{tempoCurto(prod)}</b> pra fazer.
-        {seg !== null && (
-          <>
-            {" "}Em{" "}
-            <b style={{ color: seg >= 50 ? "#C4432B" : "#22231F" }}>{seg}% dos pedidos</b>{" "}
-            ela foi a última a terminar — o resto da comida ficou esperando.
-          </>
-        )}
-        {dg.causa === "fila" && prod < 1 && (
-          <>
-            {" "}<b>Não é a estação que está lenta</b> — ela só é acionada quando o
-            pedido já vai sair. É o tempo mais fácil de recuperar da casa.
-          </>
-        )}
-        {dg.causa === "fila" && prod >= 1 && (
-          <>
-            {" "}<b>A maior parte do tempo foi item na fila</b>, não comida sendo feita:
-            isso é falta de gente ou de alguém olhando a tela, não lentidão da estação.
-          </>
-        )}
-      </div>
-
-      <div style={{ fontSize: 12.5, color: "#8A8778", borderTop: "1px dashed #E8E2D2",
-                    paddingTop: 10 }}>
-        {instavel ? (
-          <>
-            No pior dia-a-dia: 1 em cada 10 itens levou{" "}
-            <b style={{ color: "#22231F" }}>{tempoCurto(l.producao_p90)}</b> em vez de{" "}
-            {tempoCurto(prod)}. É desse item que o cliente reclama.
-          </>
-        ) : (
-          <>
-            Tempo estável: o pior caso ({tempoCurto(l.producao_p90)}) é praticamente
-            igual à média. Quando a estação trabalha, ela trabalha sempre no mesmo tempo.
-          </>
-        )}
+        <span>
+          <i style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2,
+                      marginRight: 5, verticalAlign: -1, background: "#2F8F5B" }} />
+          estação trabalhando
+        </span>
       </div>
     </div>
   );
 }
 
-function CartoesEstacao({ linhas }) {
-  // Pior primeiro: onde o item passou mais tempo no total, somando a
-  // fila com a produção. É a ordem de quem está procurando o que doeu.
-  const ordenadas = [...linhas].sort(
-    (a, b) =>
-      ((Number(b.fila_media) || 0) + (Number(b.producao_media) || 0)) -
-      ((Number(a.fila_media) || 0) + (Number(a.producao_media) || 0))
-  );
+// ---------------------------------------------------------------------
+// O MAIS LENTO DE CADA LINHA  (precisa da 049)
+//
+// Um ranking geral de pratos é sempre dominado pelos hambúrgueres: o
+// petisco mais lento da casa nunca apareceria. Separando por linha de
+// produto, cada categoria mostra o seu pior.
+//
+// Prato sem linha_produto preenchida cai em "(sem linha)" e fica marcado
+// em vermelho — é a lista do que falta classificar em Fichas Técnicas.
+// Escondê-lo faria a tela mentir por omissão.
+// ---------------------------------------------------------------------
+function MaisLentoPorLinha({ linhas }) {
+  if (!linhas || linhas.length === 0) return null;
 
   return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6,
-                    color: "#8A8778", fontWeight: 800, marginBottom: 8 }}>
-        Onde o tempo foi embora
+    <div style={{ marginTop: 34 }}>
+      <div style={rotulo}>O mais lento de cada linha</div>
+      {linhas.map((l, i) => {
+        const sem = String(l.linha || "").startsWith("(sem");
+        return (
+          <div key={l.linha} style={{ display: "flex", alignItems: "baseline", gap: 10,
+                                      padding: "11px 0", flexWrap: "wrap",
+                                      borderTop: i === 0 ? "none" : "1px solid #E8E2D2" }}>
+            <span style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.5,
+                           fontWeight: 800, width: 118, flex: "none", lineHeight: 1.35,
+                           color: sem ? "#C4432B" : "#8A8778" }}>
+              {sem ? "Sem linha" : l.linha}
+            </span>
+            <span style={{ fontSize: 13.5, fontWeight: 600, flex: "1 1 55%", minWidth: 0 }}>
+              {l.pior_prato || "—"}
+              <small style={{ display: "block", fontSize: 11, color: "#8A8778",
+                              fontWeight: 400, marginTop: 1,
+                              fontVariantNumeric: "tabular-nums" }}>
+                {sem
+                  ? `${l.pratos} ${Number(l.pratos) === 1 ? "prato" : "pratos"} sem categoria — classifique em Fichas Técnicas`
+                  : `${l.pior_prato_itens} ${Number(l.pior_prato_itens) === 1 ? "medição" : "medições"} · linha inteira ${min1(l.producao_mediana)}m`}
+              </small>
+            </span>
+            <span style={{ fontSize: 15, fontWeight: 700, flex: "none",
+                           fontVariantNumeric: "tabular-nums" }}>
+              {min1(l.pior_prato_mediana)}
+              <span style={{ fontSize: 10.5, color: "#8A8778", fontWeight: 400 }}>m</span>
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// PONTOS DE MELHORIA
+//
+// Os mesmos números de cima, escritos como ação. A ordem é a do custo:
+// quem comeu mais tempo aparece primeiro. Nada aqui é texto fixo — se a
+// estação melhorar, o ponto some sozinho.
+// ---------------------------------------------------------------------
+function pontosDeMelhoria(estacoes, porLinha) {
+  const pontos = [];
+  const total = (l) => (Number(l.fila_media) || 0) + (Number(l.producao_media) || 0);
+  const ordenadas = [...estacoes].sort((a, b) => total(b) - total(a));
+
+  for (const l of ordenadas) {
+    const nome = String(l.label || l.setor).toLowerCase();
+    const prod = Number(l.producao_media) || 0;
+    const fila = Number(l.fila_media) || 0;
+    const seg = l.segurou_pct == null ? null : Number(l.segurou_pct);
+
+    if (prod < 1 && fila >= 5) {
+      pontos.push({
+        titulo: `Acione ${nome === "bar" ? "o bar" : `a estação ${nome}`} junto com a chapa, não no fim.`,
+        corpo: `O item leva ${tempoCurto(prod)} pra ficar pronto, mas ficou ${tempoCurto(fila)} parado esperando alguém apertar "peguei". É o tempo mais barato de recuperar da casa inteira.`,
+      });
+    } else if (fila > prod && fila >= 5) {
+      const pct = Math.round((fila / (fila + prod)) * 100);
+      pontos.push({
+        titulo: `Alguém precisa olhar a tela ${nome === "cozinha" ? "da cozinha" : `de ${nome}`}.`,
+        corpo: `Dos ${min1(total(l))} min de um item, ${min1(fila)} foram antes de qualquer um pegar — ${pct}% do tempo não foi comida sendo feita, foi comida esperando.`,
+      });
+    } else if (seg !== null && seg >= 50) {
+      pontos.push({
+        titulo: `A ${nome} dita o tempo do pedido.`,
+        corpo: `Em ${seg}% dos pedidos foi ela a última a terminar. Reforço de gente entra aqui primeiro.`,
+      });
+    }
+  }
+
+  // O gargalo escondido: um prato muito acima da própria linha. Só vale
+  // apontar com medição suficiente — um prato feito uma vez é anedota.
+  for (const l of porLinha || []) {
+    const pior = Number(l.pior_prato_mediana) || 0;
+    const linha = Number(l.producao_mediana) || 0;
+    if (Number(l.pior_prato_itens) >= 3 && Number(l.pratos) > 1 &&
+        linha > 0 && pior >= linha * 1.8) {
+      pontos.push({
+        titulo: `${l.pior_prato} é o gargalo escondido de ${String(l.linha).toLowerCase()}.`,
+        corpo: `${min1(pior)} min de mediana contra ${min1(linha)} min da linha inteira. Item que demora mais que os vizinhos da própria categoria quebra a ordem de servir.`,
+      });
+    }
+  }
+
+  return pontos.slice(0, 5);
+}
+
+function PontosMelhoria({ estacoes, porLinha }) {
+  const pontos = pontosDeMelhoria(estacoes, porLinha);
+  if (pontos.length === 0) {
+    return (
+      <div style={{ marginTop: 34 }}>
+        <div style={rotulo}>Pontos de melhoria</div>
+        <div style={{ fontSize: 13, color: "#8A8778", lineHeight: 1.7 }}>
+          Nada gritando hoje: nenhuma estação com fila dominando o tempo e nenhuma
+          segurando mais da metade dos pedidos. Os números crus continuam abaixo.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 34 }}>
+      <div style={rotulo}>Pontos de melhoria</div>
+      <ol style={{ margin: 0, padding: 0, listStyle: "none" }}>
+        {pontos.map((p, i) => (
+          <li key={i} style={{ position: "relative", paddingLeft: 26, marginBottom: 14,
+                               fontSize: 13.5, lineHeight: 1.6 }}>
+            <span style={{ position: "absolute", left: 0, top: 1, width: 17, height: 17,
+                           borderRadius: "50%", background: "#22231F", color: "#F7F1E6",
+                           fontSize: 10, fontWeight: 800, display: "flex",
+                           alignItems: "center", justifyContent: "center" }}>
+              {i + 1}
+            </span>
+            <b>{p.titulo}</b> {p.corpo}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// COMO LER + os números crus, dobrados
+// ---------------------------------------------------------------------
+function ComoLer({ estacoes, temLinhas }) {
+  return (
+    <>
+      <div style={{ marginTop: 34 }}>
+        <div style={rotulo}>Como ler</div>
+        <p style={paragrafo}>
+          Cada coluna é o caminho de um item naquela estação, e todas estão na mesma
+          escala — a altura dá pra comparar entre si. A parte de cima é o tempo{" "}
+          <b style={forte}>parado na fila</b>, antes de alguém apertar "peguei"; a verde
+          é a estação <b style={forte}>trabalhando</b> de fato. Coluna alta e clara é
+          problema de <b style={forte}>gente e ordem de acionar</b>. Coluna alta e verde
+          é problema de <b style={forte}>processo da estação</b>. São dois remédios
+          diferentes.
+          <br /><br />
+          <b style={forte}>Segurou</b> é quantas vezes a estação foi a última a terminar
+          o pedido — é esse número que decide onde entra gente. <b style={forte}>P90</b>{" "}
+          é o pior 1 em cada 10: média boa com P90 alto quer dizer que às vezes trava
+          feio, e é desse "às vezes" que o cliente reclama.
+          {temLinhas && (
+            <>
+              <br /><br />
+              <b style={forte}>O mais lento de cada linha</b> existe porque um ranking
+              geral de pratos é sempre dominado pelos hambúrgueres: o petisco mais lento
+              da casa nunca apareceria. Separando por linha, cada categoria mostra o seu
+              pior.
+            </>
+          )}
+          <br /><br />
+          A fila presa é zerada todo dia às 04:00, então item esquecido de ontem não
+          suja a conta de hoje.
+        </p>
       </div>
 
-      {ordenadas.map((l) => <CartaoEstacao key={l.setor} l={l} />)}
-
-      <div style={{ fontSize: 12.5, color: "#8A8778", lineHeight: 1.7, marginTop: 12 }}>
-        <b style={{ color: "#22231F" }}>Como ler:</b> a barra é o caminho de um item.
-        A parte clara é o tempo que ele ficou parado na fila; a verde é a estação
-        trabalhando de fato. Barra com muito cinza ou vermelho é problema de{" "}
-        <b style={{ color: "#22231F" }}>gente e ordem de acionar</b>. Barra verde e
-        comprida é problema de <b style={{ color: "#22231F" }}>processo da estação</b>.
-        São dois remédios diferentes.
-      </div>
-
-      <details style={{ marginTop: 14, borderTop: "1px solid #E8E2D2", paddingTop: 12 }}>
-        <summary style={{ fontSize: 11, color: "#8A8778", cursor: "pointer", fontWeight: 800,
-                          textTransform: "uppercase", letterSpacing: 0.5 }}>
+      <details style={{ marginTop: 30, borderTop: "1px solid #E8E2D2", paddingTop: 14 }}>
+        <summary style={{ ...rotulo, marginBottom: 0, cursor: "pointer" }}>
           Ver os números crus
         </summary>
-        <div style={{ ...cardStyle, marginTop: 10, padding: 0, overflow: "hidden" }}>
+        <div style={{ ...cardStyle, marginTop: 12, padding: 0, overflow: "hidden" }}>
           <table style={tabela}>
             <thead>
               <tr>
                 <th style={th}>Estação</th>
                 <th style={{ ...th, textAlign: "right" }}>Itens</th>
+                <th style={{ ...th, textAlign: "right" }}>Fila</th>
                 <th style={{ ...th, textAlign: "right" }}>Produção</th>
                 <th style={{ ...th, textAlign: "right" }}>P90</th>
-                <th style={{ ...th, textAlign: "right" }}>Fila</th>
                 <th style={{ ...th, textAlign: "right" }}>Segurou</th>
               </tr>
             </thead>
             <tbody>
-              {ordenadas.map((l) => (
+              {estacoes.map((l) => (
                 <tr key={l.setor}>
                   <td style={td}><b>{l.label || l.setor}</b></td>
                   <td style={{ ...td, textAlign: "right" }}>{l.itens}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{min1(l.fila_media)}</td>
                   <td style={{ ...td, textAlign: "right" }}>{min1(l.producao_media)}</td>
                   <td style={{ ...td, textAlign: "right" }}>{min1(l.producao_p90)}</td>
-                  <td style={{ ...td, textAlign: "right" }}>{min1(l.fila_media)}</td>
                   <td style={{ ...td, textAlign: "right",
                                color: Number(l.segurou_pct) >= 50 ? "#C4432B" : "#22231F",
                                fontWeight: Number(l.segurou_pct) >= 50 ? 800 : 400 }}>
@@ -1623,17 +1778,20 @@ function CartoesEstacao({ linhas }) {
           </table>
         </div>
         <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 10, lineHeight: 1.6 }}>
-          <b>Produção</b> é do "peguei" ao "terminei" — a estação em si.
+          Tudo em minutos. <b>Produção</b> é do "peguei" ao "terminei" — a estação em si.
           <b> Fila</b> é o tempo antes de alguém pegar, que é falta de gente, não da estação.
-          <b> P90</b> é o pior 1 em cada 10: média boa com P90 alto quer dizer que
-          às vezes trava feio, e é desse "às vezes" que o cliente reclama.
-          <b> Segurou</b> é quantas vezes aquela estação foi a última a terminar —
-          é essa coluna que decide onde entra gente. Tudo em minutos.
         </div>
       </details>
-    </div>
+    </>
   );
 }
+
+const rotulo = {
+  fontSize: 11, textTransform: "uppercase", letterSpacing: 0.7,
+  color: "#8A8778", fontWeight: 800, marginBottom: 11,
+};
+const paragrafo = { fontSize: 13, color: "#8A8778", lineHeight: 1.75, margin: 0 };
+const forte = { color: "#22231F", fontWeight: 600 };
 
 function Numero({ valor, label, alerta }) {
   return (
