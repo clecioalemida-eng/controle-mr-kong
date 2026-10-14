@@ -31,6 +31,12 @@ const ABAS = [
   { chave: "campanhas", label: "Campanhas", icone: Megaphone },
 ];
 
+// Mês de hoje em Rio Verde, para o filtro de aniversariantes (migração 131
+// guarda o mês do aniversário numa coluna própria, por isso dá para filtrar).
+function mesAtual() {
+  return Number(new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", month: "numeric" }));
+}
+
 const SEGMENTOS = {
   novo:       { nome: "Novo",       fundo: "#E4ECF7", cor: "#244C7A" },
   recorrente: { nome: "Recorrente", fundo: "#E0EFE3", cor: "#1F5134" },
@@ -49,6 +55,7 @@ const FILTROS = [
   { chave: "perdido", label: "Perdidos" },
   { chave: "cadastro", label: "Só cadastro" },
   { chave: "sem_optin", label: "Sem resposta de mensagens" },
+  { chave: "aniversario_mes", label: "Aniversariantes do mês" },
 ];
 
 const NOMES_CANAL = {
@@ -216,10 +223,11 @@ function AbaClientes({ permissoes }) {
     for (let de = 0; ; de += 1000) {
       let q = supabase
         .from("clientes")
-        .select("telefone, nome, segmento, bairro, pedidos, total_gasto, ultimo_dia, favorito, aceita_mensagens")
+        .select("telefone, nome, segmento, bairro, pedidos, total_gasto, ultimo_dia, favorito, aniversario, aceita_mensagens")
         .order("ultimo_dia", { ascending: false, nullsFirst: false })
         .range(de, de + 999);
       if (filtro === "sem_optin") q = q.is("aceita_mensagens", null);
+      else if (filtro === "aniversario_mes") q = q.eq("aniversario_mes", mesAtual());
       else if (filtro !== "todos") q = q.eq("segmento", filtro);
       if (buscaAplicada) {
         const texto = buscaAplicada.replace(/[,()*%"\\]/g, " ").replace(/\s+/g, " ").trim();
@@ -244,13 +252,14 @@ function AbaClientes({ permissoes }) {
           (Number(c.total_gasto) || 0).toFixed(2).replace(".", ","),
           c.ultimo_dia ? new Date(`${c.ultimo_dia}T12:00:00`).toLocaleDateString("pt-BR") : "",
           limpa(c.favorito),
+          c.aniversario ? new Date(`${c.aniversario}T12:00:00`).toLocaleDateString("pt-BR") : "",
           c.aceita_mensagens === true ? "sim" : c.aceita_mensagens === false ? "nao" : "sem resposta",
         ].join(";"));
       }
       if (!data || data.length < 1000) break;
     }
     if (!linhas.length) { setErro("Nenhum cliente nesse filtro para exportar."); setExportandoLista(false); return; }
-    const cab = "telefone;nome;segmento;bairro;pedidos;total_gasto;ultimo_pedido;favorito;aceita_mensagens";
+    const cab = "telefone;nome;segmento;bairro;pedidos;total_gasto;ultimo_pedido;favorito;aniversario;aceita_mensagens";
     const csv = [cab, ...linhas].join("\n");
     const url = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }));
     const a = document.createElement("a");
@@ -270,6 +279,7 @@ function AbaClientes({ permissoes }) {
       .range(de, de + POR_PAGINA - 1);
 
     if (filtro === "sem_optin") q = q.is("aceita_mensagens", null);
+    else if (filtro === "aniversario_mes") q = q.eq("aniversario_mes", mesAtual());
     else if (filtro !== "todos") q = q.eq("segmento", filtro);
 
     if (buscaAplicada) {
