@@ -146,6 +146,7 @@ function AbaClientes({ permissoes }) {
   const [carregandoMais, setCarregandoMais] = useState(false);
   const [erro, setErro] = useState("");
   const [exportando, setExportando] = useState(false);
+  const [exportandoLista, setExportandoLista] = useState(false);
   const [atualizando, setAtualizando] = useState(false);
   const [avisoAtualizacao, setAvisoAtualizacao] = useState("");
   const [aberto, setAberto] = useState(null);
@@ -201,6 +202,63 @@ function AbaClientes({ permissoes }) {
     a.click();
     URL.revokeObjectURL(url);
     setExportando(false);
+  };
+
+  // Exporta a lista que está na tela — respeitando o filtro e a busca — em
+  // planilha (CSV). Telefone com o 55 na frente, do jeito que as ferramentas
+  // de mensagem pedem. Serve para anúncio, para o caixa ligar ou para passar
+  // a lista para alguém da equipe.
+  const exportarLista = async () => {
+    setExportandoLista(true);
+    setErro("");
+    const linhas = [];
+    const limpa = (v) => String(v ?? "").replace(/[\r\n";,]/g, " ").trim();
+    for (let de = 0; ; de += 1000) {
+      let q = supabase
+        .from("clientes")
+        .select("telefone, nome, segmento, bairro, pedidos, total_gasto, ultimo_dia, favorito, aceita_mensagens")
+        .order("ultimo_dia", { ascending: false, nullsFirst: false })
+        .range(de, de + 999);
+      if (filtro === "sem_optin") q = q.is("aceita_mensagens", null);
+      else if (filtro !== "todos") q = q.eq("segmento", filtro);
+      if (buscaAplicada) {
+        const texto = buscaAplicada.replace(/[,()*%"\\]/g, " ").replace(/\s+/g, " ").trim();
+        const digitos = buscaAplicada.replace(/\D/g, "");
+        const partes = [];
+        if (texto) partes.push(`nome.ilike."*${texto}*"`);
+        if (digitos.length >= 3) partes.push(`telefone.ilike.*${digitos}*`);
+        if (partes.length) q = q.or(partes.join(","));
+      }
+      const { data, error } = await q;
+      if (error) { setErro(error.message); setExportandoLista(false); return; }
+      for (const c of data ?? []) {
+        const d = String(c.telefone || "").replace(/\D/g, "");
+        if (d.length < 10) continue;
+        const tel = d.startsWith("55") ? d : `55${d}`;
+        linhas.push([
+          tel,
+          limpa(c.nome),
+          SEGMENTOS[c.segmento]?.nome || limpa(c.segmento),
+          limpa(c.bairro),
+          Number(c.pedidos) || 0,
+          (Number(c.total_gasto) || 0).toFixed(2).replace(".", ","),
+          c.ultimo_dia ? new Date(`${c.ultimo_dia}T12:00:00`).toLocaleDateString("pt-BR") : "",
+          limpa(c.favorito),
+          c.aceita_mensagens === true ? "sim" : c.aceita_mensagens === false ? "nao" : "sem resposta",
+        ].join(";"));
+      }
+      if (!data || data.length < 1000) break;
+    }
+    if (!linhas.length) { setErro("Nenhum cliente nesse filtro para exportar."); setExportandoLista(false); return; }
+    const cab = "telefone;nome;segmento;bairro;pedidos;total_gasto;ultimo_pedido;favorito;aceita_mensagens";
+    const csv = [cab, ...linhas].join("\n");
+    const url = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `mr-kong-${filtro}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setExportandoLista(false);
   };
 
   const montarConsulta = useCallback((de) => {
@@ -349,10 +407,16 @@ function AbaClientes({ permissoes }) {
       </div>
 
       {editar && (
-        <button onClick={exportarMeta} disabled={exportando} style={{ ...btnSecondary, alignSelf: "flex-start" }}>
-          {exportando ? <Loader2 size={14} /> : <Download size={14} />}
-          Exportar lista para anúncio na Meta
-        </button>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <button onClick={exportarMeta} disabled={exportando || exportandoLista} style={btnSecondary}>
+            {exportando ? <Loader2 size={14} /> : <Download size={14} />}
+            Exportar para anúncio na Meta
+          </button>
+          <button onClick={exportarLista} disabled={exportando || exportandoLista} style={btnSecondary}>
+            {exportandoLista ? <Loader2 size={14} /> : <Download size={14} />}
+            Exportar {FILTROS.find((f) => f.chave === filtro)?.label || "lista"} em planilha
+          </button>
+        </div>
       )}
 
       {/* ------------------------------------------------ lista */}
