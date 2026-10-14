@@ -3,6 +3,11 @@ import {
   ChevronLeft, AlertTriangle, CheckCircle2, Clock, Copy, TrendingUp, TrendingDown,
 } from "lucide-react";
 import { supabase, TABELA_CHECKLIST } from "../lib/supabaseClient";
+import { podeVer } from "../lib/permissoes";
+// O Dashboard deixou de ser um card próprio na tela inicial: ele é a
+// terceira aba daqui. Eram duas portas para a mesma pergunta — "como
+// estão as vendas" — e quem abria uma nunca sabia que a outra existia.
+import Dashboard from "./DashboardModulo";
 
 // ---------------------------------------------------------------------------
 // Módulo Comercial — Relatório do dia
@@ -633,7 +638,14 @@ function PainelComercial({ dia, mesTotal, onPrevisao }) {
 }
 
 // ===========================================================================
-export default function Comercial({ onVoltar }) {
+const ABAS = [
+  { chave: "dia",    label: "Dia" },
+  { chave: "mes",    label: "Mês" },
+  { chave: "custos", label: "Previsão e custos", chavePermissao: "dashboard" },
+];
+
+export default function Comercial({ onVoltar, perfil, permissoes }) {
+  const [aba, setAba] = useState("dia");
   const [dia, setDia] = useState(diaOperacional());
   const [vendas, setVendas] = useState(null);
   const [vendasErro, setVendasErro] = useState("");
@@ -713,17 +725,40 @@ export default function Comercial({ onVoltar }) {
     if (ok) { setCopiado(true); setTimeout(() => setCopiado(false), 2500); }
   };
 
+  const abasVisiveis = ABAS.filter((a) => !a.chavePermissao
+    || perfil?.is_admin || podeVer(permissoes, a.chavePermissao));
+  const abaAtual = abasVisiveis.some((a) => a.chave === aba) ? aba : "dia";
+  const subtitulo = abaAtual === "dia" ? formatDiaLabel(dia)
+    : abaAtual === "mes" ? "Três meses, linhas, produtos e previsão"
+    : "Faturamento previsto, custos e margem";
+
   return (
     <div style={pageStyle}>
       <div className="app-shell">
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
           <button onClick={onVoltar} style={iconBtn} aria-label="Voltar"><ChevronLeft size={18} /></button>
           <div>
-            <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Comercial · Relatório do dia</div>
-            <div style={{ fontSize: 12, color: "#8A8778", textTransform: "capitalize" }}>{formatDiaLabel(dia)}</div>
+            <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Comercial</div>
+            <div style={{ fontSize: 12, color: "#8A8778", textTransform: "capitalize" }}>{subtitulo}</div>
           </div>
         </div>
 
+        <div style={{ display: "flex", gap: 7, marginBottom: 18, flexWrap: "wrap" }}>
+          {abasVisiveis.map((a) => (
+            <button key={a.chave} onClick={() => setAba(a.chave)}
+              style={{
+                border: "1px solid " + (abaAtual === a.chave ? "#22231F" : "#E8E2D2"),
+                background: abaAtual === a.chave ? "#22231F" : "#FFFFFF",
+                color: abaAtual === a.chave ? "#F3EFE3" : "#55534A",
+                borderRadius: 999, padding: "7px 14px", fontSize: 13, fontWeight: 700,
+                cursor: "pointer", fontFamily: "inherit",
+              }}>
+              {a.label}
+            </button>
+          ))}
+        </div>
+
+        {abaAtual === "dia" && (<>
         <div style={{ marginBottom: 18 }}>
           <div style={sectionLabel}>Dia do relatório</div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -744,12 +779,6 @@ export default function Comercial({ onVoltar }) {
           )}
         </div>
 
-        {!vendasSemAcesso && (
-          <div style={{ marginBottom: 18 }}>
-            <div style={sectionLabel}>Painel comercial</div>
-            <PainelComercial dia={dia} mesTotal={carregandoVendas || !vendas ? null : vendas.mes_total} onPrevisao={setPrevisaoMes} />
-          </div>
-        )}
 
         <div style={{ marginBottom: 18 }}>
           <div style={sectionLabel}>Checklist do dia</div>
@@ -803,6 +832,32 @@ export default function Comercial({ onVoltar }) {
             </button>
           </div>
         </div>
+        </>)}
+
+        {abaAtual === "mes" && (
+          vendasSemAcesso ? (
+            <div style={avisoBloqueio}><AlertTriangle size={16} /> Seu cargo não vê as vendas.</div>
+          ) : (
+            <PainelComercial dia={dia} mesTotal={carregandoVendas || !vendas ? null : vendas.mes_total}
+              onPrevisao={setPrevisaoMes} />
+          )
+        )}
+
+        {/* A antiga tela Dashboard, inteira, sem perder nada: carga do
+            histórico, margem de contribuição, desempenho por produto e
+            custos por centro de custo. Só mudou de endereço. */}
+        {abaAtual === "custos" && <Dashboard onVoltar={() => setAba("dia")} />}
+
+        {/* O relatório do WhatsApp só é montado na aba Dia, mas a previsão
+            que entra nele vem do painel do mês. Por isso ele fica montado
+            fora da tela quando a pessoa está em outra aba: sem isso, abrir
+            o Comercial e copiar o relatório mandaria o texto sem previsão. */}
+        {abaAtual === "dia" && !vendasSemAcesso && (
+          <div style={{ display: "none" }} aria-hidden="true">
+            <PainelComercial dia={dia} mesTotal={carregandoVendas || !vendas ? null : vendas.mes_total}
+              onPrevisao={setPrevisaoMes} />
+          </div>
+        )}
       </div>
     </div>
   );
