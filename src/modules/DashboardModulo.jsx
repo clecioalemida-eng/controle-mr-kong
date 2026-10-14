@@ -833,31 +833,35 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Cache vazio ou incompleto */}
-      {!carregando && !sincronizando && (cacheVazio || cacheParcial) && (
-        <>
-          <div style={avisoStyle}>
-            <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
-            <div style={{ fontSize: 13 }}>
-              {cacheVazio
-                ? "O histórico de vendas ainda não foi carregado. Sem ele a previsão não tem base de cálculo."
-                : `Faltam ${faltando} dias no histórico. A previsão até funciona, mas fica menos confiável.`}
-            </div>
+      {/* Estado do histórico, numa faixa fina.
+          Antes isto abria a aba com um bloco amarelo inteiro e um botão
+          preto de largura total — ou seja, a primeira coisa que a pessoa
+          via era manutenção do sistema, não o faturamento. */}
+      {!carregando && !sincronizando && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+          background: (cacheVazio || cacheParcial) ? "#FBF3D9" : "#FFFFFF",
+          border: "1px solid " + ((cacheVazio || cacheParcial) ? "#E8D48A" : "#E8E2D2"),
+          borderRadius: 10, padding: "8px 12px", marginBottom: 14,
+        }}>
+          <span style={{ ...dotStyle, background: cacheVazio ? "#A32D2D" : cacheParcial ? "#C08A2E" : "#0F6E56" }} />
+          <div style={{ fontSize: 11.5, color: (cacheVazio || cacheParcial) ? "#7A6A1E" : "#8A8778", flex: 1, minWidth: 180 }}>
+            {cacheVazio
+              ? "Histórico de vendas ainda não carregado — sem ele a previsão não tem base."
+              : cacheParcial
+                ? `Faltam ${faltando} dias no histórico · a previsão funciona, mas fica menos confiável`
+                : `Histórico completo · ${cache.total} dias · atualizado ${dataHoraCurta(cache.atualizadoEm)}`}
           </div>
-          <button onClick={popularHistorico} style={{ ...btnPrimary, width: "100%", display: "flex", justifyContent: "center", gap: 6, marginBottom: 6 }}>
-            <RefreshCw size={16} /> {cacheVazio ? "Popular histórico inicial" : "Continuar carga"}
-          </button>
-          <div style={{ fontSize: 10, color: "#8A8778", textAlign: "center", marginBottom: 16 }}>
-            {faltando} dias faltando · cerca de {Math.max(1, Math.round((faltando / TAMANHO_FATIA) * (PAUSA_ENTRE_FATIAS / 1000 + TAMANHO_FATIA * SEGUNDOS_POR_DIA) / 60))} min
-          </div>
-        </>
-      )}
-
-      {/* Status do cache */}
-      {!carregando && !cacheVazio && (
-        <div style={statusStyle}>
-          <span style={{ ...dotStyle, background: cacheParcial ? "#C08A2E" : "#0F6E56" }} />
-          Cache com {cache.total} dias · atualizado {dataHoraCurta(cache.atualizadoEm)}
+          {(cacheVazio || cacheParcial) && (
+            <button onClick={popularHistorico}
+              style={{ ...btnGhost, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+              <RefreshCw size={14} />
+              {cacheVazio ? "Carregar histórico" : "Continuar carga"}
+              <span style={{ color: "#8A8778", fontWeight: 500 }}>
+                · {Math.max(1, Math.round((faltando / TAMANHO_FATIA) * (PAUSA_ENTRE_FATIAS / 1000 + TAMANHO_FATIA * SEGUNDOS_POR_DIA) / 60))} min
+              </span>
+            </button>
+          )}
         </div>
       )}
 
@@ -879,8 +883,8 @@ export default function Dashboard() {
                     <div style={labelStyle}>
                       Faturamento de {faturamento.mesAtualLabel} até aqui
                     </div>
-                    <div style={{ fontSize: 27, fontWeight: 800, color: "#22231F",
-                                  fontVariantNumeric: "tabular-nums", lineHeight: 1.15 }}>
+                    <div style={{ fontSize: 34, fontWeight: 800, color: "#22231F",
+                                  fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>
                       {brl(faturamento.realizadoMes)}
                     </div>
                     <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2 }}>
@@ -906,22 +910,50 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+              {/* Três cartões do mesmo tamanho, na ordem em que a conta
+                  acontece: entra, sai, sobra. */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+                            gap: 10, marginBottom: 16 }}>
                 <div style={cardStyle}>
                   <div style={labelStyle}>Faturamento previsto (mês)</div>
-                  <div style={valorGrande}>{brl(faturamento.totalMes)}</div>
-                  <div style={{ fontSize: 10, color: "#8A8778" }}>Realizado {brl(faturamento.realizadoMes)} + previsto {brl(faturamento.previstoRestoMes)}</div>
+                  <div style={valorMedio}>{brl(faturamento.totalMes)}</div>
+                  <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2 }}>
+                    Realizado {brl(faturamento.realizadoMes)} + previsto {brl(faturamento.previstoRestoMes)}
+                  </div>
                 </div>
                 <div style={cardStyle}>
-                  <div style={labelStyle}>Custos previstos (mês)</div>
-                  <div style={valorGrande}>{brl(custos.totalPrevisto)}</div>
-                  <div style={{ fontSize: 10, color: "#8A8778" }}>Já lançado {brl(custos.totalJaLancado)}</div>
+                  <div style={labelStyle}>Custos lançados (mês)</div>
+                  <div style={{ ...valorMedio, color: "#A32D2D" }}>{brl(custos.totalPrevisto)}</div>
+                  <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2 }}>
+                    Já lançado {brl(custos.totalJaLancado)}
+                  </div>
+                </div>
+                <div style={{ ...cardStyle, background: "#F6F1E7", borderColor: "#E3DCCA" }}>
+                  <div style={labelStyle}>Sobra prevista (entra − sai)</div>
+                  <div style={{ ...valorMedio, color: lucroPrevisto >= 0 ? "#0F6E56" : "#A32D2D" }}>
+                    {brl(lucroPrevisto)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2 }}>
+                    só com o que já está lançado em contas
+                  </div>
                 </div>
               </div>
-              <div style={{ ...cardStyle, textAlign: "center", background: "#F6F1E7", marginBottom: 16 }}>
-                <div style={labelStyle}>Lucro previsto do mês</div>
-                <div style={{ fontSize: 24, fontWeight: 800, color: lucroPrevisto >= 0 ? "#0F6E56" : "#A32D2D" }}>{brl(lucroPrevisto)}</div>
-              </div>
+
+              {/* Esse número engana quando falta conta lançada: faturar 130
+                  mil e ter 14 mil de custo daria 89% de "lucro", que
+                  nenhuma hamburgueria tem. */}
+              {faturamento.totalMes > 0 && custos.totalPrevisto / faturamento.totalMes < 0.45 && (
+                <div style={{ ...avisoStyle, marginTop: -4 }}>
+                  <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+                    A sobra acima está otimista: os custos lançados são só{" "}
+                    <b>{((custos.totalPrevisto / faturamento.totalMes) * 100).toFixed(0)}%</b> do faturamento previsto.
+                    Faltam contas do mês (pessoal, aluguel, energia, impostos, compras ainda não lançadas).
+                    O número que já desconta os ingredientes é a margem de contribuição, logo abaixo, e o
+                    resultado de verdade está no DRE.
+                  </div>
+                </div>
+              )}
               {projecao && (
                 <div style={{ ...cardStyle, marginBottom: 16 }}>
                   <div style={labelStyle}>Margem de contribuição projetada</div>
@@ -1517,6 +1549,7 @@ export default function Dashboard() {
 }
 
 const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
+const valorMedio = { fontSize: 21, fontWeight: 800, color: "#22231F", fontVariantNumeric: "tabular-nums", lineHeight: 1.15 };
 const sectionLabel = { fontSize: 12, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#8A8778", marginBottom: 8 };
 const labelStyle = { fontSize: 10, color: "#8A8778", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 };
 const valorGrande = { fontSize: 17, fontWeight: 700, color: "#22231F" };
