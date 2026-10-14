@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Loader2, AlertTriangle, Search, ChevronLeft, Check, X,
-  RefreshCw, Clock, CheckCircle2,
+  RefreshCw, Clock, CheckCircle2, Ghost,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { podeEditar } from "../lib/permissoes";
@@ -456,6 +456,7 @@ function Estacao({ setor, label, setores, fixada, semMemoria, onFixar, onTrocar,
   // instante; o relogio da tela soma o que passou desde entao, em vez
   // de confiar no horario do celular da chapa.
   const [buscadoEm, setBuscadoEm] = useState(Date.now());
+  const [confirmandoFantasma, setConfirmandoFantasma] = useState(null);
 
   const carregar = useCallback(async () => {
     const { data, error } = await supabase.rpc("estacao_fila_agrupada", { p_setor: setor });
@@ -485,6 +486,29 @@ function Estacao({ setor, label, setores, fixada, semMemoria, onFixar, onTrocar,
     });
     setOcupado(null);
     if (error) { setErro(error.message); return; }
+    carregar();
+  };
+
+  // Pedido fantasma: aparece na tela e não existe na vida real — webhook
+  // repetido, pedido cancelado que não avisou, teste de alguém. Some da
+  // fila de TODAS as estações, porque pedido que não existe não existe
+  // pra ninguém, e fica registrado pra gente achar a causa depois.
+  const marcarFantasma = async (p) => {
+    setOcupado(p.pedido_id + "fantasma");
+    setErro("");
+    const { data, error } = await supabase.rpc("marcar_pedido_fantasma", {
+      p_pedido: p.pedido_id, p_setor: setor,
+      p_referencia: p.referencia || null, p_canal: p.canal || null, p_motivo: null,
+    });
+    setOcupado(null);
+    setConfirmandoFantasma(null);
+    if (error) {
+      setErro(/does not exist|schema cache/i.test(error.message)
+        ? "Falta rodar a migração 133 no banco."
+        : error.message);
+      return;
+    }
+    setMsg(typeof data === "string" ? data : "Pedido marcado como fantasma.");
     carregar();
   };
 
@@ -606,25 +630,52 @@ function Estacao({ setor, label, setores, fixada, semMemoria, onFixar, onTrocar,
                   </div>
                 )}
 
-                <div style={{ display: "flex", gap: 8, padding: "10px 13px", borderTop: "1px solid #F3EDE2" }}>
-                  {!pego ? (
-                    <button onClick={() => marcar(p.pedido_id, "pegar")}
-                      disabled={ocupado === p.pedido_id + "pegar"}
-                      style={{ ...btnPri, flex: 1 }}>
-                      Peguei
+                {confirmandoFantasma === p.pedido_id ? (
+                  <div style={{ padding: "10px 13px", borderTop: "1px solid #F3EDE2", background: "#FDF4F1" }}>
+                    <div style={{ fontSize: 12.5, color: "#8E2420", fontWeight: 700, marginBottom: 2 }}>
+                      Esse pedido não existe?
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "#6B6558", lineHeight: 1.5, marginBottom: 9 }}>
+                      Ele some da fila de todas as estações e fica registrado como fantasma.
+                      Use quando ninguém pediu isso — não use pra pedido cancelado que foi feito.
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={() => setConfirmandoFantasma(null)} style={{ ...btnSec, flex: 1 }}>
+                        Não, voltar
+                      </button>
+                      <button onClick={() => marcarFantasma(p)}
+                        disabled={ocupado === p.pedido_id + "fantasma"}
+                        style={{ ...btnPri, flex: 1, background: "#C4432B" }}>
+                        É fantasma
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 8, padding: "10px 13px", borderTop: "1px solid #F3EDE2" }}>
+                    {!pego ? (
+                      <button onClick={() => marcar(p.pedido_id, "pegar")}
+                        disabled={ocupado === p.pedido_id + "pegar"}
+                        style={{ ...btnPri, flex: 1 }}>
+                        Peguei
+                      </button>
+                    ) : (
+                      <button onClick={() => marcar(p.pedido_id, "pronto")}
+                        disabled={ocupado === p.pedido_id + "pronto"}
+                        style={{ ...btnEscuro, flex: 1 }}>
+                        <Check size={15} /> Terminei
+                      </button>
+                    )}
+                    <button onClick={() => marcar(p.pedido_id, "desfazer")}
+                      style={{ ...btnSec, width: 92 }}>
+                      Desfazer
                     </button>
-                  ) : (
-                    <button onClick={() => marcar(p.pedido_id, "pronto")}
-                      disabled={ocupado === p.pedido_id + "pronto"}
-                      style={{ ...btnEscuro, flex: 1 }}>
-                      <Check size={15} /> Terminei
+                    <button onClick={() => setConfirmandoFantasma(p.pedido_id)}
+                      title="Pedido que não existe"
+                      style={{ ...btnSec, width: 104, color: "#A32D2D", borderColor: "#EBC9C1" }}>
+                      <Ghost size={15} /> Fantasma
                     </button>
-                  )}
-                  <button onClick={() => marcar(p.pedido_id, "desfazer")}
-                    style={{ ...btnSec, width: 110 }}>
-                    Desfazer
-                  </button>
-                </div>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -656,6 +707,7 @@ function Despacho({ setores, fixada, semMemoria, onFixar, onTrocar, onVoltar }) 
   const [ocupado, setOcupado] = useState(null);
   const [agora, setAgora] = useState(Date.now());
   const [buscadoEm, setBuscadoEm] = useState(Date.now());
+  const [confirmandoFantasma, setConfirmandoFantasma] = useState(null);
 
   const carregar = useCallback(async () => {
     const { data, error } = await supabase.rpc("fila_despacho");
@@ -685,6 +737,25 @@ function Despacho({ setores, fixada, semMemoria, onFixar, onTrocar, onVoltar }) 
     });
     setOcupado(null);
     if (error) { setErro(error.message); return; }
+    carregar();
+  };
+
+  // O mesmo fantasma da estação, só que visto da porta.
+  const marcarFantasma = async (p) => {
+    setOcupado(p.pedido_id + "fantasma");
+    setErro("");
+    const { error } = await supabase.rpc("marcar_pedido_fantasma", {
+      p_pedido: p.pedido_id, p_setor: "entrega",
+      p_referencia: p.referencia || null, p_canal: p.destino || null, p_motivo: null,
+    });
+    setOcupado(null);
+    setConfirmandoFantasma(null);
+    if (error) {
+      setErro(/does not exist|schema cache/i.test(error.message)
+        ? "Falta rodar a migração 133 no banco."
+        : error.message);
+      return;
+    }
     carregar();
   };
 
@@ -735,9 +806,32 @@ function Despacho({ setores, fixada, semMemoria, onFixar, onTrocar, onVoltar }) 
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 8, padding: "10px 13px", borderTop: "1px solid #F3EDE2" }}>
-          {acoes}
-        </div>
+        {confirmandoFantasma === p.pedido_id ? (
+          <div style={{ padding: "10px 13px", borderTop: "1px solid #F3EDE2", background: "#FDF4F1" }}>
+            <div style={{ fontSize: 12.5, color: "#8E2420", fontWeight: 700, marginBottom: 6 }}>
+              Esse pedido não existe? Ele sai da porta e fica registrado como fantasma.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setConfirmandoFantasma(null)} style={{ ...btnSec, flex: 1 }}>
+                Não, voltar
+              </button>
+              <button onClick={() => marcarFantasma(p)}
+                disabled={ocupado === p.pedido_id + "fantasma"}
+                style={{ ...btnPri, flex: 1, background: "#C4432B" }}>
+                É fantasma
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 8, padding: "10px 13px", borderTop: "1px solid #F3EDE2" }}>
+            {acoes}
+            <button onClick={() => setConfirmandoFantasma(p.pedido_id)}
+              title="Pedido que não existe"
+              style={{ ...btnSec, width: 104, color: "#A32D2D", borderColor: "#EBC9C1" }}>
+              <Ghost size={15} /> Fantasma
+            </button>
+          </div>
+        )}
       </div>
     );
   };
@@ -849,6 +943,7 @@ function Hoje() {
   const [piores, setPiores] = useState([]);
   const [porLinha, setPorLinha] = useState([]);
   const [inicioMedicao, setInicioMedicao] = useState(null);
+  const [fantasmas, setFantasmas] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const dia = hojeISO();
@@ -858,7 +953,7 @@ function Hoje() {
     (async () => {
       const [{ data: est, error: e1 }, { data: esp, error: e2 },
               { data: rank }, { data: piores }, { data: linhasProd },
-              { data: cfg }, { data: tempos }] = await Promise.all([
+              { data: cfg }, { data: tempos }, { data: fant }] = await Promise.all([
         supabase.rpc("desempenho_estacoes", { p_inicio: dia, p_fim: dia }),
         supabase.rpc("espera_montagem", { p_inicio: dia, p_fim: dia }),
         // 048, 049 e 050 sao opcionais para esta tela: se ainda nao rodaram,
@@ -869,6 +964,8 @@ function Hoje() {
         supabase.rpc("kds_ranking_linhas", { p_inicio: dia, p_fim: dia }),
         supabase.from("kds_config").select("inicio_medicao").maybeSingle(),
         supabase.rpc("kds_tempo_estacao", { p_inicio: dia, p_fim: dia }),
+        // migração 133; sem ela o bloco de fantasmas só não aparece
+        supabase.rpc("fantasmas_do_dia", { p_dia: dia }),
       ]);
       if (!vivo) return;
       if (e1) setErro(e1.message);
@@ -886,6 +983,7 @@ function Hoje() {
       setPiores(piores || []);
       setPorLinha(linhasProd || []);
       setInicioMedicao(cfg?.inicio_medicao || null);
+      setFantasmas(Array.isArray(fant) ? fant[0] : fant);
       setCarregando(false);
     })();
     return () => { vivo = false; };
@@ -915,6 +1013,40 @@ function Hoje() {
           </div>
         )}
       </div>
+
+      {/* Pedido fantasma: só aparece quando houve. Zero fantasma não
+          precisa de espaço na tela; três fantasmas numa noite, sim. */}
+      {fantasmas && Number(fantasmas.total) > 0 && (
+        <div style={{ ...cardStyle, marginBottom: 14, borderColor: "#EBC9C1", background: "#FDF4F1" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+            <Ghost size={16} color="#A32D2D" />
+            <span style={{ fontSize: 20, fontWeight: 800, color: "#A32D2D",
+                           fontVariantNumeric: "tabular-nums" }}>{fantasmas.total}</span>
+            <span style={{ fontSize: 13, color: "#8E2420", fontWeight: 600 }}>
+              pedido{Number(fantasmas.total) === 1 ? "" : "s"} fantasma hoje
+            </span>
+          </div>
+          {fantasmas.por_canal && Object.keys(fantasmas.por_canal).length > 0 && (
+            <div style={{ fontSize: 11.5, color: "#6B6558", marginTop: 4 }}>
+              {Object.entries(fantasmas.por_canal).map(([c, n]) => `${c}: ${n}`).join(" · ")}
+            </div>
+          )}
+          {Array.isArray(fantasmas.ultimos) && fantasmas.ultimos.length > 0 && (
+            <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 6, lineHeight: 1.7 }}>
+              {fantasmas.ultimos.slice(0, 5).map((f, i) => (
+                <div key={i}>
+                  {f.hora} · {f.referencia || "sem referência"}
+                  {f.setor ? ` · visto no ${f.setor}` : ""}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8, lineHeight: 1.55 }}>
+            Fantasma repetido no mesmo canal é defeito de integração, não distração da
+            equipe: vale conferir o CardápioWeb antes de cobrar alguém.
+          </div>
+        </div>
+      )}
 
       {antesDoCorte && (
         <div style={avisoAmarelo}>
