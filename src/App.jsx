@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  Bell, LogOut, Loader2, Clock, LayoutGrid, ShieldCheck, KeyRound, CheckCircle2,
+  Bell, LogOut, Loader2, Clock, LayoutGrid, ShieldCheck, KeyRound, CheckCircle2, Eye, EyeOff,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 import { carregarPermissoes, podeVer } from "./lib/permissoes";
@@ -187,6 +187,48 @@ export default function App() {
   );
 }
 // ---------------------------------------------------------------------------
+// Campo de senha com olho
+//
+// Sem o olho, errar a senha no celular é questão de tempo: teclado
+// trocando letra por maiúscula, dedo molhado, senha longa. A pessoa
+// digita três vezes errado, acha que perdeu o acesso e chama o dono.
+// Mostrar o que foi digitado resolve isso — e é escolha de quem está
+// na frente da tela, não do sistema.
+// ---------------------------------------------------------------------------
+function CampoSenha({ valor, onChange, placeholder, autoFocus, onEnter }) {
+  const [mostrar, setMostrar] = useState(false);
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={valor}
+        onChange={(e) => onChange(e.target.value)}
+        type={mostrar ? "text" : "password"}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck="false"
+        onKeyDown={(e) => { if (e.key === "Enter" && onEnter) onEnter(); }}
+        style={{ ...inputStyle, paddingRight: 44 }}
+      />
+      <button
+        type="button"
+        onClick={() => setMostrar((v) => !v)}
+        aria-label={mostrar ? "Esconder senha" : "Mostrar senha"}
+        title={mostrar ? "Esconder senha" : "Mostrar senha"}
+        style={{
+          position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)",
+          width: 32, height: 32, borderRadius: 8, border: "none", background: "transparent",
+          color: "#8A8778", display: "flex", alignItems: "center", justifyContent: "center",
+          cursor: "pointer",
+        }}>
+        {mostrar ? <EyeOff size={17} /> : <Eye size={17} />}
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Tela de carregamento inicial
 // ---------------------------------------------------------------------------
 function TelaCarregando() {
@@ -273,11 +315,10 @@ function TelaNovaSenha({ aoConcluir }) {
           </div>
         </div>
         <div style={{ display: "grid", gap: 10 }}>
-          <input value={senha} onChange={(e) => setSenha(e.target.value)} type="password" autoFocus
-            placeholder="Nova senha (mínimo 6)" style={inputStyle} />
-          <input value={repetir} onChange={(e) => setRepetir(e.target.value)} type="password"
-            placeholder="Repita a nova senha"
-            onKeyDown={(e) => e.key === "Enter" && salvar()} style={inputStyle} />
+          <CampoSenha valor={senha} onChange={setSenha} autoFocus
+            placeholder="Nova senha (mínimo 6)" />
+          <CampoSenha valor={repetir} onChange={setRepetir}
+            placeholder="Repita a nova senha" onEnter={salvar} />
         </div>
         {erro && <div style={{ color: "#C4432B", fontSize: 13, marginTop: 10 }}>{erro}</div>}
         <button onClick={salvar} disabled={carregando}
@@ -378,13 +419,13 @@ function TelaLogin() {
               criar uma senha nova.
             </div>
           )}
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="E-mail" type="email"
+          <input value={email} onChange={(e) => setEmail(e.target.value.trim())} placeholder="E-mail" type="email"
+            autoCapitalize="none" autoCorrect="off" spellCheck="false" inputMode="email"
             onKeyDown={(e) => e.key === "Enter" && modo === "esqueci" && recuperar()}
             style={inputStyle} />
           {modo !== "esqueci" && (
-            <input value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="Senha" type="password"
-              onKeyDown={(e) => e.key === "Enter" && (modo === "entrar" ? entrar() : criarConta())}
-              style={inputStyle} />
+            <CampoSenha valor={senha} onChange={setSenha} placeholder="Senha"
+              onEnter={() => (modo === "entrar" ? entrar() : criarConta())} />
           )}
         </div>
         {erro && <div style={{ color: "#C4432B", fontSize: 13, marginTop: 10 }}>{erro}</div>}
