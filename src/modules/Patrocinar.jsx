@@ -35,15 +35,28 @@ async function chamarProxy(acao, corpo = {}) {
 export default function Patrocinar() {
   const [d, setD] = useState(null);
   const [carregando, setCarregando] = useState(true);
+  const recarregarMidias = useCallback(async () => {
+    const { data } = await supabase.from("anuncio_midias")
+      .select("*").order("criado_em", { ascending: false }).limit(24);
+    setMidias(data || []);
+  }, []);
   const [erro, setErro] = useState("");
   // Posts escolhidos (até 3). Um só = patrocínio simples; mais = teste lado a lado.
   const [sel, setSel] = useState([]);
+  // (058) Arquivo subido que não passa pelo feed. É exclusivo com os posts:
+  // ou se patrocina um post do Instagram, ou um arquivo — nunca os dois.
+  const [midias, setMidias] = useState([]);
+  const [midiaSubida, setMidiaSubida] = useState(null);
   const [enviando, setEnviando] = useState(false);
   const [resultado, setResultado] = useState(null);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
     const r = await chamarProxy("patrocinio_dados");
+    // As mídias subidas vêm direto do banco: são do painel, não da Meta.
+    const { data: ms } = await supabase.from("anuncio_midias")
+      .select("*").order("criado_em", { ascending: false }).limit(24);
+    setMidias(ms || []);
     if (r.erro) setErro(r.erro);
     else { setErro(""); setD(r.data); }
     setCarregando(false);
@@ -125,6 +138,11 @@ export default function Patrocinar() {
       </div>
 
       <div style={cardStyle}>
+        <SubirMidia contaId={cfg.conta_id} midias={midias} aoMudar={recarregarMidias}
+                    escolhida={midiaSubida}
+                    aoEscolher={(id) => { setMidiaSubida(id); if (id) setSel([]); }}
+                    podeAprovar={podeAprovar && !semPonto} />
+
         <div style={sectionLabel}>Posts do Instagram {cfg.instagram_usuario ? `@${cfg.instagram_usuario}` : ""}</div>
         {posts.length === 0 ? (
           <div style={dica}>Nenhum post encontrado.</div>
@@ -132,7 +150,8 @@ export default function Patrocinar() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))", gap: 9 }}>
             {posts.map((p) => (
               <Post key={p.id} p={p} ordem={sel.findIndex((x) => x.id === p.id) + 1}
-                    onClick={() => podeAprovar && !semPonto && alternar(p)} clicavel={podeAprovar && !semPonto} />
+                    onClick={() => { if (podeAprovar && !semPonto) { setMidiaSubida(null); alternar(p); } }}
+                    clicavel={podeAprovar && !semPonto} />
             ))}
           </div>
         )}
@@ -167,10 +186,13 @@ export default function Patrocinar() {
 
       <Configuracao cfg={cfg} podeEditar={podeAprovar} aoSalvar={carregar} />
 
-      {sel.length > 0 && (
+      {(sel.length > 0 || midiaSubida) && (
         <BarraAprovacao sel={sel} cfg={cfg} sobra={sobra} curva={d.curva_pedidos}
+                        subida={midias.find((m) => m.id === midiaSubida) || null}
                         pontosSalvos={d.pontos_salvos} aoSalvarPontos={carregar}
-                        enviando={enviando} aoCancelar={() => setSel([])} aoAprovar={aprovar} />
+                        enviando={enviando}
+                        aoCancelar={() => { setSel([]); setMidiaSubida(null); }}
+                        aoAprovar={aprovar} />
       )}
     </div>
   );
@@ -540,7 +562,167 @@ function Interesses({ escolhidos, aoMudar }) {
   );
 }
 
-function BarraAprovacao({ sel, cfg, sobra, curva, pontosSalvos, aoSalvarPontos, enviando, aoCancelar, aoAprovar }) {
+// ---------------------------------------------------------------------
+// SUBIR VÍDEO OU FOTO  (058)
+//
+// Anúncio que não passa pelo feed: o arquivo vai para o Storage, de lá
+// para a Meta, e vira criativo sem nunca aparecer no Instagram.
+//
+// O caminho é navegador -> Storage -> Edge Function -> Meta. O navegador
+// nunca toca no token da Meta, e a função não recebe 30 MB pelo corpo da
+// requisição — ela busca do Storage.
+//
+// Vídeo a Meta processa de forma assíncrona. Enquanto não fica pronto,
+// aprovar falha com um erro que não explica nada. Por isso a tela fica
+// perguntando o estado e só libera a seleção quando pode.
+// ---------------------------------------------------------------------
+const TIPOS_ACEITOS = "video/mp4,video/quicktime,image/jpeg,image/png";
+const TAMANHO_MAX = 100 * 1024 * 1024; // igual ao limite do balde na 058
+
+function SubirMidia({ contaId, midias, aoMudar, escolhida, aoEscolher, podeAprovar }) {
+  const [subindo, setSubindo] = useState(false);
+  const [erro, setErro] = useState("");
+  const entrada = useRef(null);
+
+  // Enquanto houver vídeo processando, pergunta à Meta de 4 em 4 segundos.
+  useEffect(() => {
+    const processando = (midias || []).filter((m) => m.estado === "processando");
+    if (!processando.length) return;
+    let vivo = true;
+    const t = setInterval(async () => {
+      for (const m of processando) {
+        const r = await chamarProxy("estado_midia", { midia_id: m.id });
+        if (!vivo) return;
+        if (r.data?.estado && r.data.estado !== "processando") { aoMudar(); return; }
+      }
+    }, 4000);
+    return () => { vivo = false; clearInterval(t); };
+  }, [midias, aoMudar]);
+
+  const escolher = async (arquivo) => {
+    if (!arquivo) return;
+    setErro("");
+    if (arquivo.size > TAMANHO_MAX) {
+      setErro(`O arquivo tem ${(arquivo.size / 1048576).toFixed(0)} MB; o limite é 100 MB.`);
+      return;
+    }
+    const ehVideo = arquivo.type.startsWith("video");
+    setSubindo(true);
+    try {
+      // Nome com carimbo de hora: dois arquivos com o mesmo nome não se
+      // atropelam, e dá para reconhecer qual é qual depois.
+      const limpo = arquivo.name.replace(/[^\w.\-]+/g, "_").slice(-60);
+      const caminho = `${contaId}/${Date.now()}_${limpo}`;
+
+      const { error: errUp } = await supabase.storage.from("anuncios")
+        .upload(caminho, arquivo, { contentType: arquivo.type, upsert: false });
+      if (errUp) throw new Error(`Não consegui subir o arquivo: ${errUp.message}`);
+
+      const { data: linha, error: errIns } = await supabase.from("anuncio_midias").insert({
+        conta_id: contaId,
+        caminho,
+        nome: arquivo.name.slice(0, 120),
+        tipo: ehVideo ? "video" : "imagem",
+        bytes: arquivo.size,
+      }).select("id").single();
+      if (errIns) throw new Error(`Subiu, mas não consegui registrar: ${errIns.message}`);
+
+      const r = await chamarProxy("subir_midia", { midia_id: linha.id });
+      if (r.erro || r.data?.ok === false) {
+        throw new Error(r.data?.error || r.erro || "A Meta não aceitou o arquivo.");
+      }
+      aoMudar();
+    } catch (e) {
+      setErro(String(e instanceof Error ? e.message : e));
+    } finally {
+      setSubindo(false);
+      if (entrada.current) entrada.current.value = "";
+    }
+  };
+
+  const apagar = async (m) => {
+    if (!window.confirm(`Apagar "${m.nome || "este arquivo"}"? Some daqui; anúncio já criado com ele continua rodando.`)) return;
+    await supabase.storage.from("anuncios").remove([m.caminho]);
+    await supabase.from("anuncio_midias").delete().eq("id", m.id);
+    if (escolhida === m.id) aoEscolher(null);
+    aoMudar();
+  };
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={sectionLabel}>Enviados por aqui</div>
+      <div style={{ display: "grid", gap: 9,
+                    gridTemplateColumns: "repeat(auto-fill, minmax(165px, 1fr))" }}>
+        <div onClick={() => podeAprovar && !subindo && entrada.current?.click()}
+             style={{ border: "1.5px dashed #D8D0BE", borderRadius: 10, minHeight: 150,
+                      display: "flex", flexDirection: "column", alignItems: "center",
+                      justifyContent: "center", gap: 4, textAlign: "center", padding: 10,
+                      cursor: podeAprovar && !subindo ? "pointer" : "default",
+                      opacity: podeAprovar ? 1 : 0.5 }}>
+          {subindo ? <Loader2 size={18} /> : <span style={{ fontSize: 22, lineHeight: 1 }}>+</span>}
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+            {subindo ? "Enviando…" : "Subir vídeo ou foto"}
+          </div>
+          <div style={dica}>sem postar no Instagram</div>
+        </div>
+
+        {(midias || []).map((m) => {
+          const pronta = m.estado === "pronto";
+          const falhou = m.estado === "falhou";
+          const marcada = escolhida === m.id;
+          return (
+            <div key={m.id}
+                 onClick={() => pronta && podeAprovar && aoEscolher(marcada ? null : m.id)}
+                 style={{ border: marcada ? "2px solid #22231F" : "1px solid #E8E2D2",
+                          borderRadius: 10, overflow: "hidden", position: "relative",
+                          cursor: pronta && podeAprovar ? "pointer" : "default",
+                          background: "#FFFFFF" }}>
+              <div style={{ height: 105, background: "#F0ECE2", display: "flex",
+                            alignItems: "center", justifyContent: "center" }}>
+                {m.meta_thumb_url
+                  ? <img src={m.meta_thumb_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  : <span style={{ fontSize: 20 }}>{m.tipo === "video" ? "▶" : "▣"}</span>}
+              </div>
+              <div style={{ padding: "7px 9px" }}>
+                <div style={{ fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis",
+                              whiteSpace: "nowrap" }}>{m.nome || "arquivo"}</div>
+                <div style={{ ...dica, marginTop: 2 }}>
+                  {m.estado === "processando" && <>a Meta está processando…</>}
+                  {m.estado === "enviando" && <>enviando para a Meta…</>}
+                  {pronta && <>pronto para patrocinar</>}
+                  {falhou && <span style={{ color: "#C4432B" }}>{m.erro || "falhou"}</span>}
+                </div>
+              </div>
+              {podeAprovar && (
+                <button onClick={(e) => { e.stopPropagation(); apagar(m); }}
+                        style={{ position: "absolute", top: 5, right: 5, border: "none",
+                                 background: "rgba(34,35,31,.72)", color: "#F3EFE3",
+                                 borderRadius: 7, width: 22, height: 22, cursor: "pointer",
+                                 display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <input ref={entrada} type="file" accept={TIPOS_ACEITOS} style={{ display: "none" }}
+             onChange={(e) => escolher(e.target.files?.[0])} />
+
+      {erro && <div style={{ ...avisoErro, marginTop: 8 }}><AlertTriangle size={14} /> {erro}</div>}
+
+      <div style={{ ...dica, marginTop: 8 }}>
+        MP4, MOV, JPG ou PNG, até 100 MB. O arquivo vira anúncio direto na Meta e
+        <b> não aparece no seu feed</b>. Em compensação ele nasce sem curtida e sem
+        comentário — para oferta direta isso não atrapalha, para conteúdo que depende
+        de credibilidade o post do feed costuma render mais.
+      </div>
+    </div>
+  );
+}
+
+function BarraAprovacao({ sel, cfg, sobra, curva, subida, pontosSalvos, aoSalvarPontos, enviando, aoCancelar, aoAprovar }) {
   const [valor, setValor] = useState(String(cfg.valor_padrao ?? ""));
   const [dias, setDias] = useState(String(cfg.dias_padrao ?? ""));
   const [mais, setMais] = useState(false);
@@ -560,12 +742,15 @@ function BarraAprovacao({ sel, cfg, sobra, curva, pontosSalvos, aoSalvarPontos, 
   const [idadeMax, setIdadeMax] = useState(String(cfg.idade_max ?? 45));
   const [quemConta, setQuemConta] = useState(cfg.quem_conta ?? "mora_ou_esteve");
   const [nomeConjunto, setNomeConjunto] = useState("");
+  // (058) O arquivo subido não tem legenda vinda do Instagram: ela é
+  // escrita aqui e vai no criativo.
+  const [legenda, setLegenda] = useState("");
   const [salvando, setSalvando] = useState(false);
   const [confirmo, setConfirmo] = useState(false);
 
   const mexeu = (fn) => (...a) => { fn(...a); setConfirmo(false); };
   // Trocou os posts escolhidos: a confirmação anterior não vale mais.
-  const chave = sel.map((p) => p.id).join(",");
+  const chave = subida ? `subida:${subida.id}` : sel.map((p) => p.id).join(",");
   useEffect(() => { setConfirmo(false); }, [chave]);
   const valorNum = Number(String(valor).replace(",", "."));
   const sugestao = sugerirHoras(curva);
@@ -594,6 +779,8 @@ function BarraAprovacao({ sel, cfg, sobra, curva, pontosSalvos, aoSalvarPontos, 
     idade_min: Number(idadeMin) || cfg.idade_min,
     idade_max: Number(idadeMax) || cfg.idade_max,
     quem_conta: quemConta,
+    midia_subida_id: subida ? subida.id : null,
+    legenda: subida ? legenda : null,
   });
 
   const resumo = [
@@ -609,10 +796,25 @@ function BarraAprovacao({ sel, cfg, sobra, curva, pontosSalvos, aoSalvarPontos, 
     <div style={barraFixa}>
       <div style={{ maxWidth: 980, margin: "0 auto", padding: "11px 16px", display: "grid", gap: 8, maxHeight: "75vh", overflowY: "auto" }}>
         <div style={{ fontWeight: 700, fontSize: 13 }}>
-          {sel.length === 1
-            ? <>Patrocinar: “{sel[0].texto?.slice(0, 70) || `post ${sel[0].id}`}”</>
-            : <>Testar {sel.length} posts juntos, dividindo a verba</>}
+          {subida
+            ? <>Patrocinar o arquivo “{subida.nome || "subido"}” · não vai para o feed</>
+            : sel.length === 1
+              ? <>Patrocinar: “{sel[0].texto?.slice(0, 70) || `post ${sel[0].id}`}”</>
+              : <>Testar {sel.length} posts juntos, dividindo a verba</>}
         </div>
+
+        {subida && (
+          <div>
+            <textarea style={{ ...inputStyle, width: "100%", minHeight: 54, resize: "vertical" }}
+                      placeholder="Legenda do anúncio — o texto que aparece acima do vídeo"
+                      value={legenda} maxLength={2000}
+                      onChange={(e) => mexeu(setLegenda)(e.target.value)} />
+            <div style={dica}>
+              Este anúncio não existe como post, então a legenda é escrita aqui.
+              Sem ela o anúncio sai só com a mídia e o botão.
+            </div>
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12.5 }}>
           <label>Valor R$ <input style={{ ...inputStyle, width: 80 }} inputMode="decimal"
