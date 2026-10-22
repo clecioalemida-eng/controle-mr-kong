@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Loader2, AlertTriangle, CheckCircle2, Info, ExternalLink, Rocket, MapPin, RefreshCw, Download, X,
 } from "lucide-react";
@@ -169,6 +169,7 @@ export default function Patrocinar() {
 
       {sel.length > 0 && (
         <BarraAprovacao sel={sel} cfg={cfg} sobra={sobra} curva={d.curva_pedidos}
+                        pontosSalvos={d.pontos_salvos} aoSalvarPontos={carregar}
                         enviando={enviando} aoCancelar={() => setSel([])} aoAprovar={aprovar} />
       )}
     </div>
@@ -295,7 +296,251 @@ function hojeISO() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
 }
 
-function BarraAprovacao({ sel, cfg, sobra, curva, enviando, aoCancelar, aoAprovar }) {
+// ---------------------------------------------------------------------
+// MAPA DE PONTOS  (precisa da 057 e da meta-ads-proxy nova)
+//
+// Um raio só de 6 km em volta da loja faz você pagar por gente que mora
+// onde a entrega não chega, e deixa de fora o shopping que fica a 7 km.
+// A Meta aceita até 20 pontos num conjunto, cada um com o seu raio —
+// `custom_locations` sempre foi uma lista; o painel é que só mandava um.
+//
+// O Leaflet entra por CDN e não pelo package.json de propósito: assim o
+// mapa não vira uma dependência do build inteiro, e quem sobe arquivo à
+// mão não precisa subir package.json junto. Se o CDN não responder, a
+// tela cai no modo sem mapa — dá pra digitar a coordenada e continuar.
+// ---------------------------------------------------------------------
+const LEAFLET_CSS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+const LEAFLET_JS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+
+function usarLeaflet() {
+  // `typeof window` e não `window.L` direto: o app é só navegador hoje,
+  // mas um render fora dele quebraria aqui, e o custo do guarda é zero.
+  const [pronto, setPronto] = useState(typeof window !== "undefined" && !!window.L);
+  const [falhou, setFalhou] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.L) { setPronto(true); return; }
+    if (!document.querySelector(`link[href="${LEAFLET_CSS}"]`)) {
+      const l = document.createElement("link");
+      l.rel = "stylesheet"; l.href = LEAFLET_CSS;
+      document.head.appendChild(l);
+    }
+    let s = document.querySelector(`script[src="${LEAFLET_JS}"]`);
+    if (!s) {
+      s = document.createElement("script");
+      s.src = LEAFLET_JS; s.async = true;
+      document.head.appendChild(s);
+    }
+    const ok = () => setPronto(true);
+    const ruim = () => setFalhou(true);
+    s.addEventListener("load", ok);
+    s.addEventListener("error", ruim);
+    return () => { s.removeEventListener("load", ok); s.removeEventListener("error", ruim); };
+  }, []);
+  return { pronto, falhou };
+}
+
+function MapaPontos({ pontos, aoMudar, centro }) {
+  const { pronto, falhou } = usarLeaflet();
+  const caixa = useRef(null);
+  const mapa = useRef(null);
+  const camadas = useRef([]);
+  // A lista mais recente, sem reinscrever os eventos do mapa a cada render.
+  const atual = useRef(pontos);
+  useEffect(() => { atual.current = pontos; }, [pontos]);
+
+  useEffect(() => {
+    if (!pronto || !caixa.current || mapa.current) return;
+    const L = window.L;
+    const m = L.map(caixa.current, { zoomControl: true })
+      .setView([centro.lat, centro.lng], 13);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: "© OpenStreetMap",
+    }).addTo(m);
+    // Clicar no mapa põe um ponto novo com 2 km.
+    m.on("click", (e) => {
+      const lista = atual.current;
+      if (lista.length >= 20) return;
+      aoMudar([...lista, {
+        lat: Number(e.latlng.lat.toFixed(6)),
+        lng: Number(e.latlng.lng.toFixed(6)),
+        raio: 2, nome: "",
+      }]);
+    });
+    mapa.current = m;
+    // O mapa nasce dentro de uma barra que acabou de abrir; sem isto ele
+    // calcula o tamanho errado e metade dos tiles fica cinza.
+    setTimeout(() => m.invalidateSize(), 60);
+    return () => { m.remove(); mapa.current = null; };
+  }, [pronto, centro.lat, centro.lng, aoMudar]);
+
+  // Redesenha pinos e círculos quando a lista muda.
+  useEffect(() => {
+    if (!mapa.current || !window.L) return;
+    const L = window.L;
+    for (const c of camadas.current) c.remove();
+    camadas.current = [];
+    pontos.forEach((p, i) => {
+      const circulo = L.circle([p.lat, p.lng], {
+        radius: p.raio * 1000, color: "#C4432B", weight: 1.5,
+        fillColor: "#C4432B", fillOpacity: 0.12,
+      }).addTo(mapa.current);
+      const pino = L.marker([p.lat, p.lng], { draggable: true })
+        .addTo(mapa.current)
+        .bindTooltip(String(i + 1), { permanent: true, direction: "top", className: "pino-num" });
+      pino.on("dragend", (e) => {
+        const ll = e.target.getLatLng();
+        const nova = atual.current.map((x, j) => j === i
+          ? { ...x, lat: Number(ll.lat.toFixed(6)), lng: Number(ll.lng.toFixed(6)) } : x);
+        aoMudar(nova);
+      });
+      camadas.current.push(circulo, pino);
+    });
+  }, [pontos, pronto, aoMudar]);
+
+  const porMira = () => {
+    if (!mapa.current || pontos.length >= 20) return;
+    const c = mapa.current.getCenter();
+    aoMudar([...pontos, {
+      lat: Number(c.lat.toFixed(6)), lng: Number(c.lng.toFixed(6)), raio: 2, nome: "",
+    }]);
+  };
+
+  if (falhou) {
+    return (
+      <div style={{ ...avisoInfo, marginBottom: 8 }}>
+        <Info size={14} />
+        <span>Não consegui carregar o mapa (sem internet para o OpenStreetMap?).
+        Dá para continuar: os pontos já escolhidos valem, e o raio de cada um
+        você ajusta na lista abaixo.</span>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div ref={caixa} style={{ height: 230, borderRadius: 10, overflow: "hidden",
+                                border: "1px solid #E8E2D2", marginBottom: 8,
+                                background: "#EDE7DA" }}>
+        {!pronto && <div style={{ ...dica, padding: 10 }}>Carregando o mapa…</div>}
+      </div>
+      <button style={{ ...btnSecondary, marginBottom: 8 }} onClick={porMira} disabled={pontos.length >= 20}>
+        <MapPin size={13} /> Pôr ponto na mira (centro do mapa)
+      </button>
+    </>
+  );
+}
+
+// A lista ao lado do mapa: nome, raio e o botão de tirar.
+function ListaDePontos({ pontos, aoMudar }) {
+  if (!pontos.length) {
+    return <div style={dica}>Nenhum ponto ainda. Clique no mapa, ou use a mira.</div>;
+  }
+  const mudar = (i, campo, valor) =>
+    aoMudar(pontos.map((p, j) => (j === i ? { ...p, [campo]: valor } : p)));
+
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      {pontos.map((p, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8,
+                              border: "1px solid #E8E2D2", borderRadius: 9, padding: "7px 9px" }}>
+          <span style={{ width: 19, height: 19, borderRadius: "50%", background: "#22231F",
+                         color: "#F3EFE3", fontSize: 10, fontWeight: 800, flex: "none",
+                         display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {i + 1}
+          </span>
+          <input style={{ ...inputStyle, flex: 1, minWidth: 70, padding: "5px 7px" }}
+                 placeholder={`Ponto ${i + 1}`} value={p.nome || ""}
+                 onChange={(e) => mudar(i, "nome", e.target.value.slice(0, 60))} />
+          <input type="range" min={1} max={80} value={p.raio} style={{ flex: 1, minWidth: 60 }}
+                 onChange={(e) => mudar(i, "raio", Number(e.target.value))} />
+          <input style={{ ...inputStyle, width: 52, padding: "5px 7px" }} inputMode="numeric"
+                 value={p.raio}
+                 onChange={(e) => {
+                   const n = Math.max(1, Math.min(80, Number(e.target.value) || 1));
+                   mudar(i, "raio", n);
+                 }} />
+          <span style={{ fontSize: 11, color: "#8A8778" }}>km</span>
+          <button style={{ ...btnGhost, borderColor: "#E7BDB2", color: "#C4432B", padding: "3px 7px" }}
+                  onClick={() => aoMudar(pontos.filter((_, j) => j !== i))}>
+            tirar
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// INTERESSES
+//
+// A busca vai à Meta pela proxy. O tamanho do público vem junto porque
+// existe "Hambúrguer" com 200 milhões de pessoas e um homônimo com 300 —
+// escolher o errado é pagar caro por um anúncio que não entrega.
+// ---------------------------------------------------------------------
+function Interesses({ escolhidos, aoMudar }) {
+  const [termo, setTermo] = useState("");
+  const [achados, setAchados] = useState([]);
+  const [buscando, setBuscando] = useState(false);
+
+  useEffect(() => {
+    const t = String(termo).trim();
+    if (t.length < 2) { setAchados([]); return; }
+    let vivo = true;
+    // Espera a pessoa parar de digitar: sem isto é uma chamada por tecla.
+    const timer = setTimeout(async () => {
+      setBuscando(true);
+      const r = await chamarProxy("buscar_interesses", { q: t });
+      if (!vivo) return;
+      setBuscando(false);
+      setAchados(r.data?.itens ?? []);
+    }, 400);
+    return () => { vivo = false; clearTimeout(timer); };
+  }, [termo]);
+
+  const juntar = (x) => {
+    if (escolhidos.some((e) => e.id === x.id)) return;
+    aoMudar([...escolhidos, { id: x.id, nome: x.nome }]);
+    setTermo(""); setAchados([]);
+  };
+
+  return (
+    <div>
+      <input style={{ ...inputStyle, width: "100%" }} value={termo}
+             placeholder="buscar… ex.: hambúrguer, delivery, chopp"
+             onChange={(e) => setTermo(e.target.value)} />
+      {buscando && <div style={{ ...dica, marginTop: 4 }}>procurando…</div>}
+      {achados.length > 0 && (
+        <div style={{ border: "1px solid #E8E2D2", borderRadius: 9, marginTop: 5,
+                      maxHeight: 160, overflowY: "auto" }}>
+          {achados.map((x) => (
+            <div key={x.id} onClick={() => juntar(x)}
+                 style={{ padding: "7px 10px", cursor: "pointer", fontSize: 12.5,
+                          borderTop: "1px solid #F4EFE4" }}>
+              {x.nome}
+              <span style={{ ...dica, marginLeft: 6 }}>
+                {x.tamanho ? `${numero(x.tamanho)} pessoas` : ""}{x.caminho ? ` · ${x.caminho}` : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {escolhidos.length > 0 && (
+        <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 7 }}>
+          {escolhidos.map((e) => (
+            <span key={e.id} style={{ ...chip, display: "inline-flex", gap: 5, alignItems: "center" }}>
+              {e.nome}
+              <X size={11} style={{ cursor: "pointer", color: "#8A8778" }}
+                 onClick={() => aoMudar(escolhidos.filter((y) => y.id !== e.id))} />
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BarraAprovacao({ sel, cfg, sobra, curva, pontosSalvos, aoSalvarPontos, enviando, aoCancelar, aoAprovar }) {
   const [valor, setValor] = useState(String(cfg.valor_padrao ?? ""));
   const [dias, setDias] = useState(String(cfg.dias_padrao ?? ""));
   const [mais, setMais] = useState(false);
@@ -304,6 +549,18 @@ function BarraAprovacao({ sel, cfg, sobra, curva, enviando, aoCancelar, aoAprova
   const [publico, setPublico] = useState("raio");
   const [inicio, setInicio] = useState("");
   const [horas, setHoras] = useState(null); // null = o dia todo
+  // (057) O que não existia: pontos no mapa, interesses, número de WhatsApp
+  // e idade por patrocínio. Tudo começa vazio — e vazio significa "usa a
+  // configuração", que é exatamente o comportamento de antes.
+  const [ondeTipo, setOndeTipo] = useState("config");   // config | pontos
+  const [pontos, setPontos] = useState([]);
+  const [interesses, setInteresses] = useState([]);
+  const [zap, setZap] = useState("");
+  const [idadeMin, setIdadeMin] = useState(String(cfg.idade_min ?? 18));
+  const [idadeMax, setIdadeMax] = useState(String(cfg.idade_max ?? 45));
+  const [quemConta, setQuemConta] = useState(cfg.quem_conta ?? "mora_ou_esteve");
+  const [nomeConjunto, setNomeConjunto] = useState("");
+  const [salvando, setSalvando] = useState(false);
   const [confirmo, setConfirmo] = useState(false);
 
   const mexeu = (fn) => (...a) => { fn(...a); setConfirmo(false); };
@@ -329,6 +586,14 @@ function BarraAprovacao({ sel, cfg, sobra, curva, enviando, aoCancelar, aoAprova
     objetivo, posicionamento, publico,
     inicio: inicio || null,
     horas,
+    // (057) Só vai o que foi escolhido. Lista vazia vira null, e a proxy
+    // cai na configuração — o mesmo pedido de antes desta tela.
+    pontos: ondeTipo === "pontos" && pontos.length ? pontos : null,
+    interesses: interesses.length ? interesses : null,
+    whatsapp_numero: objetivo === "whatsapp" && zap ? zap : null,
+    idade_min: Number(idadeMin) || cfg.idade_min,
+    idade_max: Number(idadeMax) || cfg.idade_max,
+    quem_conta: quemConta,
   });
 
   const resumo = [
@@ -374,10 +639,105 @@ function BarraAprovacao({ sel, cfg, sobra, curva, enviando, aoCancelar, aoAprova
             </Grupo>
             <div style={dica}>Post que é Reel serve para Stories e Reels. Foto quadrada em Stories fica com faixa em volta — por isso o padrão é automático.</div>
 
+            {/* (057) Para qual WhatsApp. É o campo que resolve o 100/2446886:
+                sem ele a Meta tenta achar um número na Página e não acha. */}
+            {objetivo === "whatsapp" && (
+              <>
+                <Grupo titulo="Para qual WhatsApp">
+                  {(cfg.whatsapp_numeros ?? []).map((n) => (
+                    <Opcao key={n.numero} ativo={zap === n.numero}
+                           onClick={() => mexeu(setZap)(n.numero)}
+                           nome={`${n.nome} · ${formatarZap(n.numero)}`} />
+                  ))}
+                  <Opcao ativo={!zap} onClick={() => mexeu(setZap)("")} nome="Deixar a Meta escolher" />
+                </Grupo>
+                <div style={dica}>
+                  {(cfg.whatsapp_numeros ?? []).length === 0
+                    ? 'Nenhum número cadastrado. Em "Configuração do patrocínio" você guarda os números da casa — sem isso a Meta tenta achar um na Página, e é aí que ela recusa.'
+                    : "Deixar a Meta escolher é o que o painel fazia antes, e o que vinha falhando: ela procura um número na Página e recusa quando não acha."}
+                </div>
+              </>
+            )}
+
+            {/* (057) Onde: o ponto da configuração, ou vários pontos no mapa. */}
+            <Grupo titulo="Onde">
+              <Opcao ativo={ondeTipo === "config"} onClick={() => mexeu(setOndeTipo)("config")}
+                     nome={`Um ponto · ${cfg.raio_km} km`} />
+              <Opcao ativo={ondeTipo === "pontos"} onClick={() => mexeu(setOndeTipo)("pontos")}
+                     nome={pontos.length ? `${pontos.length} ponto${pontos.length > 1 ? "s" : ""} no mapa` : "Vários pontos"} />
+            </Grupo>
+
+            {ondeTipo === "pontos" && (
+              <div style={{ border: "1px solid #E8E2D2", borderRadius: 10, padding: 10 }}>
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+                  <span style={dica}>Pontos salvos:</span>
+                  <select style={{ ...inputStyle, padding: "5px 7px" }}
+                          defaultValue=""
+                          onChange={(e) => {
+                            const c = (pontosSalvos ?? []).find((x) => x.id === e.target.value);
+                            if (c) mexeu(setPontos)(c.pontos || []);
+                          }}>
+                    <option value="">{(pontosSalvos ?? []).length ? "escolher…" : "nenhum salvo"}</option>
+                    {(pontosSalvos ?? []).map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                  </select>
+                  <input style={{ ...inputStyle, flex: 1, minWidth: 120, padding: "5px 7px" }}
+                         placeholder="nome, ex.: Bairros do delivery"
+                         value={nomeConjunto} onChange={(e) => setNomeConjunto(e.target.value)} />
+                  <button style={btnGhost} disabled={salvando || !nomeConjunto.trim() || !pontos.length}
+                          onClick={async () => {
+                            setSalvando(true);
+                            await supabase.from("patrocinio_pontos").upsert({
+                              conta_id: cfg.conta_id, nome: nomeConjunto.trim(), pontos,
+                            }, { onConflict: "conta_id,nome" });
+                            setSalvando(false); setNomeConjunto("");
+                            aoSalvarPontos?.();
+                          }}>
+                    {salvando ? <Loader2 size={12} /> : null} Salvar estes pontos
+                  </button>
+                </div>
+
+                <MapaPontos pontos={pontos} aoMudar={mexeu(setPontos)}
+                            centro={{ lat: Number(cfg.centro_lat) || -17.7922,
+                                      lng: Number(cfg.centro_lng) || -50.9269 }} />
+                <ListaDePontos pontos={pontos} aoMudar={mexeu(setPontos)} />
+                <div style={{ ...dica, marginTop: 7 }}>
+                  Clique no mapa para pôr um ponto, ou arraste até o bairro e use a mira (até 20).
+                  Arraste o pino para ajustar. Raio de 1 a 80 km, um para cada ponto.
+                </div>
+              </div>
+            )}
+
             <Grupo titulo="Quem vê">
               {PUB.map((o) => <Opcao key={o.v} ativo={publico === o.v} onClick={() => mexeu(setPublico)(o.v)} nome={o.n} />)}
             </Grupo>
-            <div style={dica}>Sempre dentro do raio de {cfg.raio_km} km. "Quem já interagiu" é quem curtiu, comentou, salvou ou mandou mensagem ao @ no último ano; o público é criado na primeira vez que você usar.</div>
+            <div style={dica}>
+              {ondeTipo === "pontos" && pontos.length
+                ? `Dentro dos ${pontos.length} ponto${pontos.length > 1 ? "s" : ""} marcados no mapa.`
+                : `Sempre dentro do raio de ${cfg.raio_km} km.`}
+              {" "}"Quem já interagiu" é quem curtiu, comentou, salvou ou mandou mensagem ao @ no último ano; o público é criado na primeira vez que você usar.
+            </div>
+
+            {/* (057) Idade e "quem conta" deixaram de ser fixos na configuração. */}
+            <Grupo titulo="Quem">
+              <label style={{ fontSize: 12.5 }}>Idade <input style={{ ...inputStyle, width: 52 }} inputMode="numeric"
+                     value={idadeMin} onChange={(e) => mexeu(setIdadeMin)(e.target.value)} /></label>
+              <label style={{ fontSize: 12.5 }}>a <input style={{ ...inputStyle, width: 52 }} inputMode="numeric"
+                     value={idadeMax} onChange={(e) => mexeu(setIdadeMax)(e.target.value)} /></label>
+              <Opcao ativo={quemConta === "mora"} onClick={() => mexeu(setQuemConta)("mora")} nome="quem mora" />
+              <Opcao ativo={quemConta !== "mora"} onClick={() => mexeu(setQuemConta)("mora_ou_esteve")} nome="mora ou esteve" />
+            </Grupo>
+            <div style={dica}>
+              Para restaurante, <b>"mora ou esteve"</b> costuma valer mais: pega quem passou
+              pelo shopping ou pela faculdade na hora do almoço, não só quem mora ali.
+            </div>
+
+            {/* (057) Interesses. Sem eles, público amplo — como era antes. */}
+            <Grupo titulo="Interesses">
+              <Opcao ativo={interesses.length === 0} onClick={() => mexeu(setInteresses)([])} nome="Amplo" />
+              <Opcao ativo={interesses.length > 0} onClick={() => {}}
+                     nome={interesses.length ? `${interesses.length} escolhido${interesses.length > 1 ? "s" : ""}` : "Escolher"} />
+            </Grupo>
+            <Interesses escolhidos={interesses} aoMudar={mexeu(setInteresses)} />
 
             <Grupo titulo="Quando começa">
               <Opcao ativo={!inicio} onClick={() => mexeu(setInicio)("")} nome="Agora" />
@@ -886,6 +1246,17 @@ function Aviso({ tipo, texto }) {
 // ---------------------------------------------------------------------------
 // Formato
 // ---------------------------------------------------------------------------
+// +5564999990001 -> (64) 99999-0001
+function formatarZap(n) {
+  const d = String(n ?? "").replace(/\D/g, "");
+  const semDdi = d.startsWith("55") ? d.slice(2) : d;
+  if (semDdi.length < 10) return d;
+  const ddd = semDdi.slice(0, 2);
+  const resto = semDdi.slice(2);
+  const meio = resto.length > 8 ? resto.slice(0, 5) : resto.slice(0, 4);
+  return `(${ddd}) ${meio}-${resto.slice(meio.length)}`;
+}
+
 function dinheiro(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "—";
