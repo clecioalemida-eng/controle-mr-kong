@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Loader2, AlertTriangle, CheckCircle2, Info, ExternalLink, Rocket, MapPin, RefreshCw, Download, X,
+  Maximize2, Minimize2,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
@@ -364,6 +365,9 @@ function usarLeaflet() {
 
 function MapaPontos({ pontos, aoMudar, centro }) {
   const { pronto, falhou } = usarLeaflet();
+  // Marcar bairro por bairro num mapa de 230 px é adivinhação. Começa alto e
+  // tem o botão de ampliar para quando o trabalho é mais fino.
+  const [grande, setGrande] = useState(false);
   const caixa = useRef(null);
   const mapa = useRef(null);
   const camadas = useRef([]);
@@ -395,6 +399,14 @@ function MapaPontos({ pontos, aoMudar, centro }) {
     setTimeout(() => m.invalidateSize(), 60);
     return () => { m.remove(); mapa.current = null; };
   }, [pronto, centro.lat, centro.lng, aoMudar]);
+
+  // Ao crescer ou encolher, o Leaflet precisa remedir a caixa, senão fica
+  // metade do mapa cinza. O atraso espera a transição de altura terminar.
+  useEffect(() => {
+    if (!mapa.current) return;
+    const t = setTimeout(() => mapa.current && mapa.current.invalidateSize(), 220);
+    return () => clearTimeout(t);
+  }, [grande]);
 
   // Redesenha pinos e círculos quando a lista muda.
   useEffect(() => {
@@ -441,14 +453,22 @@ function MapaPontos({ pontos, aoMudar, centro }) {
 
   return (
     <>
-      <div ref={caixa} style={{ height: 230, borderRadius: 10, overflow: "hidden",
+      <div ref={caixa} style={{ height: grande ? "76vh" : 440, minHeight: 300,
+                                transition: "height .18s ease",
+                                borderRadius: 10, overflow: "hidden",
                                 border: "1px solid #E8E2D2", marginBottom: 8,
                                 background: "#EDE7DA" }}>
         {!pronto && <div style={{ ...dica, padding: 10 }}>Carregando o mapa…</div>}
       </div>
-      <button style={{ ...btnSecondary, marginBottom: 8 }} onClick={porMira} disabled={pontos.length >= 20}>
-        <MapPin size={13} /> Pôr ponto na mira (centro do mapa)
-      </button>
+      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 8 }}>
+        <button style={btnSecondary} onClick={porMira} disabled={pontos.length >= 20}>
+          <MapPin size={13} /> Pôr ponto na mira (centro do mapa)
+        </button>
+        <button style={btnGhost} onClick={() => setGrande((g) => !g)}>
+          {grande ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+          {grande ? " Diminuir o mapa" : " Ampliar o mapa"}
+        </button>
+      </div>
     </>
   );
 }
