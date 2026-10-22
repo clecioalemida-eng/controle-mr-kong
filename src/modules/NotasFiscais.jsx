@@ -1148,19 +1148,16 @@ function HistoricoNotas({ onVoltar, onAbrir }) {
   const [total, setTotal] = useState(0);
   const [pagina, setPagina] = useState(0);
   const [carregando, setCarregando] = useState(true);
+  const [somando, setSomando] = useState(false);
+  const [somaTotal, setSomaTotal] = useState(0);
   const [erro, setErro] = useState("");
 
   const colunaData = base === "nota" ? "data_documento" : "criado_em";
 
-  const buscar = useCallback(async (p = 0, acumular = false) => {
-    setCarregando(true);
-    setErro("");
-    let q = supabase
-      .from("documentos_compra")
-      .select("*", { count: "exact" })
-      .order(colunaData, { ascending: false, nullsFirst: false })
-      .range(p * POR_PAGINA, p * POR_PAGINA + POR_PAGINA - 1);
-
+  // Os mesmos filtros valem para a lista e para a soma. Ficam numa
+  // função só de propósito: quando eram dois trechos parecidos, a soma
+  // acabava somando um filtro diferente do que estava na tela.
+  const aplicarFiltros = useCallback((q) => {
     if (de) q = q.gte(colunaData, base === "nota" ? de : `${de}T00:00:00`);
     // O "até" inclui o dia inteiro: sem isso, uma nota das 15h do dia
     // escolhido some da busca e a pessoa jura que o sistema perdeu.
@@ -1169,6 +1166,19 @@ function HistoricoNotas({ onVoltar, onAbrir }) {
     if (vMin !== "") q = q.gte("valor_total", Number(String(vMin).replace(",", ".")) || 0);
     if (vMax !== "") q = q.lte("valor_total", Number(String(vMax).replace(",", ".")) || 0);
     if (status !== "todos") q = q.eq("status", status);
+    return q;
+  }, [colunaData, base, de, ate, fornecedor, vMin, vMax, status]);
+
+  const buscar = useCallback(async (p = 0, acumular = false) => {
+    setCarregando(true);
+    setErro("");
+    const q = aplicarFiltros(
+      supabase
+        .from("documentos_compra")
+        .select("*", { count: "exact" })
+        .order(colunaData, { ascending: false, nullsFirst: false })
+        .range(p * POR_PAGINA, p * POR_PAGINA + POR_PAGINA - 1)
+    );
 
     const { data, error, count } = await q;
     setCarregando(false);
@@ -1176,7 +1186,20 @@ function HistoricoNotas({ onVoltar, onAbrir }) {
     setTotal(count || 0);
     setPagina(p);
     setLinhas((atual) => (acumular ? [...atual, ...(data || [])] : (data || [])));
-  }, [colunaData, base, de, ate, fornecedor, vMin, vMax, status]);
+
+    // O total do período é de TODAS as notas do filtro, não só das que
+    // couberam na primeira página. Era isso que fazia 188 notas somarem
+    // o valor de 100. Vem numa consulta separada, só com o valor, que é
+    // leve mesmo com milhares de linhas.
+    if (!acumular) {
+      setSomando(true);
+      const { data: todos, error: e2 } = await aplicarFiltros(
+        supabase.from("documentos_compra").select("valor_total")
+      ).limit(10000);
+      setSomando(false);
+      if (!e2) setSomaTotal((todos || []).reduce((s, d) => s + (Number(d.valor_total) || 0), 0));
+    }
+  }, [aplicarFiltros, colunaData]);
 
   useEffect(() => { buscar(0, false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1322,17 +1345,27 @@ function HistoricoNotas({ onVoltar, onAbrir }) {
           <div style={{ fontSize: 11, color: "#8A8778", fontWeight: 700 }}>Notas encontradas</div>
           <div style={{ fontSize: 22, fontWeight: 800, color: "#22231F", fontVariantNumeric: "tabular-nums" }}>{total}</div>
         </div>
-        <div style={{ ...cardStyle, flex: 1, minWidth: 150 }}>
-          <div style={{ fontSize: 11, color: "#8A8778", fontWeight: 700 }}>
-            Somando as {linhas.length} na tela
+        <div style={{ ...cardStyle, flex: 1, minWidth: 180 }}>
+          <div style={{ fontSize: 11, color: "#8A8778", fontWeight: 700 }}>Total do período</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: "#22231F", fontVariantNumeric: "tabular-nums" }}>
+            {somando ? "somando…" : brl(somaTotal)}
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#22231F", fontVariantNumeric: "tabular-nums" }}>{brl(somaNaTela)}</div>
+          {linhas.length < total && (
+            <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2 }}>
+              as {linhas.length} na tela somam {brl(somaNaTela)}
+            </div>
+          )}
         </div>
       </div>
 
       {porFornecedor.length > 1 && (
         <div style={{ ...cardStyle, marginBottom: 12, padding: 0, overflow: "hidden" }}>
-          <div style={{ ...sectionLabel, margin: 0, padding: "10px 14px 6px" }}>Por fornecedor</div>
+          <div style={{ ...sectionLabel, margin: 0, padding: "10px 14px 2px" }}>Por fornecedor</div>
+          <div style={{ fontSize: 10.5, color: "#8A8778", padding: "0 14px 8px" }}>
+            {linhas.length < total
+              ? `conta as ${linhas.length} notas já carregadas — use "Carregar mais" para fechar o período`
+              : "todas as notas do filtro"}
+          </div>
           {porFornecedor.slice(0, 8).map((f) => (
             <div key={f.nome} style={{ display: "flex", justifyContent: "space-between", gap: 10,
                                        padding: "7px 14px", borderTop: "1px solid #F0EBDD", fontSize: 12.5 }}>
