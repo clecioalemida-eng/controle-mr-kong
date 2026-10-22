@@ -577,10 +577,11 @@ function Interesses({ escolhidos, aoMudar }) {
 // perguntando o estado e só libera a seleção quando pode.
 // ---------------------------------------------------------------------
 const TIPOS_ACEITOS = "video/mp4,video/quicktime,image/jpeg,image/png";
-const TAMANHO_MAX = 100 * 1024 * 1024; // igual ao limite do balde na 058
+const TAMANHO_MAX = 500 * 1024 * 1024; // igual ao limite do balde na 059
 
 function SubirMidia({ contaId, midias, aoMudar, escolhida, aoEscolher, podeAprovar }) {
   const [subindo, setSubindo] = useState(false);
+  const [progresso, setProgresso] = useState(null);
   const [erro, setErro] = useState("");
   const entrada = useRef(null);
 
@@ -603,7 +604,7 @@ function SubirMidia({ contaId, midias, aoMudar, escolhida, aoEscolher, podeAprov
     if (!arquivo) return;
     setErro("");
     if (arquivo.size > TAMANHO_MAX) {
-      setErro(`O arquivo tem ${(arquivo.size / 1048576).toFixed(0)} MB; o limite é 100 MB.`);
+      setErro(`O arquivo tem ${(arquivo.size / 1048576).toFixed(0)} MB; o limite é 500 MB.`);
       return;
     }
     const ehVideo = arquivo.type.startsWith("video");
@@ -627,10 +628,22 @@ function SubirMidia({ contaId, midias, aoMudar, escolhida, aoEscolher, podeAprov
       }).select("id").single();
       if (errIns) throw new Error(`Subiu, mas não consegui registrar: ${errIns.message}`);
 
-      const r = await chamarProxy("subir_midia", { midia_id: linha.id });
-      if (r.erro || r.data?.ok === false) {
-        throw new Error(r.data?.error || r.erro || "A Meta não aceitou o arquivo.");
+      // (059) Vídeo vai em pedaços e pode não caber numa chamada só. Enquanto
+      // a função devolver "enviando", ela parou por tempo, não por erro —
+      // chama de novo e o envio continua do ponto guardado.
+      let volta = 10;
+      for (;;) {
+        const r = await chamarProxy("subir_midia", { midia_id: linha.id });
+        if (r.erro || r.data?.ok === false) {
+          throw new Error(r.data?.error || r.erro || "A Meta não aceitou o arquivo.");
+        }
+        if (r.data?.estado !== "enviando") break;
+        setProgresso(r.data?.pct ?? null);
+        if (--volta <= 0) {
+          throw new Error("O envio está demorando demais. O que já subiu ficou guardado: aperte em subir de novo e ele continua de onde parou.");
+        }
       }
+      setProgresso(null);
       aoMudar();
     } catch (e) {
       setErro(String(e instanceof Error ? e.message : e));
@@ -661,7 +674,7 @@ function SubirMidia({ contaId, midias, aoMudar, escolhida, aoEscolher, podeAprov
                       opacity: podeAprovar ? 1 : 0.5 }}>
           {subindo ? <Loader2 size={18} /> : <span style={{ fontSize: 22, lineHeight: 1 }}>+</span>}
           <div style={{ fontSize: 12.5, fontWeight: 600 }}>
-            {subindo ? "Enviando…" : "Subir vídeo ou foto"}
+            {subindo ? (progresso != null ? `Enviando… ${progresso}%` : "Enviando…") : "Subir vídeo ou foto"}
           </div>
           <div style={dica}>sem postar no Instagram</div>
         </div>
@@ -688,7 +701,7 @@ function SubirMidia({ contaId, midias, aoMudar, escolhida, aoEscolher, podeAprov
                               whiteSpace: "nowrap" }}>{m.nome || "arquivo"}</div>
                 <div style={{ ...dica, marginTop: 2 }}>
                   {m.estado === "processando" && <>a Meta está processando…</>}
-                  {m.estado === "enviando" && <>enviando para a Meta…</>}
+                  {m.estado === "enviando" && <>enviando para a Meta… (continua ao subir de novo)</>}
                   {pronta && <>pronto para patrocinar</>}
                   {falhou && <span style={{ color: "#C4432B" }}>{m.erro || "falhou"}</span>}
                 </div>
@@ -713,7 +726,9 @@ function SubirMidia({ contaId, midias, aoMudar, escolhida, aoEscolher, podeAprov
       {erro && <div style={{ ...avisoErro, marginTop: 8 }}><AlertTriangle size={14} /> {erro}</div>}
 
       <div style={{ ...dica, marginTop: 8 }}>
-        MP4, MOV, JPG ou PNG, até 100 MB. O arquivo vira anúncio direto na Meta e
+        MP4, MOV, JPG ou PNG, até 500 MB — mas um Reel de 30 s em 1080×1920 fica
+        entre 20 e 40 MB, e a Meta recomprime tudo de qualquer jeito, então arquivo
+        grande só deixa o envio lento sem melhorar a imagem. O arquivo vira anúncio direto na Meta e
         <b> não aparece no seu feed</b>. Em compensação ele nasce sem curtida e sem
         comentário — para oferta direta isso não atrapalha, para conteúdo que depende
         de credibilidade o post do feed costuma render mais.
