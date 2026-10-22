@@ -577,7 +577,10 @@ function Interesses({ escolhidos, aoMudar }) {
 // perguntando o estado e só libera a seleção quando pode.
 // ---------------------------------------------------------------------
 const TIPOS_ACEITOS = "video/mp4,video/quicktime,image/jpeg,image/png";
-const TAMANHO_MAX = 500 * 1024 * 1024; // igual ao limite do balde na 059
+// O limite real não é o do balde: o Supabase no plano Free recusa qualquer
+// arquivo acima de 50 MB antes de olhar a configuração do balde. Deixar 500
+// aqui só faz a tela aceitar o arquivo e o erro aparecer depois do envio.
+const TAMANHO_MAX = 50 * 1024 * 1024;
 
 function SubirMidia({ contaId, midias, aoMudar, escolhida, aoEscolher, podeAprovar }) {
   const [subindo, setSubindo] = useState(false);
@@ -604,7 +607,7 @@ function SubirMidia({ contaId, midias, aoMudar, escolhida, aoEscolher, podeAprov
     if (!arquivo) return;
     setErro("");
     if (arquivo.size > TAMANHO_MAX) {
-      setErro(`O arquivo tem ${(arquivo.size / 1048576).toFixed(0)} MB; o limite é 500 MB.`);
+      setErro(`O arquivo tem ${(arquivo.size / 1048576).toFixed(0)} MB. O limite por arquivo é 50 MB. Exporte em 1080p: um vídeo de 30 a 60 segundos fica entre 20 e 40 MB.`);
       return;
     }
     const ehVideo = arquivo.type.startsWith("video");
@@ -617,7 +620,14 @@ function SubirMidia({ contaId, midias, aoMudar, escolhida, aoEscolher, podeAprov
 
       const { error: errUp } = await supabase.storage.from("anuncios")
         .upload(caminho, arquivo, { contentType: arquivo.type, upsert: false });
-      if (errUp) throw new Error(`Não consegui subir o arquivo: ${errUp.message}`);
+      if (errUp) {
+        // A mensagem do Storage vem em inglês e não diz o que fazer.
+        const bruto = String(errUp.message || "");
+        const porTamanho = /maximum allowed size|exceeded the maximum|payload too large/i.test(bruto);
+        throw new Error(porTamanho
+          ? "O arquivo passou do limite de 50 MB por arquivo. Exporte em 1080p: um vídeo de 30 a 60 segundos fica entre 20 e 40 MB."
+          : `Não consegui subir o arquivo: ${bruto}`);
+      }
 
       const { data: linha, error: errIns } = await supabase.from("anuncio_midias").insert({
         conta_id: contaId,
