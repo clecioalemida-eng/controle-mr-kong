@@ -7,6 +7,7 @@ import ConferenciaCaixa from "./ConferenciaCaixa";
 import ContasPagar from "./ContasPagar";
 import RelatorioFiado from "./RelatorioFiado";
 import DRE from "./DRE";
+import FormacaoPrecos from "./FormacaoPrecos";
 // Saíram daqui, cada um pro módulo onde faz sentido:
 //   - Dashboard  -> módulo próprio (DashboardModulo.jsx)
 //   - Equipe     -> "Gente e Gestão" (GenteGestao.jsx)
@@ -24,6 +25,7 @@ const ABAS = [
   { chave: "contaspagar", label: "Contas a pagar" },
   { chave: "fluxo", label: "Entrou e saiu" },
   { chave: "dre", label: "DRE" },
+  { chave: "precos", label: "Formação de preços" },
   { chave: "fiado", label: "Fiado" },
 ];
 const NOMES_PAGAMENTO = {
@@ -114,6 +116,8 @@ export default function Financeiro({ onVoltar, abaInicial, permissoes }) {
               <DRE permissoes={permissoes} />
             ) : aba === "fiado" ? (
               <RelatorioFiado />
+            ) : aba === "precos" ? (
+              <FormacaoPrecos />
             ) : (
               <>
                 <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
