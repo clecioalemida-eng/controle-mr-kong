@@ -31,7 +31,7 @@
 // − custo). Mudar a margem na tela mostra na hora quanto o mês teria
 // dado com aquele preço, sem precisar esperar o mês seguinte.
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { Loader2, AlertTriangle, Check, Search, RefreshCw, Plus, X, Save } from "lucide-react";
+import { Loader2, AlertTriangle, Check, Search, RefreshCw, Plus, X, Save, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 function brl(v) {
@@ -94,6 +94,36 @@ function margemPeloPreco(custo, preco) {
 // vai ser aberto aqui.
 const SEM_FICHA = [];
 
+// ---------------------------------------------------------------------------
+// Busca uma tabela inteira, em páginas.
+//
+// O PostgREST devolve no máximo o "Max rows" do projeto (1000 no Supabase,
+// por padrão) e .limit() NÃO passa por cima disso — ele só consegue pedir
+// menos. Com ~241 pratos e uma dezena de ingredientes em cada,
+// prato_insumos passa de duas mil linhas: a consulta trazia o começo e
+// calava o resto, sem erro nenhum. Os pratos que sobravam apareciam "custo
+// sem ficha", entravam no lucro com custo zero e inflavam a margem.
+//
+// Esse é o pior tipo de erro que existe num painel: não dá mensagem, dá
+// número. Por isso aqui se pagina até a página vir incompleta.
+// ---------------------------------------------------------------------------
+const PAGINA = 1000;
+async function tabelaInteira(tabela, colunas, ordenarPor) {
+  let de = 0;
+  let tudo = [];
+  for (;;) {
+    let q = supabase.from(tabela).select(colunas).range(de, de + PAGINA - 1);
+    if (ordenarPor) q = q.order(ordenarPor);
+    const { data, error } = await q;
+    if (error) return { data: null, error };
+    tudo = tudo.concat(data || []);
+    if (!data || data.length < PAGINA) break;
+    de += PAGINA;
+    if (de > 200000) break;          // trava de segurança
+  }
+  return { data: tudo, error: null };
+}
+
 const ABAS = [
   { chave: "precos",  label: "Preços" },
   { chave: "tabela",  label: "Tabela de preços" },
@@ -122,9 +152,9 @@ export default function FormacaoPrecos() {
     const base = new Date();
     const mesAnt = new Date(base.getFullYear(), base.getMonth() - 1, 1);
     const [rPratos, rItens, rInsumos, rProd, rCompras] = await Promise.all([
-      supabase.from("pratos").select("id, nome, preco_venda, linha_produto, ativo, revenda").order("nome"),
-      supabase.from("prato_insumos").select("prato_id, insumo_id, quantidade").limit(20000),
-      supabase.from("insumos").select("id, nome, unidade, custo_medio_atual, composto, origem_custo, custo_manual").order("nome").limit(5000),
+      tabelaInteira("pratos", "id, nome, preco_venda, linha_produto, ativo, revenda", "nome"),
+      tabelaInteira("prato_insumos", "prato_id, insumo_id, quantidade"),
+      tabelaInteira("insumos", "id, nome, unidade, custo_medio_atual, composto, origem_custo, custo_manual", "nome"),
       supabase.rpc("desempenho_produtos", {
         p_inicio: inicioMes, p_fim: fimHoje,
         p_inicio_ant: ymd(mesAnt),
@@ -345,16 +375,22 @@ function AbaPrecos({ pratos, insumos, fichas, compras, onErro, onRecado, recarre
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>{p.nome}</div>
                   <div style={{ fontSize: 11.5, color: "#8A8778" }}>
-                    custo {p.temFicha ? brl(p.custo) : "sem ficha"} · preço {brl(p.preco_venda)}
+                    {p.temFicha ? <>custo {brl(p.custo)}</>
+                                : <span style={{ color: "#8E2420" }}>sem ficha — toque para montar</span>}
+                    {" · "}preço {brl(p.preco_venda)}
                     {p.vendidos > 0 && <> · {p.vendidos} vendidos no mês</>}
                   </div>
                 </div>
-                <div style={{ textAlign: "right", flexShrink: 0 }}>
-                  <div style={{ fontSize: 15, fontWeight: 800,
-                                color: margemAtual == null || !p.temFicha ? "#8A8778" : margemAtual < 50 ? "#8E2420" : "#27500A" }}>
-                    {p.temFicha ? pct(margemAtual) : "—"}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 15, fontWeight: 800,
+                                  color: margemAtual == null || !p.temFicha ? "#8A8778" : margemAtual < 50 ? "#8E2420" : "#27500A" }}>
+                      {p.temFicha ? pct(margemAtual) : "—"}
+                    </div>
+                    <div style={rotuloMini}>margem</div>
                   </div>
-                  <div style={rotuloMini}>margem</div>
+                  <ChevronDown size={16} color="#8A8778"
+                    style={{ transform: estaAberto ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
                 </div>
               </button>
 
