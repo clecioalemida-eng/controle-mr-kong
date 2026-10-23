@@ -124,7 +124,7 @@ export default function FormacaoPrecos() {
     const [rPratos, rItens, rInsumos, rProd, rCompras] = await Promise.all([
       supabase.from("pratos").select("id, nome, preco_venda, linha_produto, ativo, revenda").order("nome"),
       supabase.from("prato_insumos").select("prato_id, insumo_id, quantidade").limit(20000),
-      supabase.from("insumos").select("id, nome, unidade, custo_medio_atual, composto").order("nome").limit(5000),
+      supabase.from("insumos").select("id, nome, unidade, custo_medio_atual, composto, origem_custo, custo_manual").order("nome").limit(5000),
       supabase.rpc("desempenho_produtos", {
         p_inicio: inicioMes, p_fim: fimHoje,
         p_inicio_ant: ymd(mesAnt),
@@ -744,25 +744,41 @@ function AbaTabela({ pratos, onErro, onRecado, recarregar }) {
 }
 
 // ===========================================================================
-// ABA 3 — Preço dos insumos, ligado às compras
+// ABA 3 — Preço dos insumos, com origem declarada
 //
-// É a raiz de tudo: o custo de todo prato sai daqui.
+// Antes, o custo do insumo era um campo só e quem escrevesse por último
+// ganhava: a nota passava por cima do que você digitou, e você digitava
+// por cima da nota. Os 26 divergentes nasceram daí — ninguém estava
+// errado, o campo é que não sabia a quem obedecer.
 //
-// A ligação com as compras já existia no banco e ninguém via: quando você
-// confirma uma nota em Supply Chain → Notas, cada item vira uma entrada em
-// movimentacoes_estoque com o preço pago e o fornecedor. A migração 147
-// só traz esse dado pra cá. Então a coluna "Última compra" não é uma
-// estimativa — é o que a sua nota disse.
+// Agora cada insumo diz de onde vem o custo dele, e a regra mora no banco
+// (migração 152), não aqui: venha a compra da tela de notas ou de um
+// lançamento manual de estoque, ela respeita a origem do mesmo jeito.
 //
-// O que a tela NÃO faz é sobrescrever sozinha. A regra da casa continua:
-// o custo do insumo é o que você digita. A compra mostra a divergência e
-// oferece o botão; quem decide é você. Isso importa porque nem toda
-// diferença é erro — comprou caro uma vez numa emergência, o preço de
-// trabalho continua sendo o normal, não o da emergência.
+//   Segue a nota   — a compra confirmada atualiza sozinha. É o padrão.
+//   Média 90 dias  — acompanha a média do trimestre, e assim a compra
+//                    cara de emergência não vira preço de trabalho.
+//   Manual         — você digita e a nota não encosta. É o lugar do ovo
+//                    cadastrado pelo preço da caixa, da embalagem
+//                    rateada, de tudo que a nota descreve numa unidade e
+//                    a ficha usa em outra.
+//   Receita        — insumo composto: custo calculado, não comprado.
 // ===========================================================================
+const ORIGENS = [
+  { chave: "ultima_compra", label: "Segue a nota" },
+  { chave: "media_90d",     label: "Média 90 dias" },
+  { chave: "manual",        label: "Manual" },
+];
+const ROTULO_ORIGEM = {
+  ultima_compra: "Segue a nota",
+  media_90d: "Média 90 dias",
+  manual: "Manual",
+  receita: "Receita",
+};
 const SITUACOES = [
   { chave: "todos",      label: "Todos" },
   { chave: "divergente", label: "Preço diferente da nota" },
+  { chave: "manual",     label: "Travados em manual" },
   { chave: "nunca",      label: "Nunca comprados" },
   { chave: "sempreco",   label: "Sem preço" },
 ];
@@ -773,6 +789,11 @@ function diasDesde(quando) {
   if (isNaN(d)) return null;
   return Math.floor((Date.now() - d.getTime()) / 86400000);
 }
+function dataCurta(quando) {
+  const d = new Date(quando);
+  if (isNaN(d)) return "";
+  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+}
 // O preço da nota pode ter 4 casas (um item rateado por embalagem dá
 // 0,8333). Mostrar "0,83" no campo e gravar 0,83 perderia dinheiro de
 // propósito; mostrar "41,5" em vez de "41,50" só fica feio. Então: duas
@@ -782,13 +803,14 @@ function textoPreco(v) {
   const cabeEmDuas = Math.abs(n * 100 - Math.round(n * 100)) < 1e-6;
   return (cabeEmDuas ? n.toFixed(2) : n.toFixed(4)).replace(".", ",");
 }
-function dataCurta(quando) {
-  const d = new Date(quando);
-  if (isNaN(d)) return "";
-  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
-}
 
 function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErro, onRecado, recarregar }) {
+  // edit[id] = { origem?, valor?, forcar? }
+  //   origem  — nova origem escolhida na linha
+  //   valor   — novo preço manual digitado
+  //   forcar  — "traz agora o que a origem manda", sem mudar a origem.
+  //             Serve pros insumos que já estão em "segue a nota" mas
+  //             ficaram com o valor velho, de antes da 152 existir.
   const [edit, setEdit] = useState({});
   const [busca, setBusca] = useState("");
   const [situacao, setSituacao] = useState("todos");
@@ -803,17 +825,26 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
     return c;
   }, [fichas]);
 
-  const custoDe = (i) => {
-    const t = edit[i.id];
+  const origemDe = (i) => edit[i.id]?.origem ?? i.origem_custo ?? "ultima_compra";
+  const ehComposto = (i) => !!i.composto || (i.origem_custo === "receita");
+  const valorManualDe = (i) => {
+    const t = edit[i.id]?.valor;
     if (t === undefined || t === "") return Number(i.custo_medio_atual) || 0;
     return paraNumero(t) ?? (Number(i.custo_medio_atual) || 0);
   };
-  const mudouI = (i) => Math.abs(custoDe(i) - (Number(i.custo_medio_atual) || 0)) > 0.000001;
 
-  // divergência = o que está gravado no insumo contra o que a última nota
-  // pagou. Mede sobre o GRAVADO, não sobre o que está sendo digitado agora:
-  // senão, começar a digitar faria a linha sumir do filtro no meio da edição.
-  const compraDe = (i) => (i.composto ? null : compras?.[i.id]) || null;
+  const mudouI = (i) => {
+    if (edit[i.id]?.forcar) return true;
+    if (origemDe(i) !== (i.origem_custo ?? "ultima_compra")) return true;
+    if (origemDe(i) === "manual"
+        && Math.abs(valorManualDe(i) - (Number(i.custo_medio_atual) || 0)) > 0.000001) return true;
+    return false;
+  };
+
+  // Divergência = o que está GRAVADO no insumo contra o que a última nota
+  // pagou. Mede sobre o gravado, não sobre o que está sendo digitado:
+  // senão, começar a editar faria a linha sumir do filtro no meio da edição.
+  const compraDe = (i) => (ehComposto(i) ? null : compras?.[i.id]) || null;
   const divergencia = (i) => {
     const c = compraDe(i);
     if (!c) return null;
@@ -822,9 +853,14 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
     if (!(nota > 0) || Math.abs(nota - atual) <= 0.005) return null;
     return { nota, atual, pct: atual > 0 ? ((nota - atual) / atual) * 100 : null };
   };
+  // Divergente que ainda está em origem automática: esse é o caso em que
+  // basta mandar o banco reaplicar a origem. O divergente em "manual" está
+  // divergente de propósito — é pra isso que serve o manual.
+  const reaplicavel = (i) => !!divergencia(i) && ["ultima_compra", "media_90d"].includes(origemDe(i));
 
   const alterados = insumos.filter(mudouI);
   const divergentes = insumos.filter((i) => divergencia(i));
+  const pendentes = insumos.filter(reaplicavel);
   const pratosAfetados = useMemo(() => {
     const ids = new Set(alterados.map((i) => i.id));
     return pratos.filter((p) => (fichas[p.id] || SEM_FICHA).some((l) => ids.has(l.insumo_id))).length;
@@ -832,7 +868,8 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
 
   const passaSituacao = (i) => {
     if (situacao === "divergente") return !!divergencia(i);
-    if (situacao === "nunca") return !compraDe(i) && !i.composto;
+    if (situacao === "manual") return origemDe(i) === "manual";
+    if (situacao === "nunca") return !compraDe(i) && !ehComposto(i);
     if (situacao === "sempreco") return !(Number(i.custo_medio_atual) > 0);
     return true;
   };
@@ -843,17 +880,25 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
     .filter(passaSituacao)
     .sort((a, b) => (quantosPratos[b.id] || 0) - (quantosPratos[a.id] || 0) || a.nome.localeCompare(b.nome));
 
-  const usarDaNota = (i) => {
+  const mudarOrigem = (i, origem) => setEdit((prev) => ({
+    ...prev,
+    [i.id]: { ...(prev[i.id] || {}), origem, forcar: false,
+              valor: origem === "manual"
+                ? (prev[i.id]?.valor ?? textoPreco(i.custo_medio_atual))
+                : prev[i.id]?.valor },
+  }));
+  // "Trava neste preço": vira manual já com o valor da nota dentro. É o
+  // movimento certo pro insumo cujo preço de nota está certo mas que você
+  // não quer que mude sozinho de novo.
+  const travarNaNota = (i) => {
     const c = compraDe(i);
     if (!c) return;
-    setEdit((prev) => ({ ...prev, [i.id]: textoPreco(c.ultimo_preco) }));
+    setEdit((prev) => ({ ...prev, [i.id]: { origem: "manual", valor: textoPreco(c.ultimo_preco), forcar: false } }));
   };
-  const usarTodasAsNotas = () => {
+  const reaplicar = (i) => setEdit((prev) => ({ ...prev, [i.id]: { ...(prev[i.id] || {}), forcar: true } }));
+  const reaplicarTodos = () => {
     const novo = { ...edit };
-    divergentes.forEach((i) => {
-      const c = compraDe(i);
-      if (c) novo[i.id] = textoPreco(c.ultimo_preco);
-    });
+    pendentes.forEach((i) => { novo[i.id] = { ...(novo[i.id] || {}), forcar: true }; });
     setEdit(novo);
     setConfirmando(false);
   };
@@ -863,14 +908,23 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
     let feitos = 0;
     for (const i of alterados) {
       setProgresso(`${feitos + 1} de ${alterados.length}…`);
-      const { error } = await supabase.from("insumos")
-        .update({ custo_medio_atual: custoDe(i), atualizado_em: new Date().toISOString() })
-        .eq("id", i.id);
-      if (error) { setSalvando(false); setProgresso(""); onErro(`${i.nome}: ${error.message}`); return; }
+      const origem = origemDe(i);
+      const { error } = await supabase.rpc("definir_custo_insumo", {
+        p_insumo: i.id,
+        p_origem: origem,
+        p_valor: origem === "manual" ? valorManualDe(i) : null,
+      });
+      if (error) {
+        setSalvando(false); setProgresso("");
+        onErro(/sem_acesso/.test(error.message || "")
+          ? "Seu acesso não permite mudar o custo dos insumos."
+          : `${i.nome}: ${error.message}`);
+        return;
+      }
       feitos += 1;
     }
     setSalvando(false); setProgresso(""); setEdit({});
-    onRecado(`${feitos} ${feitos === 1 ? "preço de insumo gravado" : "preços de insumo gravados"}. As margens já estão recalculadas.`);
+    onRecado(`${feitos} ${feitos === 1 ? "insumo atualizado" : "insumos atualizados"}. As margens já estão recalculadas.`);
     recarregar();
   };
 
@@ -884,8 +938,8 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
           <> <b style={{ color: "#8E2420" }}>A coluna das compras está desligada</b> porque a migração 147
           ainda não foi rodada no banco.</>
         ) : (
-          <> A coluna <b>Última compra</b> vem das notas confirmadas em Supply Chain → Notas:
-          é o preço que você realmente pagou, com a data e o fornecedor.</>
+          <> A <b>Origem</b> decide quem manda no custo: em <i>Segue a nota</i> a compra confirmada
+          atualiza sozinha; em <b>Manual</b> você digita e a nota não encosta.</>
         )}
       </div>
 
@@ -895,7 +949,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
           <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar insumo…"
             style={{ ...input, paddingLeft: 33, width: "100%" }} />
         </div>
-        <select value={situacao} onChange={(e) => setSituacao(e.target.value)} style={{ ...input, minWidth: 180 }}>
+        <select value={situacao} onChange={(e) => setSituacao(e.target.value)} style={{ ...input, minWidth: 190 }}>
           {SITUACOES.map((o) => (
             <option key={o.chave} value={o.chave}>
               {o.label}{o.chave === "divergente" && divergentes.length > 0 ? ` (${divergentes.length})` : ""}
@@ -908,24 +962,25 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
         </label>
       </div>
 
-      {divergentes.length > 0 && alterados.length === 0 && (
+      {pendentes.length > 0 && alterados.length === 0 && (
         <div style={{ ...card, marginBottom: 10, display: "flex", justifyContent: "space-between",
                       alignItems: "center", gap: 10, flexWrap: "wrap", background: "#FBF3D9", borderColor: "#E8D48A" }}>
           <div style={{ fontSize: 12.5, color: "#7A6A1E" }}>
-            <b>{divergentes.length}</b> {divergentes.length === 1 ? "insumo está" : "insumos estão"} com preço
-            diferente do que a última nota pagou.
+            <b>{pendentes.length}</b> {pendentes.length === 1 ? "insumo está" : "insumos estão"} em
+            "segue a nota" mas com o valor antigo.
             <div style={{ fontSize: 11, marginTop: 2 }}>
-              Nem toda diferença é erro — compra de emergência não vira preço de trabalho.
+              Confira antes de trazer em bloco: se a nota descreve a caixa e a ficha gasta a unidade,
+              o preço da nota também está errado — esse é caso de Manual, não de trazer.
             </div>
           </div>
           {confirmando ? (
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ fontSize: 12, color: "#7A6A1E" }}>Trazer o preço da nota em {divergentes.length}?</span>
-              <button onClick={usarTodasAsNotas} style={btnPri}>Sim, trazer</button>
+              <span style={{ fontSize: 12, color: "#7A6A1E" }}>Trazer em {pendentes.length}?</span>
+              <button onClick={reaplicarTodos} style={btnPri}>Sim, trazer</button>
               <button onClick={() => setConfirmando(false)} style={btnSec}>Cancelar</button>
             </div>
           ) : (
-            <button onClick={() => setConfirmando(true)} style={btnSec}>Usar o preço das notas</button>
+            <button onClick={() => setConfirmando(true)} style={btnSec}>Trazer o preço das notas</button>
           )}
         </div>
       )}
@@ -954,7 +1009,8 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
               <tr>
                 <th style={th}>Insumo</th>
                 <th style={{ ...th, textAlign: "center" }}>Un.</th>
-                <th style={{ ...th, textAlign: "right" }}>Preço no painel</th>
+                <th style={th}>Origem</th>
+                <th style={{ ...th, textAlign: "right" }}>Custo</th>
                 <th style={{ ...th, textAlign: "right" }}>Última compra</th>
                 <th style={{ ...th, textAlign: "right" }}>Usado em</th>
               </tr>
@@ -967,28 +1023,50 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                 const c = compraDe(i);
                 const dv = divergencia(i);
                 const dias = c ? diasDesde(c.ultima_data) : null;
+                const composto = ehComposto(i);
+                const origem = origemDe(i);
                 return (
                   <tr key={i.id} style={{ borderTop: "1px solid #F0EBDD",
                         background: alterado ? "#FBF7EC" : dv ? "#FDFBF4" : "transparent" }}>
                     <td style={{ ...td, color: "#22231F" }}>
                       {i.nome}
-                      {i.composto && <div style={rotuloMini}>composto — o custo é calculado pela receita dele</div>}
-                      {semPreco && !i.composto && <div style={{ ...rotuloMini, color: "#8E2420" }}>sem preço — zera o custo de quem usa</div>}
+                      {semPreco && !composto && <div style={{ ...rotuloMini, color: "#8E2420" }}>sem preço — zera o custo de quem usa</div>}
                     </td>
                     <td style={{ ...td, textAlign: "center", color: "#8A8778" }}>{i.unidade}</td>
-                    <td style={{ ...td, textAlign: "right" }}>
-                      {i.composto ? (
-                        <span style={{ color: "#8A8778" }}>{brl(i.custo_medio_atual)}</span>
+                    <td style={td}>
+                      {composto ? (
+                        <span style={{ color: "#8A8778" }}>Receita</span>
                       ) : (
-                        <input value={edit[i.id] ?? ""} inputMode="decimal"
-                          placeholder={(Number(i.custo_medio_atual) || 0).toFixed(2).replace(".", ",")}
-                          onChange={(e) => setEdit((prev) => ({ ...prev, [i.id]: e.target.value }))}
+                        <select value={origem} onChange={(e) => mudarOrigem(i, e.target.value)}
+                          style={{ ...input, padding: "5px 6px", fontSize: 12, minWidth: 132 }}>
+                          {ORIGENS.map((o) => <option key={o.chave} value={o.chave}>{o.label}</option>)}
+                        </select>
+                      )}
+                      {edit[i.id]?.forcar && (
+                        <div style={{ ...rotuloMini, color: "#7A6A1E" }}>vai trazer da nota</div>
+                      )}
+                    </td>
+                    <td style={{ ...td, textAlign: "right" }}>
+                      {origem === "manual" && !composto ? (
+                        <input value={edit[i.id]?.valor ?? ""} inputMode="decimal"
+                          placeholder={textoPreco(i.custo_medio_atual)}
+                          onChange={(e) => setEdit((prev) => ({
+                            ...prev,
+                            [i.id]: { ...(prev[i.id] || {}), origem: "manual", valor: e.target.value, forcar: false },
+                          }))}
                           style={{ ...input, width: 92, textAlign: "right", padding: "6px 8px" }} />
+                      ) : (
+                        <>
+                          <div style={{ color: "#22231F" }}>{brl(i.custo_medio_atual)}</div>
+                          <div style={rotuloMini}>
+                            {composto ? "calculado" : ROTULO_ORIGEM[origem]?.toLowerCase()}
+                          </div>
+                        </>
                       )}
                     </td>
                     <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
                       {!c ? (
-                        <span style={{ color: "#B4AE9C" }}>{i.composto ? "—" : "nunca comprado"}</span>
+                        <span style={{ color: "#B4AE9C" }}>{composto ? "—" : "nunca comprado"}</span>
                       ) : (
                         <>
                           <div style={{ color: dv ? "#8E2420" : "#27500A", fontWeight: dv ? 700 : 400 }}>
@@ -1008,10 +1086,16 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                             </div>
                           )}
                           {dv && (
-                            <button onClick={() => usarDaNota(i)}
-                              style={{ ...btnSec, padding: "3px 8px", fontSize: 11, marginTop: 3 }}>
-                              usar este preço
-                            </button>
+                            <div style={{ display: "flex", gap: 5, justifyContent: "flex-end", marginTop: 3, flexWrap: "wrap" }}>
+                              {reaplicavel(i) && (
+                                <button onClick={() => reaplicar(i)}
+                                  style={{ ...btnSec, padding: "3px 8px", fontSize: 11 }}>trazer</button>
+                              )}
+                              <button onClick={() => travarNaNota(i)}
+                                style={{ ...btnSec, padding: "3px 8px", fontSize: 11 }}>
+                                {origem === "manual" ? "usar este valor" : "travar neste preço"}
+                              </button>
+                            </div>
                           )}
                         </>
                       )}
@@ -1031,10 +1115,10 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
       </div>
 
       <div style={{ fontSize: 11, color: "#8A8778", marginTop: 10, lineHeight: 1.6 }}>
-        <b>Nunca comprado</b> quer dizer que nenhuma nota confirmada passou por esse insumo — o preço
-        dele é um palpite, não um fato, e a margem de quem o usa herda esse palpite. O caminho de
-        ligar de vez é confirmar as notas em Supply Chain → Notas com cada item vinculado ao insumo:
-        é o vínculo lá que alimenta esta coluna aqui.
+        <b>Travar neste preço</b> põe o insumo em Manual já com o valor da nota dentro: serve pro preço
+        que está certo hoje e que você não quer que mude sozinho amanhã. <b>Trazer</b> só reaplica o que
+        a origem já manda, pros que ficaram com valor velho. E <b>nunca comprado</b> quer dizer que
+        nenhuma nota confirmada passou por ali — o preço é palpite, e a margem de quem usa herda o palpite.
       </div>
     </div>
   );

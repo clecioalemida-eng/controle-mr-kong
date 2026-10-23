@@ -1957,12 +1957,18 @@ function Conferencia({ documento, onVoltar }) {
         criado_por: userData?.user?.id,
       });
       if (errMov) { setErro(errMov.message); setSalvando(false); return; }
-      // atualiza o custo do insumo pro preço dessa última compra confirmada
-      // (só se o insumo não for composto — o custo dele é calculado, não digitado)
-      const { data: insumoAtual } = await supabase.from("insumos").select("composto").eq("id", item.insumo_id).single();
-      if (!insumoAtual?.composto) {
-        await supabase.from("insumos").update({ custo_medio_atual: item.preco_unitario, atualizado_em: new Date().toISOString() }).eq("id", item.insumo_id);
-      }
+      // O custo do insumo NÃO é mais atualizado aqui.
+      //
+      // Quem faz isso agora é um gatilho no banco (migração 152), e ele
+      // obedece à origem declarada de cada insumo: "segue a nota" atualiza,
+      // "média 90 dias" recalcula, "manual" não encosta. A conta de
+      // insumo composto continua intocada, como já era.
+      //
+      // O motivo de ter saído daqui é simples: enquanto esta linha
+      // existisse, confirmar uma nota passava por cima de um preço travado
+      // em manual — e o travado em manual é justamente o ovo, a embalagem
+      // rateada, tudo que a nota descreve numa unidade e a ficha usa em
+      // outra. Regra que mora no cliente é regra que uma tela esquece.
       // aprende o sinônimo, se o nome lido for diferente do nome do insumo
       const insumoVinculado = insumos.find((i) => i.id === item.insumo_id);
       if (insumoVinculado && insumoVinculado.nome.trim().toLowerCase() !== item.nome_lido.trim().toLowerCase()) {
