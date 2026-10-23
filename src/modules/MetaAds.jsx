@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import Patrocinar, { IconePatrocinar } from "./Patrocinar";
+import Sorteio, { IconeSorteio } from "./Sorteio";
 
 // ---------------------------------------------------------------------------
 // Anúncios da Meta — somente leitura
@@ -74,6 +75,7 @@ export default function MetaAds({ perfil }) {
         <Aba atual={vista} v="criativos" set={setVista} icone={<Image size={13} />} label="Criativos" />
         <Aba atual={vista} v="horarios" set={setVista} icone={<Clock size={13} />} label="Horários" />
         <Aba atual={vista} v="patrocinar" set={setVista} icone={<IconePatrocinar size={13} />} label="Patrocinar" />
+        <Aba atual={vista} v="sorteio" set={setVista} icone={<IconeSorteio size={13} />} label="Sorteio" />
         <Aba atual={vista} v="ajustes" set={setVista} icone={<Settings size={13} />} label="Ajustes" />
       </div>
 
@@ -82,6 +84,7 @@ export default function MetaAds({ perfil }) {
       {vista === "criativos" && <Criativos />}
       {vista === "horarios" && <Horarios />}
       {vista === "patrocinar" && <Patrocinar />}
+      {vista === "sorteio" && <Sorteio />}
       {vista === "ajustes" && <Ajustes />}
     </div>
   );
