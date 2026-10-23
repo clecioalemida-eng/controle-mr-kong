@@ -127,19 +127,59 @@ export default function ConferenciaCaixa() {
   const [porAtendente, setPorAtendente] = useState([]);
   const [taxasDoDia, setTaxasDoDia] = useState(null); // { servico, entrega, adicional }
   const [repasse, setRepasse] = useState({ valorAte22: "9.00", qtdAte22: 0, valorApos22: "15.00", qtdApos22: 0 });
+  // Repasse hora a hora (migração 145). Cada linha é uma hora do turno:
+  // { hora, entregas (do banco), qtd (o que vai ser pago), valor }.
+  //
+  // A contagem vem do cache de pedidos, não da busca ao vivo: a busca
+  // ao vivo estava perdendo mais da metade das entregas e classificando
+  // TODAS como "depois das 22h", o que inflava o repasse em 6 reais por
+  // entrega feita cedo.
+  const [horas, setHoras] = useState([]);
   // Conta a pagar gerada pelo botão de enviar. Nulo = ainda não enviado.
   const [repasseContaId, setRepasseContaId] = useState(null);
   const [enviandoRepasse, setEnviandoRepasse] = useState(false);
   const [escalaDoDia, setEscalaDoDia] = useState([]);
 
+  // Valor sugerido da hora: a regra da casa é 9 até as 22h e 15 depois.
+  // É só sugestão — o que vale é o que ficar digitado.
+  const valorSugerido = (hora) => ((hora >= 22 || hora < 5) ? "15.00" : "9.00");
+
+  const montarHoras = (doBanco, salvas) => {
+    const mapa = Object.fromEntries((salvas || []).map((s) => [s.hora, s]));
+    const linhasHora = (doBanco || []).map((h) => {
+      const salvo = mapa[h.hora];
+      return {
+        hora: h.hora,
+        entregas: Number(h.entregas) || 0,
+        taxa: Number(h.taxa_cobrada) || 0,
+        // quantidade a pagar começa igual à contada; dá pra corrigir
+        qtd: salvo ? Number(salvo.qtd) : (Number(h.entregas) || 0),
+        valor: salvo ? String(salvo.valor) : valorSugerido(h.hora),
+      };
+    });
+    // horas que você acertou à mão e o banco não tem mais (pedido
+    // cancelado depois, por exemplo) continuam na tela
+    (salvas || []).forEach((s) => {
+      if (!linhasHora.some((l) => l.hora === s.hora)) {
+        linhasHora.push({ hora: s.hora, entregas: 0, taxa: 0, qtd: Number(s.qtd), valor: String(s.valor) });
+      }
+    });
+    linhasHora.sort((a, b) => ((a.hora >= 17 ? 0 : 1) - (b.hora >= 17 ? 0 : 1)) || a.hora - b.hora);
+    setHoras(linhasHora);
+  };
+
   const carregarSalvo = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
-    const [{ data, error }, { data: repasseData }, { data: escalaData }] = await Promise.all([
+    const [{ data, error }, { data: repasseData }, { data: escalaData },
+            { data: horasBanco }, { data: horasSalvas }] = await Promise.all([
       supabase.from("conferencias_caixa").select("*").eq("dia", dia).order("forma_pagamento"),
       supabase.from("repasses_delivery").select("*").eq("dia", dia).maybeSingle(),
       supabase.from("presencas_diarias").select("pessoa_id, peso, horas_trabalhadas, pessoa:pessoas(nome, papel)").eq("dia", dia),
+      supabase.rpc("entregas_do_turno_por_hora", { p_dia: dia }),
+      supabase.from("repasse_horas").select("*").eq("dia", dia),
     ]);
+    montarHoras(horasBanco, horasSalvas);
     setRepasseContaId(repasseData?.conta_pagar_id || null);
     if (repasseData) {
       setRepasse((prev) => ({ ...prev, valorAte22: String(repasseData.valor_ate_22h), valorApos22: String(repasseData.valor_apos_22h) }));
@@ -271,12 +311,19 @@ export default function ConferenciaCaixa() {
       }, { onConflict: "dia,forma_pagamento" });
       if (error) { setErro(error.message); setSalvando(false); return; }
     }
+    const erroHoras = await salvarHoras();
+    if (erroHoras) { setErro(erroHoras.message); setSalvando(false); return; }
+    const cedo = horas.filter((h) => !(h.hora >= 22 || h.hora < 5));
+    const tarde = horas.filter((h) => (h.hora >= 22 || h.hora < 5));
+    const somaFaixa = (L) => L.reduce((s, h) => s + (Number(h.qtd) || 0) * (parseFloat(h.valor) || 0), 0);
+    const qtdFaixa = (L) => L.reduce((s, h) => s + (Number(h.qtd) || 0), 0);
+    const mediaFaixa = (L, padrao) => (qtdFaixa(L) > 0 ? round2(somaFaixa(L) / qtdFaixa(L)) : padrao);
     const { error: errRepasse } = await supabase.from("repasses_delivery").upsert({
       dia,
-      valor_ate_22h: parseFloat(repasse.valorAte22) || 0,
-      qtd_ate_22h: repasse.qtdAte22,
-      valor_apos_22h: parseFloat(repasse.valorApos22) || 0,
-      qtd_apos_22h: repasse.qtdApos22,
+      valor_ate_22h: mediaFaixa(cedo, parseFloat(repasse.valorAte22) || 0),
+      qtd_ate_22h: qtdFaixa(cedo),
+      valor_apos_22h: mediaFaixa(tarde, parseFloat(repasse.valorApos22) || 0),
+      qtd_apos_22h: qtdFaixa(tarde),
       criado_por: userData?.user?.id,
     }, { onConflict: "dia" });
     if (errRepasse) { setErro(errRepasse.message); setSalvando(false); return; }
@@ -284,10 +331,35 @@ export default function ConferenciaCaixa() {
     setMensagem("Conferência salva.");
   };
 
+  const totalEntregas = horas.reduce((s, h) => s + (Number(h.qtd) || 0), 0);
   const totalRepasse = round2(
-    repasse.qtdAte22 * (parseFloat(repasse.valorAte22) || 0) +
-    repasse.qtdApos22 * (parseFloat(repasse.valorApos22) || 0)
+    horas.reduce((s, h) => s + (Number(h.qtd) || 0) * (parseFloat(h.valor) || 0), 0)
   );
+  const totalTaxaCobrada = round2(horas.reduce((s, h) => s + (Number(h.taxa) || 0), 0));
+
+  // Guarda as horas e mantém repasses_delivery em dia, porque é dela que
+  // saem o DRE e o lançamento em Contas a pagar. As duas faixas viram o
+  // resumo do que foi digitado hora a hora.
+  const salvarHoras = async () => {
+    if (horas.length === 0) return null;
+    const linhasHora = horas.map((h) => ({
+      dia, hora: h.hora, qtd: Number(h.qtd) || 0, valor: parseFloat(h.valor) || 0,
+      atualizado_em: new Date().toISOString(),
+    }));
+    const { error } = await supabase.from("repasse_horas").upsert(linhasHora, { onConflict: "dia,hora" });
+    if (error) return error;
+    const cedo = horas.filter((h) => !(h.hora >= 22 || h.hora < 5));
+    const tarde = horas.filter((h) => (h.hora >= 22 || h.hora < 5));
+    const soma = (L) => L.reduce((s, h) => s + (Number(h.qtd) || 0) * (parseFloat(h.valor) || 0), 0);
+    const qtd = (L) => L.reduce((s, h) => s + (Number(h.qtd) || 0), 0);
+    const media = (L) => (qtd(L) > 0 ? round2(soma(L) / qtd(L)) : 0);
+    setRepasse((p) => ({
+      ...p,
+      qtdAte22: qtd(cedo), valorAte22: String(media(cedo) || p.valorAte22),
+      qtdApos22: qtd(tarde), valorApos22: String(media(tarde) || p.valorApos22),
+    }));
+    return null;
+  };
 
   // Entregador recebe na hora, então a conta já nasce QUITADA — é a
   // mesma função que a Escala do dia usa pra diária. Vai na conta 4.7,
@@ -302,17 +374,23 @@ export default function ConferenciaCaixa() {
     // Grava o repasse antes de lançar: se a pessoa mexeu nos números e
     // não salvou a conferência, o que vai pro DRE tem que ser o que está
     // na tela, não o que estava no banco.
+    await salvarHoras();
+    const cedoE = horas.filter((h) => !(h.hora >= 22 || h.hora < 5));
+    const tardeE = horas.filter((h) => (h.hora >= 22 || h.hora < 5));
+    const somaE = (L) => L.reduce((s, h) => s + (Number(h.qtd) || 0) * (parseFloat(h.valor) || 0), 0);
+    const qtdE = (L) => L.reduce((s, h) => s + (Number(h.qtd) || 0), 0);
+    const mediaE = (L, padrao) => (qtdE(L) > 0 ? round2(somaE(L) / qtdE(L)) : padrao);
     const { error: errSalvar } = await supabase.from("repasses_delivery").upsert({
       dia,
-      valor_ate_22h: parseFloat(repasse.valorAte22) || 0,
-      qtd_ate_22h: repasse.qtdAte22,
-      valor_apos_22h: parseFloat(repasse.valorApos22) || 0,
-      qtd_apos_22h: repasse.qtdApos22,
+      valor_ate_22h: mediaE(cedoE, parseFloat(repasse.valorAte22) || 0),
+      qtd_ate_22h: qtdE(cedoE),
+      valor_apos_22h: mediaE(tardeE, parseFloat(repasse.valorApos22) || 0),
+      qtd_apos_22h: qtdE(tardeE),
       criado_por: userData?.user?.id,
     }, { onConflict: "dia" });
     if (errSalvar) { setErro(errSalvar.message); setEnviandoRepasse(false); return; }
 
-    const entregas = repasse.qtdAte22 + repasse.qtdApos22;
+    const entregas = totalEntregas;
     const { data: contaId, error } = await supabase.rpc("lancar_despesa_paga", {
       p_descricao: `Repasse de entrega ${dia.split("-").reverse().join("/")} — ${entregas} entrega(s)`,
       p_valor: totalRepasse,
@@ -487,41 +565,104 @@ export default function ConferenciaCaixa() {
           {linhas.length > 0 && (
             <>
               <div style={{ ...sectionLabel, marginTop: 20 }}>Repasse para entregador (delivery)</div>
-              <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>Quantidade já vem calculada pelo horário do pedido, mas pode corrigir na mão se precisar.</div>
-
-              <div style={{ ...cardStyleBox, marginBottom: 8 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <span style={{ fontSize: 13, color: "#22231F" }}>Entregas até 22h</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <input type="number" min="0" step="1" value={repasse.qtdAte22} onChange={(e) => setRepasse((p) => ({ ...p, qtdAte22: parseInt(e.target.value) || 0 }))}
-                      style={{ width: 50, padding: "3px 5px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
-                    <span style={{ fontSize: 12, color: "#8A8778" }}>entrega{repasse.qtdAte22 === 1 ? "" : "s"}</span>
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 11, color: "#8A8778" }}>Valor por entrega</span>
-                  <input type="number" step="0.01" value={repasse.valorAte22} onChange={(e) => setRepasse((p) => ({ ...p, valorAte22: e.target.value }))}
-                    style={{ width: 70, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
-                  <span style={{ flex: 1, textAlign: "right", fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(repasse.qtdAte22 * (parseFloat(repasse.valorAte22) || 0))}</span>
-                </div>
+              <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8, lineHeight: 1.6 }}>
+                A quantidade vem do horário real de cada pedido, hora a hora. Você só confere e
+                diz quanto paga em cada faixa. O valor sugerido é 9 até as 22h e 15 depois —
+                mude à vontade, vale o que ficar digitado.
               </div>
 
-              <div style={{ ...cardStyleBox, marginBottom: 8 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <span style={{ fontSize: 13, color: "#22231F" }}>Entregas após 22h</span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <input type="number" min="0" step="1" value={repasse.qtdApos22} onChange={(e) => setRepasse((p) => ({ ...p, qtdApos22: parseInt(e.target.value) || 0 }))}
-                      style={{ width: 50, padding: "3px 5px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
-                    <span style={{ fontSize: 12, color: "#8A8778" }}>entrega{repasse.qtdApos22 === 1 ? "" : "s"}</span>
+              {horas.length === 0 ? (
+                <div style={{ ...cardStyleBox, marginBottom: 8, fontSize: 12.5, color: "#8A8778" }}>
+                  Nenhuma entrega encontrada nesse turno. Se houve entrega, o cache de pedidos
+                  dessa noite ainda não foi gravado — ele enche de madrugada.
+                </div>
+              ) : (
+                <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden",
+                              marginBottom: 8, background: "#FFFFFF" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "58px 1fr 76px 86px", gap: 6,
+                                padding: "8px 10px", background: "#F6F1E7", fontSize: 10,
+                                fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+                    <span>Hora</span>
+                    <span style={{ textAlign: "right" }}>Entregas</span>
+                    <span style={{ textAlign: "right" }}>Valor</span>
+                    <span style={{ textAlign: "right" }}>Total</span>
+                  </div>
+                  {horas.map((h, i) => {
+                    const linhaTotal = (Number(h.qtd) || 0) * (parseFloat(h.valor) || 0);
+                    const mexido = Number(h.qtd) !== Number(h.entregas);
+                    return (
+                      <div key={h.hora} style={{
+                        display: "grid", gridTemplateColumns: "58px 1fr 76px 86px", gap: 6,
+                        alignItems: "center", padding: "7px 10px",
+                        borderTop: i > 0 ? "1px solid #F0EBDD" : "none", fontSize: 12.5,
+                      }}>
+                        <span style={{ fontWeight: 700, color: "#22231F" }}>
+                          {String(h.hora).padStart(2, "0")}h
+                        </span>
+                        <span style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 }}>
+                          <input type="number" min="0" step="1" value={h.qtd}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10);
+                              setHoras((prev) => prev.map((x) => x.hora === h.hora
+                                ? { ...x, qtd: Number.isNaN(v) ? 0 : v } : x));
+                            }}
+                            style={{ width: 52, padding: "3px 5px", borderRadius: 6,
+                                     border: "1px solid " + (mexido ? "#C9A227" : "#E8E2D2"),
+                                     fontSize: 12, textAlign: "right",
+                                     fontVariantNumeric: "tabular-nums" }} />
+                          {mexido && (
+                            <span style={{ fontSize: 10, color: "#8A6A0F" }} title="o sistema contou outro número">
+                              sist. {h.entregas}
+                            </span>
+                          )}
+                        </span>
+                        <input type="number" step="0.01" value={h.valor}
+                          onChange={(e) => setHoras((prev) => prev.map((x) => x.hora === h.hora
+                            ? { ...x, valor: e.target.value } : x))}
+                          style={{ width: 72, padding: "3px 5px", borderRadius: 6,
+                                   border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right",
+                                   fontVariantNumeric: "tabular-nums" }} />
+                        <span style={{ textAlign: "right", fontWeight: 700, color: "#22231F",
+                                       fontVariantNumeric: "tabular-nums" }}>
+                          {brl(linhaTotal)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <div style={{ display: "grid", gridTemplateColumns: "58px 1fr 76px 86px", gap: 6,
+                                padding: "8px 10px", background: "#F6F1E7", fontSize: 12.5,
+                                fontWeight: 700, borderTop: "1px solid #E8E2D2" }}>
+                    <span style={{ color: "#8A8778" }}>Turno</span>
+                    <span style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{totalEntregas}</span>
+                    <span />
+                    <span style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{brl(totalRepasse)}</span>
                   </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 11, color: "#8A8778" }}>Valor por entrega</span>
-                  <input type="number" step="0.01" value={repasse.valorApos22} onChange={(e) => setRepasse((p) => ({ ...p, valorApos22: e.target.value }))}
-                    style={{ width: 70, padding: "4px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12, textAlign: "right" }} />
-                  <span style={{ flex: 1, textAlign: "right", fontSize: 13, fontWeight: 700, color: "#22231F" }}>{brl(repasse.qtdApos22 * (parseFloat(repasse.valorApos22) || 0))}</span>
+              )}
+
+              {/* O que o cliente pagou de frete, do lado do que você paga.
+                  São as duas pontas da mesma conta, e até hoje ninguém via
+                  as duas juntas — por isso o delivery dava prejuízo sem
+                  ninguém perceber. */}
+              {horas.length > 0 && (
+                <div style={{ ...cardStyleBox, marginBottom: 8, display: "flex",
+                              justifyContent: "space-between", gap: 10, flexWrap: "wrap",
+                              background: totalTaxaCobrada >= totalRepasse ? "#F7FBF2" : "#FDF4F1",
+                              borderColor: totalTaxaCobrada >= totalRepasse ? "#C4DBA6" : "#EBC9C1" }}>
+                  <div style={{ fontSize: 11.5, color: "#55534A" }}>
+                    Frete cobrado dos clientes: <b>{brl(totalTaxaCobrada)}</b>
+                    <div style={{ fontSize: 10.5, color: "#8A8778", marginTop: 2 }}>
+                      {totalEntregas > 0
+                        ? `${brl(totalTaxaCobrada / totalEntregas)} por entrega, contra ${brl(totalRepasse / Math.max(totalEntregas, 1))} pagos`
+                        : ""}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", fontSize: 13, fontWeight: 800,
+                                color: totalTaxaCobrada >= totalRepasse ? "#27500A" : "#8E2420" }}>
+                    {totalTaxaCobrada >= totalRepasse ? "+" : "−"}{brl(Math.abs(totalTaxaCobrada - totalRepasse))}
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px 10px", fontSize: 13 }}>
                 <span style={{ color: "#8A8778" }}>Total do repasse</span>
@@ -536,7 +677,7 @@ export default function ConferenciaCaixa() {
                       Repasse enviado — {brl(totalRepasse)}
                     </div>
                     <div style={{ fontSize: 11, color: "#8A8778" }}>
-                      {repasse.qtdAte22 + repasse.qtdApos22} entrega(s) · em Contas a pagar (paga) e no DRE, conta 4.7 Repasse de entregador
+                      {totalEntregas} entrega(s) · em Contas a pagar (paga) e no DRE, conta 4.7 Repasse de entregador
                     </div>
                   </div>
                   <button onClick={desfazerRepasse} disabled={enviandoRepasse}
