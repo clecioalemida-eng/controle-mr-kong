@@ -64,6 +64,9 @@ export default function Sorteio() {
   const [tirarRespostas, setTirarRespostas] = useState(true);
   const [suplentes, setSuplentes] = useState(2);
   const [colados, setColados] = useState("");
+  // No período a janela é obrigatória. Num post só, ela é opcional: o padrão
+  // é valer tudo desde que o post saiu.
+  const [usarJanela, setUsarJanela] = useState(false);
 
   // O que voltou do servidor.
   const [previa, setPrevia] = useState(null);
@@ -91,11 +94,15 @@ export default function Sorteio() {
   // regra nova é a forma mais fácil de alguém sortear achando que filtrou.
   const mexeu = (fn) => (v) => { setPrevia(null); setResultado(null); setErro(""); fn(v); };
 
+  // Quando a janela de datas vale: sempre no período, e no post só se você
+  // pedir. Colar lista não tem data nenhuma — os @ vêm sem hora.
+  const comJanela = escopo === "periodo" || (escopo === "post" && usarJanela);
+
   const corpo = () => ({
     escopo,
     midia_id: midiaId,
-    de: escopo === "periodo" ? `${de}T00:00:00` : null,
-    ate: escopo === "periodo" ? `${ate}T23:59:59` : null,
+    de: comJanela ? `${de}T00:00:00` : null,
+    ate: comJanela ? `${ate}T23:59:59` : null,
     regra,
     min_comentarios: Number(minimo) || 1,
     teto_chances: regra === "comentario" && teto ? Number(teto) : null,
@@ -225,18 +232,29 @@ export default function Sorteio() {
           </>
         )}
 
-        {escopo === "periodo" && (
+        {escopo === "post" && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 11 }}>
+            <Opcao ativo={!usarJanela} onClick={() => mexeu(setUsarJanela)(false)}
+                   nome="Desde que o post saiu" desc="vale todo comentário" />
+            <Opcao ativo={usarJanela} onClick={() => mexeu(setUsarJanela)(true)}
+                   nome="Só entre datas" desc="fecha a janela do sorteio" />
+          </div>
+        )}
+
+        {comJanela && (
           <>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center",
+                          marginTop: 9 }}>
               <span style={{ ...dica, fontWeight: 700, color: "#22231F" }}>Comentários de</span>
               <input type="date" style={inputStyle} value={de} onChange={(e) => mexeu(setDe)(e.target.value)} />
               <span style={{ ...dica, fontWeight: 700, color: "#22231F" }}>até</span>
               <input type="date" style={inputStyle} value={ate} onChange={(e) => mexeu(setAte)(e.target.value)} />
             </div>
             <div style={{ ...dica, marginTop: 7 }}>
-              Entra quem comentou dentro da janela, em qualquer post publicado nela. Quem comentou
-              fora fica de fora e aparece riscado com o motivo — é o que deixa você sortear no dia 31
-              valendo só o que foi dito até o dia 30, com o post ainda recebendo comentário.
+              A janela vai das 00h00 do primeiro dia às 23h59 do último. Quem comentou fora fica de
+              fora e aparece riscado com o motivo — é o que deixa você sortear no dia 31 valendo só
+              o que foi dito até o dia 30, com o post ainda recebendo comentário.
+              {escopo === "periodo" && " Entram todos os posts publicados dentro dela."}
             </div>
           </>
         )}
