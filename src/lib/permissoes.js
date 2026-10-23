@@ -44,6 +44,7 @@ export const CATALOGO = [
       { chave: "financeiro.contaspagar", nome: "Contas a pagar",       sensivel: true },
       { chave: "financeiro.dre",         nome: "DRE",                  sensivel: true },
       { chave: "financeiro.fiado",       nome: "Fiado" },
+      { chave: "financeiro.precos",      nome: "Formação de preços",    sensivel: true },
     ],
   },
   {
