@@ -66,8 +66,25 @@ function chaveNome(s) { return semAcento(s).trim().replace(/\s+/g, " "); }
 const SUB_UNIDADE = { kg: "g", l: "ml" };
 function limpo(n) { return Math.round((Number(n) || 0) * 1e6) / 1e6; }
 function unidadeDigitada(un) { return SUB_UNIDADE[un] || un || "un"; }
+// O campo de quantidade aceita fração: "1/12" é uma lata de uma caixa de
+// doze. Isso existe porque o erro mais comum deste cadastro é insumo com
+// preço de EMBALAGEM e ficha gastando 1 — foi o que fez cada X-Tudo
+// consumir uma caixa de ovos. Com a fração, o preço do insumo continua
+// sendo o da caixa (que é o que a nota traz, e por isso "segue a nota"
+// continua funcionando) e a ficha gasta a parte certa dela.
+function numeroOuFracao(t) {
+  const txt = String(t ?? "").trim().replace(",", ".");
+  if (!txt) return 0;
+  const f = txt.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+  if (f) {
+    const baixo = parseFloat(f[2]);
+    return baixo > 0 ? parseFloat(f[1]) / baixo : 0;
+  }
+  const n = parseFloat(txt);
+  return isNaN(n) ? 0 : n;
+}
 function paraBase(valorDigitado, unidadeInsumo) {
-  const v = num(valorDigitado);
+  const v = numeroOuFracao(valorDigitado);
   return SUB_UNIDADE[unidadeInsumo] ? limpo(v / 1000) : limpo(v);
 }
 function paraTela(quantidadeBase, unidadeInsumo) {
@@ -500,6 +517,8 @@ function FichaEditor({ prato, linhas, insumos, compras, onErro, onRecado, recarr
   const [buscaInsumo, setBuscaInsumo] = useState("");
   const [salvando, setSalvando] = useState(false);
   const [aviso1, setAviso1] = useState("");
+  const [dividindo, setDividindo] = useState(null);   // insumo_id com a caixa aberta
+  const [naCaixa, setNaCaixa] = useState("");
 
   useEffect(() => { setItens(daBase()); setAviso1(""); }, [daBase]);
 
@@ -560,11 +579,15 @@ function FichaEditor({ prato, linhas, insumos, compras, onErro, onRecado, recarr
         {itens.map((it, idx) => {
           const ins = porId[it.insumo_id];
           return (
-            <div key={it.insumo_id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <React.Fragment key={it.insumo_id}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: "#22231F" }}>
                 {ins?.nome || "(insumo apagado)"}
                 <div style={rotuloMini}>
                   {ins ? `${brl(ins.custo_medio_atual)} / ${ins.unidade}` : "sem cadastro"}
+                  {String(it.valor).includes("/") && paraBase(it.valor, ins?.unidade) > 0 && (
+                    <span> · {String(paraTela(paraBase(it.valor, ins?.unidade), ins?.unidade)).replace(".", ",")} {unidadeDigitada(ins?.unidade)}</span>
+                  )}
                   {(() => {
                     // Só avisa quando a nota discorda do que está cadastrado.
                     // Insumo composto tem custo calculado, não comprado.
@@ -575,12 +598,15 @@ function FichaEditor({ prato, linhas, insumos, compras, onErro, onRecado, recarr
                   })()}
                 </div>
               </div>
-              <input value={it.valor} inputMode="decimal"
+              <input value={it.valor} inputMode="text" placeholder="150 ou 1/12"
                 onChange={(e) => setItens((prev) => prev.map((x, i) => (i === idx ? { ...x, valor: e.target.value } : x)))}
-                style={{ ...input, width: 76, textAlign: "right" }} />
+                style={{ ...input, width: 86, textAlign: "right" }} />
               <span style={{ fontSize: 12, color: "#8A8778", width: 26 }}>
                 {unidadeDigitada(ins?.unidade)}
               </span>
+              <button onClick={() => { setDividindo(dividindo === it.insumo_id ? null : it.insumo_id); setNaCaixa(""); }}
+                title="O preço deste insumo é de uma embalagem? Divida."
+                style={{ ...btnSec, padding: "4px 7px", fontSize: 12, lineHeight: 1 }}>÷</button>
               <span style={{ fontSize: 12, color: "#55534A", width: 72, textAlign: "right",
                              fontVariantNumeric: "tabular-nums" }}>{brl(custoDaLinha(it))}</span>
               <button onClick={() => setItens((prev) => prev.filter((_, i) => i !== idx))}
@@ -589,6 +615,32 @@ function FichaEditor({ prato, linhas, insumos, compras, onErro, onRecado, recarr
                 <X size={15} />
               </button>
             </div>
+            {dividindo === it.insumo_id && (
+              <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap",
+                            background: "#F6F1E7", border: "1px solid #E8E2D2", borderRadius: 9,
+                            padding: "8px 10px", fontSize: 12, color: "#55534A" }}>
+                O preço de {brl(ins?.custo_medio_atual)} é de uma embalagem com
+                <input value={naCaixa} inputMode="decimal" placeholder="12" autoFocus
+                  onChange={(e) => setNaCaixa(e.target.value)}
+                  style={{ ...input, width: 64, textAlign: "right", padding: "5px 7px" }} />
+                {unidadeDigitada(ins?.unidade)}?
+                <button
+                  disabled={!(num(naCaixa) > 0)}
+                  onClick={() => {
+                    setItens((prev) => prev.map((x, i) => (i === idx ? { ...x, valor: `1/${num(naCaixa)}` } : x)));
+                    setDividindo(null); setNaCaixa("");
+                  }}
+                  style={{ ...btnPri, padding: "5px 10px", fontSize: 12 }}>
+                  Usar 1 de {num(naCaixa) > 0 ? num(naCaixa) : "…"}
+                </button>
+                {num(naCaixa) > 0 && (
+                  <span style={{ color: "#8A8778" }}>
+                    sai a {brl((Number(ins?.custo_medio_atual) || 0) / num(naCaixa))} cada
+                  </span>
+                )}
+              </div>
+            )}
+          </React.Fragment>
           );
         })}
       </div>
@@ -635,7 +687,9 @@ function FichaEditor({ prato, linhas, insumos, compras, onErro, onRecado, recarr
 
       <div style={{ fontSize: 11, color: "#8A8778", marginTop: 10, lineHeight: 1.6 }}>
         A quantidade é a da receita: {unidadeDigitada("kg")} para peso, {unidadeDigitada("l")} para volume,
-        un para unidade. Insumo novo se cadastra em Supply Chain → Insumos; aqui só se monta a receita.
+        un para unidade. Quando o insumo está cadastrado pelo preço da <b>embalagem</b> — a caixa de
+        refrigerante, a cartela de ovos — use o <b>÷</b> ou escreva a fração direto: <b>1/12</b> é uma
+        lata de uma caixa de doze. Insumo novo se cadastra em Supply Chain → Insumos; aqui só se monta a receita.
       </div>
     </div>
   );
