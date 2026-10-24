@@ -859,6 +859,13 @@ const ORIGENS = [
   { chave: "media_90d",     label: "Média 90 dias" },
   { chave: "manual",        label: "Manual" },
 ];
+// As três unidades que o sistema conhece. Mudar a unidade de um insumo é
+// mais perigoso do que mudar o preço: a quantidade das fichas NÃO é
+// convertida — 0,15 era 150 g e, virando "un", passa a ser 0,15 unidade.
+// O número fica igual e o significado muda. Por isso a tela conta quantas
+// fichas dependem daquilo antes de deixar salvar.
+const UNIDADES = ["kg", "l", "un"];
+
 const ROTULO_ORIGEM = {
   ultima_compra: "Segue a nota",
   media_90d: "Média 90 dias",
@@ -916,6 +923,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
   }, [fichas]);
 
   const origemDe = (i) => edit[i.id]?.origem ?? i.origem_custo ?? "ultima_compra";
+  const unidadeDe = (i) => edit[i.id]?.unidade ?? i.unidade ?? "un";
   const ehComposto = (i) => !!i.composto || (i.origem_custo === "receita");
   const valorManualDe = (i) => {
     const t = edit[i.id]?.valor;
@@ -925,6 +933,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
 
   const mudouI = (i) => {
     if (edit[i.id]?.forcar) return true;
+    if (unidadeDe(i) !== (i.unidade ?? "un")) return true;
     if (origemDe(i) !== (i.origem_custo ?? "ultima_compra")) return true;
     if (origemDe(i) === "manual"
         && Math.abs(valorManualDe(i) - (Number(i.custo_medio_atual) || 0)) > 0.000001) return true;
@@ -949,6 +958,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
   const reaplicavel = (i) => !!divergencia(i) && ["ultima_compra", "media_90d"].includes(origemDe(i));
 
   const alterados = insumos.filter(mudouI);
+  const trocaramUnidade = insumos.filter((i) => unidadeDe(i) !== (i.unidade ?? "un"));
   const divergentes = insumos.filter((i) => divergencia(i));
   const pendentes = insumos.filter(reaplicavel);
   const pratosAfetados = useMemo(() => {
@@ -998,6 +1008,14 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
     let feitos = 0;
     for (const i of alterados) {
       setProgresso(`${feitos + 1} de ${alterados.length}…`);
+      // A unidade vai num update direto: ela é cadastro do insumo, não
+      // custo, e a função definir_custo_insumo de propósito não mexe nela.
+      if (unidadeDe(i) !== (i.unidade ?? "un")) {
+        const { error: eUn } = await supabase.from("insumos")
+          .update({ unidade: unidadeDe(i), atualizado_em: new Date().toISOString() })
+          .eq("id", i.id);
+        if (eUn) { setSalvando(false); setProgresso(""); onErro(`${i.nome}: ${eUn.message}`); return; }
+      }
       const origem = origemDe(i);
       const { error } = await supabase.rpc("definir_custo_insumo", {
         p_insumo: i.id,
@@ -1075,6 +1093,22 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
         </div>
       )}
 
+      {trocaramUnidade.length > 0 && (
+        <div style={{ ...aviso, background: "#FBEFEC", borderColor: "#E8B5A8", color: "#8E2420",
+                      alignItems: "flex-start", flexDirection: "column", gap: 4 }}>
+          <div style={{ fontWeight: 700 }}>
+            <AlertTriangle size={15} /> {trocaramUnidade.length === 1 ? "Um insumo mudou de unidade" : `${trocaramUnidade.length} insumos mudaram de unidade`}.
+          </div>
+          <div style={{ fontSize: 11.5, lineHeight: 1.6 }}>
+            A quantidade das fichas <b>não é convertida</b>: o número fica igual e o significado muda.
+            Um insumo em kg com 0,15 na ficha quer dizer 150 g; virando "un", aquele mesmo 0,15 passa
+            a ser 0,15 unidade.{" "}
+            {trocaramUnidade.map((i) => `${i.nome} (${quantosPratos[i.id] || 0} ${(quantosPratos[i.id] || 0) === 1 ? "prato" : "pratos"})`).join(" · ")}
+            {" "}— confira a ficha desses depois de salvar.
+          </div>
+        </div>
+      )}
+
       {alterados.length > 0 && (
         <div style={{ ...card, marginBottom: 10, display: "flex", justifyContent: "space-between",
                       alignItems: "center", gap: 10, flexWrap: "wrap", background: "#FBF7EC" }}>
@@ -1122,7 +1156,20 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                       {i.nome}
                       {semPreco && !composto && <div style={{ ...rotuloMini, color: "#8E2420" }}>sem preço — zera o custo de quem usa</div>}
                     </td>
-                    <td style={{ ...td, textAlign: "center", color: "#8A8778" }}>{i.unidade}</td>
+                    <td style={{ ...td, textAlign: "center" }}>
+                      <select value={unidadeDe(i)}
+                        onChange={(e) => setEdit((prev) => ({
+                          ...prev, [i.id]: { ...(prev[i.id] || {}), unidade: e.target.value },
+                        }))}
+                        style={{ ...input, padding: "5px 4px", fontSize: 12, width: 62,
+                                 color: unidadeDe(i) !== (i.unidade ?? "un") ? "#8E2420" : "#55534A",
+                                 fontWeight: unidadeDe(i) !== (i.unidade ?? "un") ? 700 : 400 }}>
+                        {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                      </select>
+                      {unidadeDe(i) !== (i.unidade ?? "un") && (
+                        <div style={{ ...rotuloMini, color: "#8E2420" }}>era {i.unidade}</div>
+                      )}
+                    </td>
                     <td style={td}>
                       {composto ? (
                         <span style={{ color: "#8A8778" }}>Receita</span>
