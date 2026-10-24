@@ -147,13 +147,20 @@ const ABAS = [
   { chave: "insumos", label: "Preço dos insumos" },
 ];
 
-export default function FormacaoPrecos() {
-  const [aba, setAba] = useState("precos");
+export default function FormacaoPrecos({ abaInicial, onAba }) {
+  const [aba, setAba] = useState(
+    ABAS.some((a) => a.chave === abaInicial) ? abaInicial : "precos");
   const [pratos, setPratos] = useState([]);
   const [insumos, setInsumos] = useState([]);
   const [fichas, setFichas] = useState({});   // prato_id -> [{ insumo_id, quantidade }]
   const [mix, setMix] = useState({});         // chaveNome -> { qtd, valor }
   const [compras, setCompras] = useState({}); // insumo_id -> última compra
+  // Mora AQUI, e não na AbaInsumos, porque gravar dispara um recarregar() —
+  // e enquanto ele roda, a tela devolve "Carregando…", desmontando a aba
+  // inteira. Qualquer memória guardada lá dentro morre junto. Foi o que
+  // fez a linha salva continuar aparecendo.
+  const [resolvidos, setResolvidos] = useState([]);
+  const [verResolvidos, setVerResolvidos] = useState(false);
   const [semFuncaoCompras, setSemFuncaoCompras] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
@@ -257,7 +264,7 @@ export default function FormacaoPrecos() {
 
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
         {ABAS.map((a) => (
-          <button key={a.chave} onClick={() => { setAba(a.chave); setRecado(""); }}
+          <button key={a.chave} onClick={() => { setAba(a.chave); setRecado(""); if (onAba) onAba(a.chave); }}
             style={a.chave === aba ? abaAtiva : abaInativa}>{a.label}</button>
         ))}
         <button onClick={carregar} style={{ ...btnSec, marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
@@ -275,6 +282,9 @@ export default function FormacaoPrecos() {
       {aba === "insumos" && (
         <AbaInsumos insumos={insumos} usados={insumosUsados} pratos={pratos} fichas={fichas}
           compras={compras} semFuncao={semFuncaoCompras}
+          resolvidos={resolvidos}
+          onResolvido={(id) => setResolvidos((prev) => (prev.includes(id) ? prev : [...prev, id]))}
+          verResolvidos={verResolvidos} onVerResolvidos={setVerResolvidos}
           onErro={setErro} onRecado={setRecado} recarregar={carregar} />
       )}
     </div>
@@ -901,7 +911,12 @@ function textoPreco(v) {
   return (cabeEmDuas ? n.toFixed(2) : n.toFixed(4)).replace(".", ",");
 }
 
-function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErro, onRecado, recarregar }) {
+// A tela é uma fila de pendências: linha arrumada que continua ali é linha
+// que você vai reler amanhã pra lembrar que já tinha arrumado. Por isso o
+// insumo salvo sai da lista na hora — sai da vista, não do banco.
+function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
+                      resolvidos, onResolvido, verResolvidos, onVerResolvidos,
+                      onErro, onRecado, recarregar }) {
   // edit[id] = { origem?, valor?, unidade?, forcar? }
   const [edit, setEdit] = useState({});
   const [busca, setBusca] = useState("");
@@ -1019,6 +1034,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
   const visiveis = insumos
     .filter((i) => semAcento(i.nome).includes(semAcento(busca)))
     .filter((i) => !soUsados || usados.has(i.id))
+    .filter((i) => verResolvidos || !resolvidos.includes(i.id))
     .filter(passaSituacao)
     .sort((a, b) => (quantosPratos[b.id] || 0) - (quantosPratos[a.id] || 0) || a.nome.localeCompare(b.nome));
 
@@ -1068,6 +1084,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
     }
     const n = quantosPratos[i.id] || 0;
     desfazerLinha(i.id);
+    onResolvido(i.id);
     onRecado(`${i.nome}: gravado. ${n > 0 ? `${n} ${n === 1 ? "prato teve" : "pratos tiveram"} o custo recalculado.` : ""}`);
     recarregar();
   };
@@ -1133,6 +1150,20 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
             {trocaramUnidade.map((i) => `${i.nome} (${quantosPratos[i.id] || 0} ${(quantosPratos[i.id] || 0) === 1 ? "prato" : "pratos"})`).join(" · ")}
             {" "}— confira a ficha desses depois de salvar.
           </div>
+        </div>
+      )}
+
+      {resolvidos.length > 0 && (
+        <div style={{ fontSize: 11.5, color: "#27500A", marginBottom: 8, display: "flex",
+                      alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <Check size={14} />
+          {resolvidos.length} {resolvidos.length === 1 ? "insumo resolvido" : "insumos resolvidos"} agora
+          {verResolvidos ? " (aparecendo na lista)" : " e fora da lista"}.
+          <button onClick={() => onVerResolvidos(!verResolvidos)}
+            style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
+                     fontSize: 11.5, color: "#27500A", textDecoration: "underline", fontFamily: "inherit" }}>
+            {verResolvidos ? "esconder de novo" : "mostrar"}
+          </button>
         </div>
       )}
 

@@ -55,7 +55,7 @@ function diasAtras(n) {
 function formatBRL(v) {
   return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
-export default function Financeiro({ onVoltar, abaInicial, permissoes }) {
+export default function Financeiro({ onVoltar, abaInicial, subInicial, onAba, permissoes }) {
   // Só as abas que o cargo da pessoa pode ver. Administrador vê todas,
   // porque podeVer() devolve true para ele em qualquer chave.
   const abasVisiveis = ABAS.filter((a) => podeVer(permissoes, `financeiro.${a.chave}`));
@@ -100,7 +100,7 @@ export default function Financeiro({ onVoltar, abaInicial, permissoes }) {
           <>
             <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
               {abasVisiveis.map((a) => (
-                <button key={a.chave} onClick={() => setAba(a.chave)}
+                <button key={a.chave} onClick={() => { setAba(a.chave); if (onAba) onAba(a.chave, null); }}
                   style={{ ...tabBtn, ...(aba === a.chave ? tabBtnAtivo : {}) }}>
                   {a.label}
                 </button>
@@ -117,7 +117,7 @@ export default function Financeiro({ onVoltar, abaInicial, permissoes }) {
             ) : aba === "fiado" ? (
               <RelatorioFiado />
             ) : aba === "precos" ? (
-              <FormacaoPrecos />
+              <FormacaoPrecos abaInicial={subInicial} onAba={(x) => onAba && onAba(aba, x)} />
             ) : (
               <>
                 <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
