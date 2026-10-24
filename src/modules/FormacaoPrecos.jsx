@@ -902,19 +902,19 @@ function textoPreco(v) {
 }
 
 function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErro, onRecado, recarregar }) {
-  // edit[id] = { origem?, valor?, forcar? }
-  //   origem  — nova origem escolhida na linha
-  //   valor   — novo preço manual digitado
-  //   forcar  — "traz agora o que a origem manda", sem mudar a origem.
-  //             Serve pros insumos que já estão em "segue a nota" mas
-  //             ficaram com o valor velho, de antes da 152 existir.
+  // edit[id] = { origem?, valor?, unidade?, forcar? }
   const [edit, setEdit] = useState({});
   const [busca, setBusca] = useState("");
   const [situacao, setSituacao] = useState("todos");
   const [soUsados, setSoUsados] = useState(true);
-  const [salvando, setSalvando] = useState(false);
-  const [progresso, setProgresso] = useState("");
-  const [confirmando, setConfirmando] = useState(false);
+  const [confirmando, setConfirmando] = useState(null);   // id do insumo em confirmação
+  const [salvando, setSalvando] = useState(null);
+
+  const porIdInsumo = useMemo(() => {
+    const m = {};
+    insumos.forEach((x) => { m[x.id] = x; });
+    return m;
+  }, [insumos]);
 
   const quantosPratos = useMemo(() => {
     const c = {};
@@ -922,13 +922,42 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
     return c;
   }, [fichas]);
 
-  const origemDe = (i) => edit[i.id]?.origem ?? i.origem_custo ?? "ultima_compra";
+  const origemDe  = (i) => edit[i.id]?.origem ?? i.origem_custo ?? "ultima_compra";
   const unidadeDe = (i) => edit[i.id]?.unidade ?? i.unidade ?? "un";
   const ehComposto = (i) => !!i.composto || (i.origem_custo === "receita");
   const valorManualDe = (i) => {
     const t = edit[i.id]?.valor;
     if (t === undefined || t === "") return Number(i.custo_medio_atual) || 0;
     return paraNumero(t) ?? (Number(i.custo_medio_atual) || 0);
+  };
+
+  const compraDe = (i) => (ehComposto(i) ? null : compras?.[i.id]) || null;
+  const divergencia = (i) => {
+    const c = compraDe(i);
+    if (!c) return null;
+    const atual = Number(i.custo_medio_atual) || 0;
+    const nota = Number(c.ultimo_preco) || 0;
+    if (!(nota > 0) || Math.abs(nota - atual) <= 0.005) return null;
+    return { nota, atual, pct: atual > 0 ? ((nota - atual) / atual) * 100 : null };
+  };
+  const reaplicavel = (i) => !!divergencia(i) && ["ultima_compra", "media_90d"].includes(origemDe(i));
+
+  // ---------------------------------------------------------------------
+  // Quanto o custo VAI ficar, segundo o que está escolhido na linha.
+  // É a mesma regra da função custo_pela_origem no banco (migração 152) —
+  // aqui ela só é repetida pra conseguir mostrar o resultado ANTES de
+  // gravar. Se as duas discordarem um dia, a do banco é a que vale.
+  // ---------------------------------------------------------------------
+  const custoPrevisto = (i) => {
+    const atual = Number(i.custo_medio_atual) || 0;
+    const origem = origemDe(i);
+    if (ehComposto(i)) return atual;
+    if (origem === "manual") return valorManualDe(i);
+    const c = compras?.[i.id];
+    if (!c) return atual;
+    if (origem === "ultima_compra") return Number(c.ultimo_preco) || atual;
+    if (origem === "media_90d")     return Number(c.preco_medio_90d) || atual;
+    return atual;
   };
 
   const mudouI = (i) => {
@@ -940,31 +969,43 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
     return false;
   };
 
-  // Divergência = o que está GRAVADO no insumo contra o que a última nota
-  // pagou. Mede sobre o gravado, não sobre o que está sendo digitado:
-  // senão, começar a editar faria a linha sumir do filtro no meio da edição.
-  const compraDe = (i) => (ehComposto(i) ? null : compras?.[i.id]) || null;
-  const divergencia = (i) => {
-    const c = compraDe(i);
-    if (!c) return null;
-    const atual = Number(i.custo_medio_atual) || 0;
-    const nota = Number(c.ultimo_preco) || 0;
-    if (!(nota > 0) || Math.abs(nota - atual) <= 0.005) return null;
-    return { nota, atual, pct: atual > 0 ? ((nota - atual) / atual) * 100 : null };
+  // ---------------------------------------------------------------------
+  // O impacto: quais pratos usam este insumo e o que acontece com cada um.
+  // ---------------------------------------------------------------------
+  const custoDoPrato = (p, trocaId, trocaValor) =>
+    (fichas[p.id] || SEM_FICHA).reduce((soma, l) => {
+      const preco = l.insumo_id === trocaId
+        ? trocaValor
+        : (Number(porIdInsumo[l.insumo_id]?.custo_medio_atual) || 0);
+      return soma + (Number(l.quantidade) || 0) * preco;
+    }, 0);
+
+  const impacto = (i) => {
+    const antes = Number(i.custo_medio_atual) || 0;
+    const depois = custoPrevisto(i);
+    const afetados = pratos
+      .filter((p) => (fichas[p.id] || SEM_FICHA).some((l) => l.insumo_id === i.id))
+      .map((p) => {
+        const cAntes = custoDoPrato(p, i.id, antes);
+        const cDepois = custoDoPrato(p, i.id, depois);
+        const preco = Number(p.preco_venda) || 0;
+        return {
+          id: p.id, nome: p.nome, preco, vendidos: p.vendidos || 0,
+          cAntes, cDepois,
+          mAntes: preco > 0 ? ((preco - cAntes) / preco) * 100 : null,
+          mDepois: preco > 0 ? ((preco - cDepois) / preco) * 100 : null,
+          noMes: (cDepois - cAntes) * (p.vendidos || 0),
+        };
+      })
+      .sort((a, b) => Math.abs(b.cDepois - b.cAntes) - Math.abs(a.cDepois - a.cAntes) || a.nome.localeCompare(b.nome));
+    const noMes = afetados.reduce((s, x) => s + x.noMes, 0);
+    return { antes, depois, afetados, noMes };
   };
-  // Divergente que ainda está em origem automática: esse é o caso em que
-  // basta mandar o banco reaplicar a origem. O divergente em "manual" está
-  // divergente de propósito — é pra isso que serve o manual.
-  const reaplicavel = (i) => !!divergencia(i) && ["ultima_compra", "media_90d"].includes(origemDe(i));
 
   const alterados = insumos.filter(mudouI);
   const trocaramUnidade = insumos.filter((i) => unidadeDe(i) !== (i.unidade ?? "un"));
   const divergentes = insumos.filter((i) => divergencia(i));
   const pendentes = insumos.filter(reaplicavel);
-  const pratosAfetados = useMemo(() => {
-    const ids = new Set(alterados.map((i) => i.id));
-    return pratos.filter((p) => (fichas[p.id] || SEM_FICHA).some((l) => ids.has(l.insumo_id))).length;
-  }, [alterados, fichas, pratos]);
 
   const passaSituacao = (i) => {
     if (situacao === "divergente") return !!divergencia(i);
@@ -987,52 +1028,47 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                 ? (prev[i.id]?.valor ?? textoPreco(i.custo_medio_atual))
                 : prev[i.id]?.valor },
   }));
-  // "Trava neste preço": vira manual já com o valor da nota dentro. É o
-  // movimento certo pro insumo cujo preço de nota está certo mas que você
-  // não quer que mude sozinho de novo.
   const travarNaNota = (i) => {
     const c = compraDe(i);
     if (!c) return;
-    setEdit((prev) => ({ ...prev, [i.id]: { origem: "manual", valor: textoPreco(c.ultimo_preco), forcar: false } }));
+    setEdit((prev) => ({ ...prev, [i.id]: { ...(prev[i.id] || {}), origem: "manual", valor: textoPreco(c.ultimo_preco), forcar: false } }));
+    setConfirmando(i.id);
   };
-  const reaplicar = (i) => setEdit((prev) => ({ ...prev, [i.id]: { ...(prev[i.id] || {}), forcar: true } }));
-  const reaplicarTodos = () => {
-    const novo = { ...edit };
-    pendentes.forEach((i) => { novo[i.id] = { ...(novo[i.id] || {}), forcar: true }; });
-    setEdit(novo);
-    setConfirmando(false);
+  const reaplicar = (i) => {
+    setEdit((prev) => ({ ...prev, [i.id]: { ...(prev[i.id] || {}), forcar: true } }));
+    setConfirmando(i.id);
+  };
+  const desfazerLinha = (id) => {
+    setEdit((prev) => { const c = { ...prev }; delete c[id]; return c; });
+    setConfirmando(null);
   };
 
-  const salvarTudo = async () => {
-    setSalvando(true); onErro(""); onRecado("");
-    let feitos = 0;
-    for (const i of alterados) {
-      setProgresso(`${feitos + 1} de ${alterados.length}…`);
-      // A unidade vai num update direto: ela é cadastro do insumo, não
-      // custo, e a função definir_custo_insumo de propósito não mexe nela.
-      if (unidadeDe(i) !== (i.unidade ?? "un")) {
-        const { error: eUn } = await supabase.from("insumos")
-          .update({ unidade: unidadeDe(i), atualizado_em: new Date().toISOString() })
-          .eq("id", i.id);
-        if (eUn) { setSalvando(false); setProgresso(""); onErro(`${i.nome}: ${eUn.message}`); return; }
-      }
-      const origem = origemDe(i);
-      const { error } = await supabase.rpc("definir_custo_insumo", {
-        p_insumo: i.id,
-        p_origem: origem,
-        p_valor: origem === "manual" ? valorManualDe(i) : null,
-      });
-      if (error) {
-        setSalvando(false); setProgresso("");
-        onErro(/sem_acesso/.test(error.message || "")
-          ? "Seu acesso não permite mudar o custo dos insumos."
-          : `${i.nome}: ${error.message}`);
-        return;
-      }
-      feitos += 1;
+  // Grava UM insumo. De propósito não existe "salvar todos" aqui: mudar o
+  // preço de um insumo mexe na margem de dezenas de pratos, e um botão que
+  // faz isso vinte vezes de uma vez é um botão que ninguém confere.
+  const salvarUm = async (i) => {
+    setSalvando(i.id); onErro(""); onRecado("");
+    if (unidadeDe(i) !== (i.unidade ?? "un")) {
+      const { error: eUn } = await supabase.from("insumos")
+        .update({ unidade: unidadeDe(i), atualizado_em: new Date().toISOString() })
+        .eq("id", i.id);
+      if (eUn) { setSalvando(null); onErro(`${i.nome}: ${eUn.message}`); return; }
     }
-    setSalvando(false); setProgresso(""); setEdit({});
-    onRecado(`${feitos} ${feitos === 1 ? "insumo atualizado" : "insumos atualizados"}. As margens já estão recalculadas.`);
+    const origem = origemDe(i);
+    const { error } = await supabase.rpc("definir_custo_insumo", {
+      p_insumo: i.id, p_origem: origem,
+      p_valor: origem === "manual" ? valorManualDe(i) : null,
+    });
+    setSalvando(null);
+    if (error) {
+      onErro(/sem_acesso/.test(error.message || "")
+        ? "Seu acesso não permite mudar o custo dos insumos."
+        : `${i.nome}: ${error.message}`);
+      return;
+    }
+    const n = quantosPratos[i.id] || 0;
+    desfazerLinha(i.id);
+    onRecado(`${i.nome}: gravado. ${n > 0 ? `${n} ${n === 1 ? "prato teve" : "pratos tiveram"} o custo recalculado.` : ""}`);
     recarregar();
   };
 
@@ -1046,8 +1082,9 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
           <> <b style={{ color: "#8E2420" }}>A coluna das compras está desligada</b> porque a migração 147
           ainda não foi rodada no banco.</>
         ) : (
-          <> <b>Para corrigir um preço, digite direto na coluna Custo e clique em Salvar todos.</b> A
-          origem vira <b>Manual</b> sozinha, que é o jeito de dizer "este valor é meu, não mexam". Em
+          <> <b>Para corrigir, digite na coluna Custo e clique em Salvar na própria linha.</b> A tela
+          mostra antes de gravar o que acontece com cada prato que usa o insumo. A origem vira
+          <b> Manual</b> sozinha, que é o jeito de dizer "este valor é meu, não mexam"; em
           <i> Segue a nota</i>, a compra confirmada atualiza o custo sozinha.</>
         )}
       </div>
@@ -1071,26 +1108,15 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
         </label>
       </div>
 
-      {pendentes.length > 0 && alterados.length === 0 && (
-        <div style={{ ...card, marginBottom: 10, display: "flex", justifyContent: "space-between",
-                      alignItems: "center", gap: 10, flexWrap: "wrap", background: "#FBF3D9", borderColor: "#E8D48A" }}>
-          <div style={{ fontSize: 12.5, color: "#7A6A1E" }}>
+      {pendentes.length > 0 && (
+        <div style={{ ...aviso }}>
+          <AlertTriangle size={15} />
+          <span>
             <b>{pendentes.length}</b> {pendentes.length === 1 ? "insumo está" : "insumos estão"} em
-            "segue a nota" mas com o valor antigo.
-            <div style={{ fontSize: 11, marginTop: 2 }}>
-              Confira antes de trazer em bloco: se a nota descreve a caixa e a ficha gasta a unidade,
-              o preço da nota também está errado — esse é caso de Manual, não de trazer.
-            </div>
-          </div>
-          {confirmando ? (
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ fontSize: 12, color: "#7A6A1E" }}>Trazer em {pendentes.length}?</span>
-              <button onClick={reaplicarTodos} style={btnPri}>Sim, trazer</button>
-              <button onClick={() => setConfirmando(false)} style={btnSec}>Cancelar</button>
-            </div>
-          ) : (
-            <button onClick={() => setConfirmando(true)} style={btnSec}>Trazer o preço das notas</button>
-          )}
+            "segue a nota" com o valor antigo. Use o <b>trazer</b> na linha de cada um — e confira
+            antes: se a nota descreve a caixa e a ficha gasta a unidade, o preço da nota também está
+            errado, e aí é caso de digitar o valor certo à mão.
+          </span>
         </div>
       )}
 
@@ -1110,20 +1136,9 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
         </div>
       )}
 
-      {alterados.length > 0 && (
-        <div style={{ ...card, marginBottom: 10, display: "flex", justifyContent: "space-between",
-                      alignItems: "center", gap: 10, flexWrap: "wrap", background: "#FBF7EC" }}>
-          <div style={{ fontSize: 12.5, color: "#55534A" }}>
-            <b style={{ color: "#22231F" }}>{alterados.length}</b> {alterados.length === 1 ? "insumo alterado" : "insumos alterados"}
-            {pratosAfetados > 0 && <> · muda o custo de <b style={{ color: "#22231F" }}>{pratosAfetados}</b> {pratosAfetados === 1 ? "prato" : "pratos"}</>}
-            {progresso && <> · gravando {progresso}</>}
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => setEdit({})} style={btnSec}>Desfazer tudo</button>
-            <button onClick={salvarTudo} disabled={salvando} style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6 }}>
-              <Save size={14} /> {salvando ? "Gravando…" : "Salvar todos"}
-            </button>
-          </div>
+      {alterados.length > 1 && (
+        <div style={{ fontSize: 11.5, color: "#8A8778", marginBottom: 8 }}>
+          {alterados.length} linhas com alteração pendente. Cada uma é salva na própria linha.
         </div>
       )}
 
@@ -1138,6 +1153,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                 <th style={{ ...th, textAlign: "right" }}>Custo</th>
                 <th style={{ ...th, textAlign: "right" }}>Última compra</th>
                 <th style={{ ...th, textAlign: "right" }}>Usado em</th>
+                <th style={th}></th>
               </tr>
             </thead>
             <tbody>
@@ -1150,8 +1166,10 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                 const dias = c ? diasDesde(c.ultima_data) : null;
                 const composto = ehComposto(i);
                 const origem = origemDe(i);
+                const emConfirmacao = confirmando === i.id;
                 return (
-                  <tr key={i.id} style={{ borderTop: "1px solid #F0EBDD",
+                  <React.Fragment key={i.id}>
+                  <tr style={{ borderTop: "1px solid #F0EBDD",
                         background: alterado ? "#FBF7EC" : dv ? "#FDFBF4" : "transparent" }}>
                     <td style={{ ...td, color: "#22231F" }}>
                       {i.nome}
@@ -1192,12 +1210,6 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                         </>
                       ) : (
                         <>
-                          {/* Sempre editável. Antes o campo só abria depois de
-                              trocar a Origem para Manual, e ninguém tinha como
-                              adivinhar isso — a pessoa olhava o preço errado na
-                              tela sem conseguir digitar em cima. Agora digitar
-                              É o gesto de travar: a origem vira Manual sozinha,
-                              que é o que a pessoa quis dizer ao digitar. */}
                           <input value={edit[i.id]?.valor ?? ""} inputMode="decimal"
                             placeholder={textoPreco(i.custo_medio_atual)}
                             onChange={(e) => setEdit((prev) => ({
@@ -1205,12 +1217,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                               [i.id]: { ...(prev[i.id] || {}), origem: "manual", valor: e.target.value, forcar: false },
                             }))}
                             style={{ ...input, width: 92, textAlign: "right", padding: "6px 8px" }} />
-                          <div style={{ ...rotuloMini,
-                                        color: origem === "manual" && edit[i.id]?.valor ? "#8E2420" : "#8A8778" }}>
-                            {origem === "manual" && edit[i.id]?.valor && (i.origem_custo !== "manual")
-                              ? "vai travar em manual"
-                              : ROTULO_ORIGEM[origem]?.toLowerCase()}
-                          </div>
+                          <div style={rotuloMini}>{ROTULO_ORIGEM[origem]?.toLowerCase()}</div>
                         </>
                       )}
                     </td>
@@ -1235,7 +1242,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                               {c.compras_90d} compras em 90d · {brl(c.preco_min_90d)} a {brl(c.preco_max_90d)}
                             </div>
                           )}
-                          {dv && (
+                          {dv && !emConfirmacao && (
                             <div style={{ display: "flex", gap: 5, justifyContent: "flex-end", marginTop: 3, flexWrap: "wrap" }}>
                               {reaplicavel(i) && (
                                 <button onClick={() => reaplicar(i)}
@@ -1253,7 +1260,32 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                     <td style={{ ...td, textAlign: "right", color: n === 0 ? "#B4AE9C" : "#55534A" }}>
                       {n === 0 ? "—" : `${n} ${n === 1 ? "prato" : "pratos"}`}
                     </td>
+                    <td style={{ ...td, whiteSpace: "nowrap" }}>
+                      {alterado && !emConfirmacao && (
+                        <div style={{ display: "flex", gap: 5 }}>
+                          <button onClick={() => setConfirmando(i.id)} style={{ ...btnPri, padding: "6px 11px", fontSize: 12 }}>
+                            Salvar
+                          </button>
+                          <button onClick={() => desfazerLinha(i.id)} style={{ ...btnSec, padding: "6px 9px", fontSize: 12 }}>
+                            ✕
+                          </button>
+                        </div>
+                      )}
+                    </td>
                   </tr>
+
+                  {emConfirmacao && (
+                    <tr style={{ background: "#FBF7EC" }}>
+                      <td colSpan={7} style={{ padding: "12px 13px", borderTop: "1px solid #E8D48A" }}>
+                        <Confirmacao insumo={i} dados={impacto(i)}
+                          unidadeNova={unidadeDe(i)} origemNova={origemDe(i)}
+                          salvando={salvando === i.id}
+                          onCancelar={() => setConfirmando(null)}
+                          onConfirmar={() => salvarUm(i)} />
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -1272,6 +1304,112 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
       </div>
     </div>
   );
+}
+
+// ===========================================================================
+// A confirmação: o que vai acontecer com cada prato, antes de gravar
+//
+// Mudar o preço de um insumo não é editar uma linha — é mexer na margem de
+// todo prato que o usa. Então a tela mostra a conta feita, prato a prato,
+// e só grava depois que você viu.
+// ===========================================================================
+const MOSTRA_ATE = 8;
+
+function Confirmacao({ insumo, dados, unidadeNova, origemNova, salvando, onCancelar, onConfirmar }) {
+  const { antes, depois, afetados, noMes } = dados;
+  const mudouPreco = Math.abs(depois - antes) > 0.000001;
+  const mudouUnidade = unidadeNova !== (insumo.unidade ?? "un");
+  const pct = antes > 0 ? ((depois - antes) / antes) * 100 : null;
+  const [tudo, setTudo] = useState(false);
+  const lista = tudo ? afetados : afetados.slice(0, MOSTRA_ATE);
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: "#22231F", marginBottom: 8 }}>
+        <b>{insumo.nome}</b>
+        {mudouPreco && (
+          <> · de <b>{brl(antes)}</b> para <b style={{ color: depois > antes ? "#8E2420" : "#27500A" }}>{brl(depois)}</b>
+          {pct != null && <span style={{ color: "#8A8778" }}> ({pct > 0 ? "+" : ""}{pct.toFixed(0)}%)</span>}</>
+        )}
+        {mudouUnidade && <> · unidade de <b>{insumo.unidade}</b> para <b style={{ color: "#8E2420" }}>{unidadeNova}</b></>}
+        <> · origem <b>{ROTULO_ORIGEM[origemNova]}</b></>
+      </div>
+
+      {afetados.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: "#8A8778", marginBottom: 10 }}>
+          Nenhuma ficha usa este insumo — nada muda de margem.
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase",
+                        color: "#8A8778", marginBottom: 4 }}>
+            {afetados.length} {afetados.length === 1 ? "prato muda" : "pratos mudam"}
+          </div>
+          <div style={{ overflowX: "auto", background: "#FFFFFF", border: "1px solid #E8E2D2",
+                        borderRadius: 9, marginBottom: 8 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th style={{ ...th, background: "#FFFFFF" }}>Prato</th>
+                  <th style={{ ...th, background: "#FFFFFF", textAlign: "right" }}>Custo</th>
+                  <th style={{ ...th, background: "#FFFFFF", textAlign: "right" }}>Margem</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lista.map((x) => (
+                  <tr key={x.id} style={{ borderTop: "1px solid #F0EBDD" }}>
+                    <td style={{ ...td, color: "#22231F" }}>
+                      {x.nome}
+                      <div style={rotuloMini}>
+                        preço {brl(x.preco)}{x.vendidos > 0 ? ` · ${x.vendidos} no mês` : ""}
+                      </div>
+                    </td>
+                    <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
+                      <span style={{ color: "#8A8778" }}>{brl(x.cAntes)}</span>
+                      <span style={{ color: "#8A8778" }}> → </span>
+                      <b style={{ color: x.cDepois > x.cAntes ? "#8E2420" : "#27500A" }}>{brl(x.cDepois)}</b>
+                    </td>
+                    <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
+                      <span style={{ color: "#8A8778" }}>{pct2(x.mAntes)}</span>
+                      <span style={{ color: "#8A8778" }}> → </span>
+                      <b style={{ color: (x.mDepois ?? 0) < 50 ? "#8E2420" : "#27500A" }}>{pct2(x.mDepois)}</b>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {afetados.length > MOSTRA_ATE && (
+            <button onClick={() => setTudo(!tudo)} style={{ ...btnSec, fontSize: 11.5, padding: "5px 10px", marginBottom: 8 }}>
+              {tudo ? "mostrar só os maiores" : `ver os outros ${afetados.length - MOSTRA_ATE}`}
+            </button>
+          )}
+          {Math.abs(noMes) > 0.005 && (
+            <div style={{ fontSize: 12.5, color: "#55534A", marginBottom: 10 }}>
+              Pelo que foi vendido no mês, isso é{" "}
+              <b style={{ color: noMes > 0 ? "#8E2420" : "#27500A" }}>
+                {noMes > 0 ? "+" : "−"}{brl(Math.abs(noMes))}
+              </b>{" "}
+              de custo que a sua margem não estava contando.
+            </div>
+          )}
+        </>
+      )}
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <button onClick={onConfirmar} disabled={salvando}
+          style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6 }}>
+          <Check size={14} /> {salvando ? "Gravando…" : "Confirmar e gravar"}
+        </button>
+        <button onClick={onCancelar} style={btnSec}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function pct2(v) {
+  if (v === null || v === undefined || !isFinite(v)) return "—";
+  return `${Number(v).toFixed(0)}%`;
 }
 
 const card = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 14 };
