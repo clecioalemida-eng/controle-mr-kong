@@ -882,7 +882,13 @@ const ROTULO_ORIGEM = {
   manual: "Manual",
   receita: "Receita",
 };
+// "Precisa de atenção" é o filtro de entrada, e a definição importa: um
+// insumo em MANUAL com preço diferente da nota não é pendência — é uma
+// decisão sua. Foi assim que a Batata frita virou caso resolvido mesmo
+// continuando a R$ 15,60 contra uma nota de R$ 0,07. Sem essa regra, tudo
+// que você conserta continua na lista pra sempre.
 const SITUACOES = [
+  { chave: "atencao",    label: "Precisa de atenção" },
   { chave: "todos",      label: "Todos" },
   { chave: "divergente", label: "Preço diferente da nota" },
   { chave: "manual",     label: "Travados em manual" },
@@ -920,7 +926,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
   // edit[id] = { origem?, valor?, unidade?, forcar? }
   const [edit, setEdit] = useState({});
   const [busca, setBusca] = useState("");
-  const [situacao, setSituacao] = useState("todos");
+  const [situacao, setSituacao] = useState("atencao");
   const [soUsados, setSoUsados] = useState(true);
   const [abrindo, setAbrindo] = useState(null);   // id com o painel aberto sem ter mudado nada
   const [calc, setCalc] = useState({});           // id -> { pago, qtd, unidade }
@@ -1023,7 +1029,18 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
   const divergentes = insumos.filter((i) => divergencia(i));
   const pendentes = insumos.filter(reaplicavel);
 
+  const automatico = (i) => ["ultima_compra", "media_90d"].includes(origemDe(i));
+  const precisaAtencao = (i) => {
+    if (ehComposto(i)) return false;
+    if (!(Number(i.custo_medio_atual) > 0)) return true;          // sem preço: zera o custo de quem usa
+    if (!automatico(i)) return false;                              // manual é decisão sua
+    if (divergencia(i)) return true;                               // segue a nota e está atrasado
+    if (!compraDe(i) && usados.has(i.id)) return true;             // palpite que nunca vai se corrigir
+    return false;
+  };
+
   const passaSituacao = (i) => {
+    if (situacao === "atencao") return precisaAtencao(i);
     if (situacao === "divergente") return !!divergencia(i);
     if (situacao === "manual") return origemDe(i) === "manual";
     if (situacao === "nunca") return !compraDe(i) && !ehComposto(i);
@@ -1115,7 +1132,9 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
         <select value={situacao} onChange={(e) => setSituacao(e.target.value)} style={{ ...input, minWidth: 190 }}>
           {SITUACOES.map((o) => (
             <option key={o.chave} value={o.chave}>
-              {o.label}{o.chave === "divergente" && divergentes.length > 0 ? ` (${divergentes.length})` : ""}
+              {o.label}
+              {o.chave === "atencao" ? ` (${insumos.filter(precisaAtencao).length})` : ""}
+              {o.chave === "divergente" && divergentes.length > 0 ? ` (${divergentes.length})` : ""}
             </option>
           ))}
         </select>
@@ -1320,15 +1339,12 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
                               valor: textoPreco(preco), unidade: un, forcar: false } }));
                             setCalc((prev) => { const c = { ...prev }; delete c[i.id]; return c; });
                           }} />
-                        {alterado ? (
-                          <Confirmacao insumo={i} dados={impacto(i)}
-                            unidadeNova={unidadeDe(i)} origemNova={origemDe(i)}
-                            salvando={salvando === i.id}
-                            onCancelar={() => desfazerLinha(i.id)}
-                            onConfirmar={() => salvarUm(i)} />
-                        ) : (
-                          <button onClick={() => setAbrindo(null)} style={{ ...btnSec, marginTop: 10 }}>Fechar</button>
-                        )}
+                        <Confirmacao insumo={i} dados={impacto(i)}
+                          unidadeNova={unidadeDe(i)} origemNova={origemDe(i)}
+                          alterado={alterado}
+                          salvando={salvando === i.id}
+                          onCancelar={() => alterado ? desfazerLinha(i.id) : setAbrindo(null)}
+                          onConfirmar={() => salvarUm(i)} />
                       </td>
                     </tr>
                   )}
@@ -1415,10 +1431,14 @@ function Calculadora({ insumo, unidade, estado, onEstado, onUsar }) {
 // ===========================================================================
 const MOSTRA_ATE = 8;
 
-function Confirmacao({ insumo, dados, unidadeNova, origemNova, salvando, onCancelar, onConfirmar }) {
+function Confirmacao({ insumo, dados, unidadeNova, origemNova, alterado, salvando, onCancelar, onConfirmar }) {
   const { antes, depois, afetados, noMes } = dados;
-  const mudouPreco = Math.abs(depois - antes) > 0.000001;
-  const mudouUnidade = unidadeNova !== (insumo.unidade ?? "un");
+  // Sem alteração nenhuma, o painel é só a resposta de "quem usa isto?".
+  // Antes ele só aparecia depois que algo mudava, então abrir um insumo pra
+  // conferir não mostrava nada — e a pergunta mais comum da tela ("quais
+  // pratos dependem deste preço?") ficava sem resposta.
+  const mudouPreco = alterado && Math.abs(depois - antes) > 0.000001;
+  const mudouUnidade = alterado && unidadeNova !== (insumo.unidade ?? "un");
   const pct = antes > 0 ? ((depois - antes) / antes) * 100 : null;
   const [tudo, setTudo] = useState(false);
   const lista = tudo ? afetados : afetados.slice(0, MOSTRA_ATE);
@@ -1432,6 +1452,7 @@ function Confirmacao({ insumo, dados, unidadeNova, origemNova, salvando, onCance
           {pct != null && <span style={{ color: "#8A8778" }}> ({pct > 0 ? "+" : ""}{pct.toFixed(0)}%)</span>}</>
         )}
         {mudouUnidade && <> · unidade de <b>{insumo.unidade}</b> para <b style={{ color: "#8E2420" }}>{unidadeNova}</b></>}
+        {!mudouPreco && !mudouUnidade && <> · {brl(antes)} por {insumo.unidade}</>}
         <> · origem <b>{ROTULO_ORIGEM[origemNova]}</b></>
       </div>
 
@@ -1443,7 +1464,9 @@ function Confirmacao({ insumo, dados, unidadeNova, origemNova, salvando, onCance
         <>
           <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase",
                         color: "#8A8778", marginBottom: 4 }}>
-            {afetados.length} {afetados.length === 1 ? "prato muda" : "pratos mudam"}
+            {alterado
+              ? `${afetados.length} ${afetados.length === 1 ? "prato muda" : "pratos mudam"}`
+              : `${afetados.length} ${afetados.length === 1 ? "prato usa" : "pratos usam"} este insumo`}
           </div>
           <div style={{ overflowX: "auto", background: "#FFFFFF", border: "1px solid #E8E2D2",
                         borderRadius: 9, marginBottom: 8 }}>
@@ -1465,14 +1488,22 @@ function Confirmacao({ insumo, dados, unidadeNova, origemNova, salvando, onCance
                       </div>
                     </td>
                     <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
-                      <span style={{ color: "#8A8778" }}>{brl(x.cAntes)}</span>
-                      <span style={{ color: "#8A8778" }}> → </span>
-                      <b style={{ color: x.cDepois > x.cAntes ? "#8E2420" : "#27500A" }}>{brl(x.cDepois)}</b>
+                      {alterado ? (
+                        <>
+                          <span style={{ color: "#8A8778" }}>{brl(x.cAntes)}</span>
+                          <span style={{ color: "#8A8778" }}> → </span>
+                          <b style={{ color: x.cDepois > x.cAntes ? "#8E2420" : "#27500A" }}>{brl(x.cDepois)}</b>
+                        </>
+                      ) : <b style={{ color: "#22231F" }}>{brl(x.cAntes)}</b>}
                     </td>
                     <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
-                      <span style={{ color: "#8A8778" }}>{pct2(x.mAntes)}</span>
-                      <span style={{ color: "#8A8778" }}> → </span>
-                      <b style={{ color: (x.mDepois ?? 0) < 50 ? "#8E2420" : "#27500A" }}>{pct2(x.mDepois)}</b>
+                      {alterado ? (
+                        <>
+                          <span style={{ color: "#8A8778" }}>{pct2(x.mAntes)}</span>
+                          <span style={{ color: "#8A8778" }}> → </span>
+                          <b style={{ color: (x.mDepois ?? 0) < 50 ? "#8E2420" : "#27500A" }}>{pct2(x.mDepois)}</b>
+                        </>
+                      ) : <b style={{ color: (x.mAntes ?? 0) < 50 ? "#8E2420" : "#27500A" }}>{pct2(x.mAntes)}</b>}
                     </td>
                   </tr>
                 ))}
@@ -1484,7 +1515,7 @@ function Confirmacao({ insumo, dados, unidadeNova, origemNova, salvando, onCance
               {tudo ? "mostrar só os maiores" : `ver os outros ${afetados.length - MOSTRA_ATE}`}
             </button>
           )}
-          {Math.abs(noMes) > 0.005 && (
+          {alterado && Math.abs(noMes) > 0.005 && (
             <div style={{ fontSize: 12.5, color: "#55534A", marginBottom: 10 }}>
               Pelo que foi vendido no mês, isso é{" "}
               <b style={{ color: noMes > 0 ? "#8E2420" : "#27500A" }}>
@@ -1497,11 +1528,13 @@ function Confirmacao({ insumo, dados, unidadeNova, origemNova, salvando, onCance
       )}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <button onClick={onConfirmar} disabled={salvando}
-          style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6 }}>
-          <Check size={14} /> {salvando ? "Gravando…" : "Confirmar e gravar"}
-        </button>
-        <button onClick={onCancelar} style={btnSec}>Cancelar</button>
+        {alterado && (
+          <button onClick={onConfirmar} disabled={salvando}
+            style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6 }}>
+            <Check size={14} /> {salvando ? "Gravando…" : "Confirmar e gravar"}
+          </button>
+        )}
+        <button onClick={onCancelar} style={btnSec}>{alterado ? "Cancelar" : "Fechar"}</button>
       </div>
     </div>
   );
