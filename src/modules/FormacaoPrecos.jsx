@@ -907,7 +907,8 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
   const [busca, setBusca] = useState("");
   const [situacao, setSituacao] = useState("todos");
   const [soUsados, setSoUsados] = useState(true);
-  const [confirmando, setConfirmando] = useState(null);   // id do insumo em confirmação
+  const [abrindo, setAbrindo] = useState(null);   // id com o painel aberto sem ter mudado nada
+  const [calc, setCalc] = useState({});           // id -> { pago, qtd, unidade }
   const [salvando, setSalvando] = useState(null);
 
   const porIdInsumo = useMemo(() => {
@@ -1032,15 +1033,14 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
     const c = compraDe(i);
     if (!c) return;
     setEdit((prev) => ({ ...prev, [i.id]: { ...(prev[i.id] || {}), origem: "manual", valor: textoPreco(c.ultimo_preco), forcar: false } }));
-    setConfirmando(i.id);
   };
   const reaplicar = (i) => {
     setEdit((prev) => ({ ...prev, [i.id]: { ...(prev[i.id] || {}), forcar: true } }));
-    setConfirmando(i.id);
   };
   const desfazerLinha = (id) => {
     setEdit((prev) => { const c = { ...prev }; delete c[id]; return c; });
-    setConfirmando(null);
+    setCalc((prev) => { const c = { ...prev }; delete c[id]; return c; });
+    setAbrindo(null);
   };
 
   // Grava UM insumo. De propósito não existe "salvar todos" aqui: mudar o
@@ -1152,8 +1152,6 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                 <th style={th}>Origem</th>
                 <th style={{ ...th, textAlign: "right" }}>Custo</th>
                 <th style={{ ...th, textAlign: "right" }}>Última compra</th>
-                <th style={{ ...th, textAlign: "right" }}>Usado em</th>
-                <th style={th}></th>
               </tr>
             </thead>
             <tbody>
@@ -1166,13 +1164,19 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                 const dias = c ? diasDesde(c.ultima_data) : null;
                 const composto = ehComposto(i);
                 const origem = origemDe(i);
-                const emConfirmacao = confirmando === i.id;
+                // O painel abre SOZINHO assim que a linha muda. Antes havia um
+                // botão "Salvar" na última coluna — e numa tabela larga essa
+                // coluna fica fora da tela, então o botão existia sem existir.
+                const painelAberto = alterado || abrindo === i.id;
                 return (
                   <React.Fragment key={i.id}>
                   <tr style={{ borderTop: "1px solid #F0EBDD",
                         background: alterado ? "#FBF7EC" : dv ? "#FDFBF4" : "transparent" }}>
                     <td style={{ ...td, color: "#22231F" }}>
                       {i.nome}
+                      <div style={rotuloMini}>
+                        {n === 0 ? "não está em nenhuma ficha" : `em ${n} ${n === 1 ? "prato" : "pratos"}`}
+                      </div>
                       {semPreco && !composto && <div style={{ ...rotuloMini, color: "#8E2420" }}>sem preço — zera o custo de quem usa</div>}
                     </td>
                     <td style={{ ...td, textAlign: "center" }}>
@@ -1223,6 +1227,14 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                             }))}
                             style={{ ...input, width: 92, textAlign: "right", padding: "6px 8px" }} />
                           <div style={rotuloMini}>{ROTULO_ORIGEM[origem]?.toLowerCase()}</div>
+                          {!painelAberto && (
+                            <button onClick={() => setAbrindo(i.id)}
+                              style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
+                                       fontSize: 11, color: "#7A6A1E", textDecoration: "underline",
+                                       fontFamily: "inherit" }}>
+                              calcular pelo que paguei
+                            </button>
+                          )}
                         </>
                       )}
                     </td>
@@ -1247,7 +1259,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                               {c.compras_90d} compras em 90d · {brl(c.preco_min_90d)} a {brl(c.preco_max_90d)}
                             </div>
                           )}
-                          {dv && !emConfirmacao && (
+                          {dv && !painelAberto && (
                             <div style={{ display: "flex", gap: 5, justifyContent: "flex-end", marginTop: 3, flexWrap: "wrap" }}>
                               {reaplicavel(i) && (
                                 <button onClick={() => reaplicar(i)}
@@ -1262,31 +1274,30 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                         </>
                       )}
                     </td>
-                    <td style={{ ...td, textAlign: "right", color: n === 0 ? "#B4AE9C" : "#55534A" }}>
-                      {n === 0 ? "—" : `${n} ${n === 1 ? "prato" : "pratos"}`}
-                    </td>
-                    <td style={{ ...td, whiteSpace: "nowrap" }}>
-                      {alterado && !emConfirmacao && (
-                        <div style={{ display: "flex", gap: 5 }}>
-                          <button onClick={() => setConfirmando(i.id)} style={{ ...btnPri, padding: "6px 11px", fontSize: 12 }}>
-                            Salvar
-                          </button>
-                          <button onClick={() => desfazerLinha(i.id)} style={{ ...btnSec, padding: "6px 9px", fontSize: 12 }}>
-                            ✕
-                          </button>
-                        </div>
-                      )}
-                    </td>
                   </tr>
 
-                  {emConfirmacao && (
+                  {painelAberto && (
                     <tr style={{ background: "#FBF7EC" }}>
-                      <td colSpan={7} style={{ padding: "12px 13px", borderTop: "1px solid #E8D48A" }}>
-                        <Confirmacao insumo={i} dados={impacto(i)}
-                          unidadeNova={unidadeDe(i)} origemNova={origemDe(i)}
-                          salvando={salvando === i.id}
-                          onCancelar={() => setConfirmando(null)}
-                          onConfirmar={() => salvarUm(i)} />
+                      <td colSpan={5} style={{ padding: "12px 13px", borderTop: "1px solid #E8D48A" }}>
+                        <Calculadora
+                          insumo={i} unidade={unidadeDe(i)}
+                          estado={calc[i.id] || {}}
+                          onEstado={(v) => setCalc((prev) => ({ ...prev, [i.id]: { ...(prev[i.id] || {}), ...v } }))}
+                          onUsar={(preco, un) => {
+                            setEdit((prev) => ({ ...prev, [i.id]: {
+                              ...(prev[i.id] || {}), origem: "manual",
+                              valor: textoPreco(preco), unidade: un, forcar: false } }));
+                            setCalc((prev) => { const c = { ...prev }; delete c[i.id]; return c; });
+                          }} />
+                        {alterado ? (
+                          <Confirmacao insumo={i} dados={impacto(i)}
+                            unidadeNova={unidadeDe(i)} origemNova={origemDe(i)}
+                            salvando={salvando === i.id}
+                            onCancelar={() => desfazerLinha(i.id)}
+                            onConfirmar={() => salvarUm(i)} />
+                        ) : (
+                          <button onClick={() => setAbrindo(null)} style={{ ...btnSec, marginTop: 10 }}>Fechar</button>
+                        )}
                       </td>
                     </tr>
                   )}
@@ -1306,6 +1317,59 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
         que está certo hoje e que você não quer que mude sozinho amanhã. <b>Trazer</b> só reaplica o que
         a origem já manda, pros que ficaram com valor velho. E <b>nunca comprado</b> quer dizer que
         nenhuma nota confirmada passou por ali — o preço é palpite, e a margem de quem usa herda o palpite.
+      </div>
+    </div>
+  );
+}
+
+// ===========================================================================
+// Calculadora de preço unitário
+//
+// Ninguém compra "o quilo"; compra o saco de 5 kg por R$ 160, o fardo de
+// 24 latas por R$ 77,80, a caixa de 360 ovos por R$ 179,81. Até aqui era
+// a pessoa quem tinha que fazer a divisão de cabeça antes de digitar — e
+// quando ela não fazia, nascia o ovo a R$ 179,81 e a caixa de Heineken
+// dentro de cada garrafa.
+//
+// Aqui ela diz o que pagou e por quanta coisa. A divisão é da máquina.
+// ===========================================================================
+function Calculadora({ insumo, unidade, estado, onEstado, onUsar }) {
+  const pago = paraNumero(estado.pago) ?? 0;
+  const qtd  = paraNumero(estado.qtd) ?? 0;
+  const un   = estado.unidade || unidade || "un";
+  const porUnidade = qtd > 0 ? pago / qtd : 0;
+
+  return (
+    <div style={{ background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10,
+                  padding: "10px 12px", marginBottom: 10 }}>
+      <div style={{ ...rotulo, marginBottom: 6 }}>Calcular pelo que você pagou</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", fontSize: 12.5, color: "#55534A" }}>
+        Paguei R$
+        <input value={estado.pago ?? ""} inputMode="decimal" placeholder="160,00"
+          onChange={(e) => onEstado({ pago: e.target.value })}
+          style={{ ...input, width: 92, textAlign: "right", padding: "6px 8px" }} />
+        por
+        <input value={estado.qtd ?? ""} inputMode="decimal" placeholder="5"
+          onChange={(e) => onEstado({ qtd: e.target.value })}
+          style={{ ...input, width: 76, textAlign: "right", padding: "6px 8px" }} />
+        <select value={un} onChange={(e) => onEstado({ unidade: e.target.value })}
+          style={{ ...input, padding: "6px 6px", fontSize: 12.5, width: 68 }}>
+          {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+        </select>
+        {porUnidade > 0 && (
+          <>
+            <span style={{ color: "#8A8778" }}>=</span>
+            <b style={{ color: "#22231F" }}>{brl(porUnidade)}</b>
+            <span style={{ color: "#8A8778" }}>por {un}</span>
+            <button onClick={() => onUsar(porUnidade, un)} style={{ ...btnPri, padding: "6px 11px", fontSize: 12 }}>
+              Usar este preço
+            </button>
+          </>
+        )}
+      </div>
+      <div style={{ fontSize: 11, color: "#8A8778", marginTop: 6, lineHeight: 1.6 }}>
+        Um fardo de 24 latas por R$ 77,80 dá R$ 3,24 a lata. Uma caixa de 360 ovos por R$ 179,81 dá
+        R$ 0,50 o ovo. A unidade escolhida aqui também passa a ser a do insumo.
       </div>
     </div>
   );
