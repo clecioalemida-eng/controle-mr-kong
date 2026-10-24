@@ -47,7 +47,23 @@ const BASES = [
 ];
 
 function limpo(n) { return Math.round((Number(n) || 0) * 1e6) / 1e6; }
-function paraNumero(v) { return parseFloat(String(v ?? "").replace(",", ".")) || 0; }
+// Aceita fração: "1/24" é uma garrafa de um engradado de 24.
+//
+// Existe porque o erro mais caro deste cadastro é insumo com preço de
+// EMBALAGEM e ficha gastando a embalagem inteira: a caixa de ovos em cada
+// X-Tudo, o engradado de Heineken em cada garrafa. Com a fração, o preço
+// do insumo continua sendo o da caixa — que é o que a nota traz, e por
+// isso a atualização automática continua funcionando — e a ficha gasta a
+// parte certa dela.
+function paraNumero(v) {
+  const txt = String(v ?? "").trim().replace(",", ".");
+  const f = txt.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+  if (f) {
+    const baixo = parseFloat(f[2]);
+    return baixo > 0 ? parseFloat(f[1]) / baixo : 0;
+  }
+  return parseFloat(txt) || 0;
+}
 function daDigitada(valor, unidadeDigitada, unidadeInsumo) {
   const v = paraNumero(valor);
   return unidadeDigitada === SUB_UNIDADE[unidadeInsumo] ? limpo(v / 1000) : limpo(v);
@@ -1422,6 +1438,8 @@ function CopiarFicha({ prato, onFechar, onCopiado }) {
 
 function EditorFicha({ prato, margem, onVoltar }) {
   const [linhas, setLinhas] = useState([]);
+  const [dividindo, setDividindo] = useState(null);   // índice da linha com a caixa aberta
+  const [naCaixa, setNaCaixa] = useState("");
   const [insumos, setInsumos] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
@@ -1632,7 +1650,8 @@ function EditorFicha({ prato, margem, onVoltar }) {
                 </thead>
                 <tbody>
                   {linhas.map((l, idx) => (
-                    <tr key={l.insumo_id}>
+                    <React.Fragment key={l.insumo_id}>
+                    <tr>
                       <td style={{ ...tdF, textAlign: "left", whiteSpace: "normal", minWidth: 140 }}>{l.nome}</td>
                       <td style={tdF}>
                         {l.custo > 0
@@ -1649,6 +1668,9 @@ function EditorFicha({ prato, margem, onVoltar }) {
                             style={{ border: "1px solid #E8E2D2", background: "#F6F1E7", color: "#55534A", borderRadius: 6, padding: "5px 8px", fontSize: 11.5, fontWeight: 700, cursor: SUB_UNIDADE[l.unidade] ? "pointer" : "default", minWidth: 32, fontFamily: "inherit" }}>
                             {l.unidadeDigitada}
                           </button>
+                          <button onClick={() => { setDividindo(dividindo === idx ? null : idx); setNaCaixa(""); }}
+                            title="O preço deste insumo é de uma embalagem? Divida."
+                            style={{ border: "1px solid #E8E2D2", background: "#F6F1E7", color: "#55534A", borderRadius: 6, padding: "5px 8px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>÷</button>
                         </span>
                       </td>
                       <td style={{ ...tdF, fontWeight: 700 }}>
@@ -1659,6 +1681,39 @@ function EditorFicha({ prato, margem, onVoltar }) {
                           style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Tirar da ficha"><Trash2 size={14} /></button>
                       </td>
                     </tr>
+                    {dividindo === idx && (
+                      <tr>
+                        <td colSpan={5} style={{ ...tdF, textAlign: "left" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap",
+                                        background: "#F6F1E7", border: "1px solid #E8E2D2", borderRadius: 9,
+                                        padding: "8px 10px", fontSize: 12, color: "#55534A" }}>
+                            O preço de {brl(l.custo)} é de uma embalagem com
+                            <input value={naCaixa} inputMode="decimal" placeholder="24" autoFocus
+                              onChange={(e) => setNaCaixa(e.target.value)}
+                              style={{ ...campoNum, width: 64 }} />
+                            {l.unidadeDigitada}?
+                            <button
+                              disabled={!(paraNumero(naCaixa) > 0)}
+                              onClick={() => {
+                                const n = paraNumero(naCaixa);
+                                setLinhas((prev) => prev.map((x, i) => (i === idx ? { ...x, valor: `1/${n}` } : x)));
+                                setDividindo(null); setNaCaixa("");
+                              }}
+                              style={{ background: "#22231F", color: "#F3EFE3", border: "none", borderRadius: 7,
+                                       padding: "6px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+                                       fontFamily: "inherit" }}>
+                              Usar 1 de {paraNumero(naCaixa) > 0 ? paraNumero(naCaixa) : "…"}
+                            </button>
+                            {paraNumero(naCaixa) > 0 && (
+                              <span style={{ color: "#8A8778" }}>
+                                sai a {brl((Number(l.custo) || 0) / paraNumero(naCaixa))} cada
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   ))}
                   {linhas.length === 0 && (
                     <tr><td colSpan={5} style={{ ...tdF, textAlign: "center", color: "#8A8778" }}>Nenhum ingrediente ainda.</td></tr>
