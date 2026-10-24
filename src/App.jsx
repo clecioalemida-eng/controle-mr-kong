@@ -32,6 +32,30 @@ const COMPONENTES_MODULO = {
   desempenho: Desempenho,
   crm: Crm,
 };
+// ---------------------------------------------------------------------------
+// A rota mora na URL (#financeiro/precos/insumos)
+//
+// Antes, recarregar a página jogava a pessoa na tela inicial: a navegação
+// vivia só na memória do React, e dar F5 apagava a memória. Em celular,
+// onde o navegador recarrega a aba sozinho depois de um tempo em segundo
+// plano, isso acontecia sem ninguém pedir.
+//
+// Com a rota no hash, recarregar volta pro mesmo lugar, o botão voltar do
+// navegador funciona, e dá pra mandar o link de uma tela pra alguém.
+// ---------------------------------------------------------------------------
+function lerRota() {
+  const bruto = (window.location.hash || "").replace(/^#\/?/, "");
+  const partes = bruto.split("/").map((x) => decodeURIComponent(x)).filter(Boolean);
+  return { tela: partes[0] || null, sub: partes[1] || null, sub2: partes[2] || null };
+}
+function escreverRota(tela, sub, sub2) {
+  const partes = [tela, sub, sub2].filter(Boolean).map((x) => encodeURIComponent(x));
+  const novo = partes.length ? "#" + partes.join("/") : "#";
+  if (window.location.hash !== novo) {
+    window.history.replaceState(null, "", novo);
+  }
+}
+
 export default function App() {
   const [carregandoAuth, setCarregandoAuth] = useState(true);
   const [sessao, setSessao] = useState(null);
@@ -55,6 +79,8 @@ export default function App() {
   const [permissoes, setPermissoes] = useState(null); // { admin, mapa }
   const [tela, setTela] = useState("login"); // login | aguardando | home | permissoes | <chave do módulo>
   const [abaPermissoes, setAbaPermissoes] = useState("cargos");
+  const [sub, setSub] = useState(() => lerRota().sub);
+  const [sub2, setSub2] = useState(() => lerRota().sub2);
   const [modulos, setModulos] = useState([]);
   const [carregandoModulos, setCarregandoModulos] = useState(false);
   const [totalPendentes, setTotalPendentes] = useState(0);
@@ -78,7 +104,11 @@ export default function App() {
       return;
     }
     setPerfil(data);
-    setTela(data.status === "aprovado" ? "home" : "aguardando");
+    if (data.status !== "aprovado") { setTela("aguardando"); return; }
+    // Volta pra tela que estava na URL. A permissão ainda é conferida lá
+    // embaixo, no roteamento — restaurar a rota não é autorizar nada.
+    const rota = lerRota();
+    setTela(rota.tela && rota.tela !== "login" ? rota.tela : "home");
   }, []);
   useEffect(() => {
     if (sessao?.user?.id) {
@@ -123,6 +153,13 @@ export default function App() {
       carregarPendentes();
     }
   }, [perfil, carregarModulos, carregarPendentes]);
+  // Mantém a URL alinhada com a tela. Em login/aguardando a rota é limpa,
+  // pra ninguém guardar um link que só funciona deslogado.
+  useEffect(() => {
+    if (tela === "login" || tela === "aguardando") { escreverRota(null); return; }
+    escreverRota(tela, tela === "home" ? null : sub, tela === "home" ? null : sub2);
+  }, [tela, sub, sub2]);
+
   const sair = async () => {
     await supabase.auth.signOut();
     setPermissoes(null);
@@ -168,7 +205,10 @@ export default function App() {
           nomeUsuario={perfil?.nome}
           perfil={perfil}
           permissoes={permissoes}
-          onVoltar={() => setTela("home")}
+          abaInicial={sub}
+          subInicial={sub2}
+          onAba={(a1, a2) => { setSub(a1 || null); setSub2(a2 || null); }}
+          onVoltar={() => { setSub(null); setSub2(null); setTela("home"); }}
         />
       );
     }
@@ -180,7 +220,7 @@ export default function App() {
       modulos={modulos}
       carregando={carregandoModulos}
       totalPendentes={totalPendentes}
-      onAbrirModulo={(chave) => setTela(chave)}
+      onAbrirModulo={(chave) => { setSub(null); setSub2(null); setTela(chave); }}
       onAbrirPermissoes={(aba) => { setAbaPermissoes(aba || "cargos"); setTela("permissoes"); }}
       onSair={sair}
     />
