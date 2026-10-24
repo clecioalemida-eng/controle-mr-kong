@@ -1046,8 +1046,9 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
           <> <b style={{ color: "#8E2420" }}>A coluna das compras está desligada</b> porque a migração 147
           ainda não foi rodada no banco.</>
         ) : (
-          <> A <b>Origem</b> decide quem manda no custo: em <i>Segue a nota</i> a compra confirmada
-          atualiza sozinha; em <b>Manual</b> você digita e a nota não encosta.</>
+          <> <b>Para corrigir um preço, digite direto na coluna Custo e clique em Salvar todos.</b> A
+          origem vira <b>Manual</b> sozinha, que é o jeito de dizer "este valor é meu, não mexam". Em
+          <i> Segue a nota</i>, a compra confirmada atualiza o custo sozinha.</>
         )}
       </div>
 
@@ -1184,19 +1185,31 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                       )}
                     </td>
                     <td style={{ ...td, textAlign: "right" }}>
-                      {origem === "manual" && !composto ? (
-                        <input value={edit[i.id]?.valor ?? ""} inputMode="decimal"
-                          placeholder={textoPreco(i.custo_medio_atual)}
-                          onChange={(e) => setEdit((prev) => ({
-                            ...prev,
-                            [i.id]: { ...(prev[i.id] || {}), origem: "manual", valor: e.target.value, forcar: false },
-                          }))}
-                          style={{ ...input, width: 92, textAlign: "right", padding: "6px 8px" }} />
-                      ) : (
+                      {composto ? (
                         <>
                           <div style={{ color: "#22231F" }}>{brl(i.custo_medio_atual)}</div>
-                          <div style={rotuloMini}>
-                            {composto ? "calculado" : ROTULO_ORIGEM[origem]?.toLowerCase()}
+                          <div style={rotuloMini}>calculado</div>
+                        </>
+                      ) : (
+                        <>
+                          {/* Sempre editável. Antes o campo só abria depois de
+                              trocar a Origem para Manual, e ninguém tinha como
+                              adivinhar isso — a pessoa olhava o preço errado na
+                              tela sem conseguir digitar em cima. Agora digitar
+                              É o gesto de travar: a origem vira Manual sozinha,
+                              que é o que a pessoa quis dizer ao digitar. */}
+                          <input value={edit[i.id]?.valor ?? ""} inputMode="decimal"
+                            placeholder={textoPreco(i.custo_medio_atual)}
+                            onChange={(e) => setEdit((prev) => ({
+                              ...prev,
+                              [i.id]: { ...(prev[i.id] || {}), origem: "manual", valor: e.target.value, forcar: false },
+                            }))}
+                            style={{ ...input, width: 92, textAlign: "right", padding: "6px 8px" }} />
+                          <div style={{ ...rotuloMini,
+                                        color: origem === "manual" && edit[i.id]?.valor ? "#8E2420" : "#8A8778" }}>
+                            {origem === "manual" && edit[i.id]?.valor && (i.origem_custo !== "manual")
+                              ? "vai travar em manual"
+                              : ROTULO_ORIGEM[origem]?.toLowerCase()}
                           </div>
                         </>
                       )}
