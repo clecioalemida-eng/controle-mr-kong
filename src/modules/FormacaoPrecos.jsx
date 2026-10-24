@@ -799,8 +799,8 @@ function AbaTabela({ pratos, onErro, onRecado, recarregar }) {
                       {p.temFicha ? brl(p.custo) : "sem ficha"}
                     </td>
                     <td style={{ ...td, textAlign: "right" }}>
-                      <input value={edit[p.id] ?? ""} inputMode="decimal"
-                        placeholder={(Number(p.preco_venda) || 0).toFixed(2).replace(".", ",")}
+                      <input value={edit[p.id] ?? (Number(p.preco_venda) || 0).toFixed(2).replace(".", ",")}
+                        inputMode="decimal" onFocus={(e) => e.target.select()}
                         onChange={(e) => setEdit((prev) => ({ ...prev, [p.id]: e.target.value }))}
                         style={{ ...input, width: 88, textAlign: "right", padding: "6px 8px" }} />
                     </td>
@@ -1210,8 +1210,13 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onErr
                         </>
                       ) : (
                         <>
-                          <input value={edit[i.id]?.valor ?? ""} inputMode="decimal"
-                            placeholder={textoPreco(i.custo_medio_atual)}
+                          {/* O campo CONTÉM o valor atual, não o mostra como
+                              placeholder. Com placeholder o número aparece em
+                              cinza, a pessoa clica, o cursor pisca — e o
+                              backspace não apaga nada, porque por dentro o
+                              campo está vazio. Parece travado sem estar. */}
+                          <input value={edit[i.id]?.valor ?? textoPreco(i.custo_medio_atual)} inputMode="decimal"
+                            onFocus={(e) => e.target.select()}
                             onChange={(e) => setEdit((prev) => ({
                               ...prev,
                               [i.id]: { ...(prev[i.id] || {}), origem: "manual", valor: e.target.value, forcar: false },
