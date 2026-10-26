@@ -1384,7 +1384,17 @@ function Calculadora({ insumo, unidade, estado, onEstado, onUsar }) {
   const pago = paraNumero(estado.pago) ?? 0;
   const qtd  = paraNumero(estado.qtd) ?? 0;
   const un   = estado.unidade || unidade || "un";
-  const porUnidade = qtd > 0 ? pago / qtd : 0;
+  // Rendimento: o que entra não é o que sai. Um saco de 20 kg de laranja
+  // vira 8 litros de suco; 1 kg de carne crua vira 700 g depois de
+  // grelhar. Quando isso é preenchido, o preço passa a ser POR UNIDADE DO
+  // QUE SAI — que é o que a ficha do prato realmente gasta — e a unidade
+  // do insumo vira a do rendimento.
+  const rende    = paraNumero(estado.rende) ?? 0;
+  const unRende  = estado.unRende || un;
+  const temRendimento = rende > 0;
+  const base     = temRendimento ? rende : qtd;
+  const unFinal  = temRendimento ? unRende : un;
+  const porUnidade = base > 0 ? pago / base : 0;
 
   return (
     <div style={{ background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 10,
@@ -1403,20 +1413,40 @@ function Calculadora({ insumo, unidade, estado, onEstado, onUsar }) {
           style={{ ...input, padding: "6px 6px", fontSize: 12.5, width: 68 }}>
           {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
         </select>
-        {porUnidade > 0 && (
-          <>
-            <span style={{ color: "#8A8778" }}>=</span>
-            <b style={{ color: "#22231F" }}>{brl(porUnidade)}</b>
-            <span style={{ color: "#8A8778" }}>por {un}</span>
-            <button onClick={() => onUsar(porUnidade, un)} style={{ ...btnPri, padding: "6px 11px", fontSize: 12 }}>
-              Usar este preço
-            </button>
-          </>
-        )}
       </div>
-      <div style={{ fontSize: 11, color: "#8A8778", marginTop: 6, lineHeight: 1.6 }}>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap",
+                    fontSize: 12.5, color: "#55534A", marginTop: 8 }}>
+        <span style={{ color: "#8A8778" }}>e isso rende</span>
+        <input value={estado.rende ?? ""} inputMode="decimal" placeholder="opcional"
+          onChange={(e) => onEstado({ rende: e.target.value })}
+          style={{ ...input, width: 86, textAlign: "right", padding: "6px 8px" }} />
+        <select value={unRende} onChange={(e) => onEstado({ unRende: e.target.value })}
+          style={{ ...input, padding: "6px 6px", fontSize: 12.5, width: 68 }}>
+          {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+        </select>
+        <span style={{ color: "#8A8778" }}>de produto pronto</span>
+      </div>
+
+      {porUnidade > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 10,
+                      padding: "9px 11px", borderRadius: 9, background: "#F6F1E7" }}>
+          <span style={{ fontSize: 12.5, color: "#55534A" }}>
+            Fica <b style={{ color: "#22231F" }}>{brl(porUnidade)}</b> por {unFinal}
+            {temRendimento && <> — o preço <b>do que sai</b>, não do que entra</>}
+          </span>
+          <button onClick={() => onUsar(porUnidade, unFinal)}
+            style={{ ...btnPri, padding: "6px 11px", fontSize: 12, marginLeft: "auto" }}>
+            Usar este preço
+          </button>
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, color: "#8A8778", marginTop: 8, lineHeight: 1.6 }}>
         Um fardo de 24 latas por R$ 77,80 dá R$ 3,24 a lata. Uma caixa de 360 ovos por R$ 179,81 dá
-        R$ 0,50 o ovo. A unidade escolhida aqui também passa a ser a do insumo.
+        R$ 0,50 o ovo. <b>Quando o que sai é diferente do que entra</b>, preencha o rendimento: um saco
+        de 20 kg de laranja que rende 8 litros de suco dá o preço <i>do litro de suco</i>, e aí a ficha
+        do prato gasta 500 ml como manda a receita. A unidade do resultado passa a ser a do insumo.
       </div>
     </div>
   );
