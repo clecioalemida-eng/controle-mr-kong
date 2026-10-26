@@ -667,7 +667,13 @@ function FichaEditor({ prato, linhas, insumos, compras, onErro, onRecado, recarr
             {candidatos.map((i) => (
               <button key={i.id}
                 onClick={() => {
-                  setItens((prev) => [...prev, { insumo_id: i.id, valor: "" }]);
+                  // Insumo contado por UNIDADE entra com 1: é o caso da
+                  // revenda, que é a maioria do que falta no cardápio —
+                  // compra a embalagem pronta e vende a embalagem pronta.
+                  // Em kg/l fica vazio de propósito: ali ninguém adivinha
+                  // quantos gramas vão na receita, e um "1" sorrateiro
+                  // viraria 1 quilo na conta.
+                  setItens((prev) => [...prev, { insumo_id: i.id, valor: i.unidade === "un" ? "1" : "" }]);
                   setBuscaInsumo("");
                 }}
                 style={{ display: "flex", alignItems: "center", gap: 6, background: "#F6F1E7",
