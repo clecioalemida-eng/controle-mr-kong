@@ -538,6 +538,9 @@ function FichaEditor({ prato, linhas, insumos, compras, onErro, onRecado, recarr
     return paraBase(it.valor, ins.unidade) * (Number(ins.custo_medio_atual) || 0);
   };
   const custoTotal = itens.reduce((s, it) => s + custoDaLinha(it), 0);
+  const vazias = itens
+    .filter((it) => !(paraBase(it.valor, porId[it.insumo_id]?.unidade) > 0))
+    .map((it) => porId[it.insumo_id]?.nome || "(insumo apagado)");
   const mudou = JSON.stringify(itens) !== JSON.stringify(daBase());
 
   const candidatos = buscaInsumo.trim().length < 2 ? [] : insumos
@@ -681,12 +684,29 @@ function FichaEditor({ prato, linhas, insumos, compras, onErro, onRecado, recarr
         )}
       </div>
 
+      {/* O aviso de linha zerada aparece ANTES de salvar, não depois.
+          Salvar uma ficha com quantidade em branco apaga o ingrediente —
+          e quem está com o campo vazio quase nunca quis isso: quis
+          recalcular e ainda não digitou o número novo. */}
+      {vazias.length > 0 && (
+        <div style={{ ...aviso, background: "#FBEFEC", borderColor: "#E8B5A8", color: "#8E2420",
+                      marginTop: 10, marginBottom: 0 }}>
+          <AlertTriangle size={15} />
+          <span>
+            {vazias.length === 1 ? "A linha" : "As linhas"} <b>{vazias.join(", ")}</b> {vazias.length === 1 ? "está" : "estão"} sem
+            quantidade. Salvando assim, {vazias.length === 1 ? "ela sai" : "elas saem"} da ficha e o custo do prato cai para zero.
+          </span>
+        </div>
+      )}
       {aviso1 && <div style={{ ...aviso, marginTop: 10, marginBottom: 0 }}><AlertTriangle size={15} /> {aviso1}</div>}
 
       {mudou && (
         <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <button onClick={salvar} disabled={salvando} style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6 }}>
-            <Save size={14} /> {salvando ? "Gravando…" : "Salvar ficha"}
+          <button onClick={salvar} disabled={salvando}
+            style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6,
+                     background: vazias.length > 0 ? "#8E2420" : "#22231F" }}>
+            <Save size={14} /> {salvando ? "Gravando…"
+              : vazias.length > 0 ? `Salvar mesmo assim (perde ${vazias.length})` : "Salvar ficha"}
           </button>
           <button onClick={() => setItens(daBase())} style={btnSec}>Desfazer</button>
           <span style={{ fontSize: 11.5, color: "#8A8778" }}>
