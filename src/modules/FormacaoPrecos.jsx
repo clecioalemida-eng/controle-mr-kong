@@ -164,6 +164,10 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
   const [aba, setAba] = useState(
     ABAS.some((a) => a.chave === abaInicial) ? abaInicial : "precos");
   const [pratos, setPratos] = useState([]);
+  // A lista COMPLETA, inclusive os escondidos. Só a importação usa: para
+  // decidir se um item do cardápio já existe aqui, prato desativado conta
+  // tanto quanto ativo — senão a importação recria o que você escondeu.
+  const [todosOsPratos, setTodosOsPratos] = useState([]);
   const [insumos, setInsumos] = useState([]);
   const [fichas, setFichas] = useState({});   // prato_id -> [{ insumo_id, quantidade }]
   const [mix, setMix] = useState({});         // chaveNome -> { qtd, valor }
@@ -199,7 +203,7 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
     const base = new Date();
     const mesAnt = new Date(base.getFullYear(), base.getMonth() - 1, 1);
     const [rPratos, rItens, rInsumos, rProd, rCompras] = await Promise.all([
-      tabelaInteira("pratos", "id, nome, preco_venda, linha_produto, ativo, revenda", "nome"),
+      tabelaInteira("pratos", "id, nome, preco_venda, linha_produto, ativo, revenda, cardapioweb_item_id", "nome"),
       tabelaInteira("prato_insumos", "prato_id, insumo_id, quantidade"),
       tabelaInteira("insumos", "id, nome, unidade, custo_medio_atual, composto, origem_custo, custo_manual", "nome"),
       supabase.rpc("desempenho_produtos", {
@@ -251,6 +255,7 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
     });
     setMix(vendido);
 
+    setTodosOsPratos(rPratos.data || []);
     setPratos((rPratos.data || [])
       .filter((p) => p.ativo !== false)
       .map((p) => ({
@@ -311,7 +316,8 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
           onErro={setErro} onRecado={setRecado} recarregar={carregar} />
       )}
       {aba === "tabela" && (
-        <AbaTabela pratos={pratos} onErro={setErro} onRecado={setRecado} recarregar={carregar} />
+        <AbaTabela pratos={pratos} todosOsPratos={todosOsPratos}
+          onErro={setErro} onRecado={setRecado} recarregar={carregar} />
       )}
       {aba === "insumos" && (
         <AbaInsumos insumos={insumos} usados={insumosUsados} pratos={pratos} fichas={fichas}
@@ -1063,7 +1069,7 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, pratos, fi
 // o painel não tem upsert de preço em lote, e inventar um aqui seria
 // arriscar sobrescrever campo que esta tela nem lê.
 // ===========================================================================
-function AbaTabela({ pratos, onErro, onRecado, recarregar }) {
+function AbaTabela({ pratos, todosOsPratos, onErro, onRecado, recarregar }) {
   const [edit, setEdit] = useState({});   // id -> texto do preço
   const [busca, setBusca] = useState("");
   const [linha, setLinha] = useState("todas");
@@ -1115,6 +1121,11 @@ function AbaTabela({ pratos, onErro, onRecado, recarregar }) {
         <select value={linha} onChange={(e) => setLinha(e.target.value)} style={{ ...input, minWidth: 150 }}>
           {linhasDisponiveis.map((l) => <option key={l} value={l}>{l === "todas" ? "Todas as linhas" : l}</option>)}
         </select>
+      </div>
+
+      <div style={{ marginBottom: 10 }}>
+        <ImportarCardapio pratos={todosOsPratos || pratos}
+          onPronto={(msg) => { onRecado(msg); recarregar(); }} />
       </div>
 
       {alterados.length > 0 && (
@@ -1189,6 +1200,154 @@ function AbaTabela({ pratos, onErro, onRecado, recarregar }) {
         custaria a 65% — a margem que a sua planilha usa como referência. Prato sem ficha técnica
         não tem margem: o custo dele é desconhecido, não é zero.
       </div>
+    </div>
+  );
+}
+
+// ===========================================================================
+// Importar produtos novos do CardápioWeb
+//
+// O "Importar pratos" de Fichas técnicas descobre o cardápio a partir dos
+// PEDIDOS dos últimos 90 dias — então produto novo que ainda não vendeu
+// não existe pra ele. O espetinho que entrou ontem no cardápio só
+// apareceria aqui depois da primeira venda.
+//
+// Esta importação lê o CATÁLOGO (a mesma chamada que já confere preços),
+// onde o produto existe desde que foi cadastrado lá.
+//
+// A trava que importa: nada é criado sem casar antes. Primeiro pelo
+// código do CardápioWeb, depois pelo nome sem acento e sem pontuação, e
+// incluindo prato escondido. Foi cadastro duplicado que nos custou a
+// semana passada — "Rei da Selva" e "Rei da Selva (X-Tudo)" com a venda
+// num e a ficha no outro. Importar sem conferir faria trinta deles.
+// ===========================================================================
+function chaveForte(t) {
+  return semAcento(t).replace(/[^a-z0-9]/g, "");
+}
+
+function ImportarCardapio({ pratos, onPronto }) {
+  const [aberto, setAberto] = useState(false);
+  const [lendo, setLendo] = useState(false);
+  const [criando, setCriando] = useState(false);
+  const [erro, setErro] = useState("");
+  const [res, setRes] = useState(null);      // { novos, existentes, semPreco }
+  const [marcados, setMarcados] = useState({});
+
+  const ler = async () => {
+    setLendo(true); setErro(""); setRes(null);
+    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
+      body: { acao: "catalogo_precos" },
+    });
+    setLendo(false);
+    if (error) {
+      setErro("Não consegui falar com o CardápioWeb. Se a mensagem falar em PARTNER-KEY, "
+            + "a chave de parceiro ainda não foi registrada nos secrets do Supabase.");
+      return;
+    }
+    if (data?.error) { setErro(data.error); return; }
+
+    const porCodigo = new Set(pratos.map((p) => p.cardapioweb_item_id).filter((x) => x != null));
+    const porNome = new Set(pratos.map((p) => chaveForte(p.nome)));
+    const novos = [], existentes = [];
+    (data.itens || []).forEach((it) => {
+      const jaTem = (it.id != null && porCodigo.has(it.id)) || porNome.has(chaveForte(it.nome));
+      (jaTem ? existentes : novos).push(it);
+    });
+    const marca = {};
+    novos.forEach((it) => { marca[it.id ?? it.nome] = true; });
+    setMarcados(marca);
+    setRes({ novos, existentes: existentes.length, total: (data.itens || []).length });
+  };
+
+  const criar = async () => {
+    if (!res) return;
+    const escolhidos = res.novos.filter((it) => marcados[it.id ?? it.nome]);
+    if (escolhidos.length === 0) return;
+    setCriando(true); setErro("");
+    const linhas = escolhidos.map((it) => ({
+      nome: String(it.nome || "").trim(),
+      preco_venda: Number(it.preco_efetivo) || 0,
+      cardapioweb_item_id: it.id ?? null,
+      ativo: true,
+    }));
+    const { error } = await supabase.from("pratos").insert(linhas);
+    setCriando(false);
+    if (error) { setErro(error.message); return; }
+    setRes(null); setAberto(false);
+    onPronto(`${linhas.length} ${linhas.length === 1 ? "prato criado" : "pratos criados"} do cardápio. `
+           + "Eles entram sem ficha técnica — monte a receita de cada um na aba Preços.");
+  };
+
+  if (!aberto) {
+    return (
+      <button onClick={() => { setAberto(true); ler(); }} style={{ ...btnSec, display: "flex", alignItems: "center", gap: 6 }}>
+        <Plus size={14} /> Importar do CardápioWeb
+      </button>
+    );
+  }
+
+  const escolhidos = res ? res.novos.filter((it) => marcados[it.id ?? it.nome]).length : 0;
+
+  return (
+    <div style={{ ...card, marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <div style={rotulo}>Importar do CardápioWeb</div>
+        <button onClick={() => { setAberto(false); setRes(null); setErro(""); }}
+          style={{ ...btnSec, marginLeft: "auto", padding: "5px 10px", fontSize: 12 }}>Fechar</button>
+      </div>
+
+      {lendo && <div style={{ fontSize: 12.5, color: "#8A8778" }}>Lendo o cardápio…</div>}
+      {erro && <div style={aviso}><AlertTriangle size={15} /> {erro}</div>}
+
+      {res && (
+        <>
+          <div style={{ fontSize: 12.5, color: "#55534A", marginBottom: 8 }}>
+            {res.total} itens no cardápio · <b>{res.existentes}</b> já estão no painel ·{" "}
+            <b style={{ color: res.novos.length > 0 ? "#8E2420" : "#27500A" }}>{res.novos.length}</b>{" "}
+            {res.novos.length === 1 ? "novo" : "novos"}
+          </div>
+
+          {res.novos.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: "#8A8778" }}>
+              Nada novo — todo item do cardápio já tem prato no painel.
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10,
+                            maxHeight: 280, overflowY: "auto" }}>
+                {res.novos.map((it) => {
+                  const k = it.id ?? it.nome;
+                  return (
+                    <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5,
+                                            color: "#22231F", cursor: "pointer", padding: "4px 2px" }}>
+                      <input type="checkbox" checked={!!marcados[k]}
+                        onChange={(e) => setMarcados((prev) => ({ ...prev, [k]: e.target.checked }))} />
+                      {it.nome}
+                      <span style={{ marginLeft: "auto", color: "#8A8778" }}>
+                        {Number(it.preco_efetivo) > 0 ? brl(it.preco_efetivo) : "sem preço no cardápio"}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button onClick={criar} disabled={criando || escolhidos === 0}
+                  style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6 }}>
+                  <Check size={14} /> {criando ? "Criando…" : `Criar ${escolhidos} ${escolhidos === 1 ? "prato" : "pratos"}`}
+                </button>
+                <button onClick={() => setMarcados({})} style={btnSec}>Desmarcar todos</button>
+              </div>
+            </>
+          )}
+
+          <div style={{ fontSize: 11, color: "#8A8778", marginTop: 10, lineHeight: 1.6 }}>
+            Só entra o que não casou com nenhum prato existente — nem pelo código do CardápioWeb, nem
+            pelo nome. Desmarque o que for repetido com outro nome: <b>cadastro duplicado divide a
+            venda entre dois produtos</b> e estraga qualquer relatório. Prato criado nasce sem ficha
+            técnica e entra no lucro com custo zero até você montar a receita.
+          </div>
+        </>
+      )}
     </div>
   );
 }
