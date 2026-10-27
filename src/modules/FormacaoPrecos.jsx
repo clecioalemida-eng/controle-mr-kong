@@ -345,23 +345,46 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onR
     return Number(p.preco_venda) || 0;
   };
 
+  // ---------------------------------------------------------------------
+  // A margem é PONDERADA pelo que vendeu, não é a média das margens:
+  //
+  //     margem = Σ (qtd × (preço − custo)) ÷ Σ (qtd × preço)
+  //
+  // Um refrigerante de 49% com 601 vendas pesa duzentas vezes mais que um
+  // chocolate de 90% com 3. Média simples das margens diria 70% quando a
+  // casa está fazendo 55%, e é por isso que ela não é usada aqui.
+  //
+  // E tem o faturamento, que tem dois valores diferentes:
+  //
+  //   faturado  — o que o cliente pagou de verdade (vem do pedido)
+  //   a tabela  — quantidade × preço cadastrado
+  //
+  // A diferença entre os dois é desconto, combo, promoção e preço de
+  // aplicativo. O lucro honesto usa o que entrou no caixa, não o que o
+  // cardápio diz: lucro = faturado − custo do que saiu.
+  // ---------------------------------------------------------------------
   const resumo = useMemo(() => {
-    let fatAtual = 0, lucroAtual = 0, fatSim = 0, lucroSim = 0, semFicha = 0;
+    let fatTabela = 0, fatReal = 0, custoVendido = 0, extraSim = 0, semFicha = 0;
     pratos.forEach((p) => {
       const q = p.vendidos;
       if (!q) return;
       const atual = Number(p.preco_venda) || 0;
-      const novo = precoSimulado(p);
-      fatAtual += q * atual;
-      fatSim += q * novo;
-      if (p.temFicha && p.custo > 0) {
-        lucroAtual += q * (atual - p.custo);
-        lucroSim += q * (novo - p.custo);
-      } else {
-        semFicha += q * atual;
-      }
+      fatTabela += q * atual;
+      fatReal   += Number(p.faturado) || 0;
+      extraSim  += q * (precoSimulado(p) - atual);
+      if (p.temFicha && p.custo > 0) custoVendido += q * p.custo;
+      else semFicha += Number(p.faturado) || q * atual;
     });
-    return { fatAtual, lucroAtual, fatSim, lucroSim, semFicha };
+    // Sem o desempenho por produto (migração 079 ausente), fatReal vem
+    // zero — aí a tabela é o melhor que existe, e é melhor que nada.
+    const base = fatReal > 0 ? fatReal : fatTabela;
+    const lucroAtual = base - custoVendido;
+    return {
+      fatAtual: base, fatTabela, fatReal, custoVendido, lucroAtual,
+      lucroSim: lucroAtual + extraSim,
+      desconto: fatReal > 0 ? fatTabela - fatReal : 0,
+      semFicha,
+    };
   }, [pratos, sim]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const aplicarPreco = async (p, novoPreco) => {
@@ -420,6 +443,18 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onR
           <div>
             <div style={rotuloMini}>Faturamento</div>
             <div style={numero}>{brl(resumo.fatAtual)}</div>
+            {Math.abs(resumo.desconto) > 1 && (
+              <div style={rotuloMini}>
+                a preço de tabela seria {brl(resumo.fatTabela)}
+              </div>
+            )}
+          </div>
+          <div>
+            <div style={rotuloMini}>Custo do que saiu</div>
+            <div style={{ ...numero, color: "#8E2420" }}>{brl(resumo.custoVendido)}</div>
+            <div style={rotuloMini}>
+              {resumo.fatAtual > 0 ? pct((resumo.custoVendido / resumo.fatAtual) * 100) + " do faturamento" : ""}
+            </div>
           </div>
           <div>
             <div style={rotuloMini}>Lucro nos preços de hoje</div>
@@ -439,6 +474,13 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onR
         <div style={{ fontSize: 11, color: "#8A8778", marginTop: 10, lineHeight: 1.6 }}>
           O lucro aqui é <b>faturamento menos o custo dos ingredientes</b> — não desconta pessoal,
           aluguel, cartão nem imposto. É margem de contribuição, a mesma conta do DRE.
+          A margem é <b>ponderada pelo que vendeu</b>, não é a média das margens: um item só pesa na
+          proporção em que sai pela porta.
+          {Math.abs(resumo.desconto) > 1 && (
+            <> O faturamento acima é o que <b>entrou no caixa</b>; a preço de tabela teria sido
+            {" "}<b>{brl(resumo.fatTabela)}</b>, e a diferença de <b>{brl(Math.abs(resumo.desconto))}</b>
+            {" "}{resumo.desconto > 0 ? "são descontos, combos e promoções" : "veio de venda acima da tabela"}.</>
+          )}
           {resumo.semFicha > 0 && (
             <> <b>{brl(resumo.semFicha)}</b> do que foi vendido não tem ficha técnica e entra com
             custo zero, então o lucro real é menor que esse.</>
@@ -1337,11 +1379,16 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
   const divergentes = insumos.filter((i) => divergencia(i));
   const pendentes = insumos.filter(reaplicavel);
 
-  const automatico = (i) => ["ultima_compra", "media_90d"].includes(origemDe(i));
+  // O teste de "precisa de atenção" olha o que está GRAVADO, não o que
+  // está sendo digitado. Com origemDe() aqui, trocar a origem pra Manual
+  // tirava a linha do filtro no mesmo instante — ela sumia da tela com o
+  // painel e os botões junto, no meio da edição. O filtro tem que
+  // descrever o banco; o rascunho é outro assunto.
+  const automaticoSalvo = (i) => ["ultima_compra", "media_90d"].includes(i.origem_custo ?? "ultima_compra");
   const precisaAtencao = (i) => {
     if (ehComposto(i)) return false;
     if (!(Number(i.custo_medio_atual) > 0)) return true;          // sem preço: zera o custo de quem usa
-    if (!automatico(i)) return false;                              // manual é decisão sua
+    if (!automaticoSalvo(i)) return false;                         // manual é decisão sua
     if (divergencia(i)) return true;                               // segue a nota e está atrasado
     if (!compraDe(i) && usados.has(i.id)) return true;             // palpite que nunca vai se corrigir
     return false;
@@ -1360,7 +1407,9 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
     .filter((i) => semAcento(i.nome).includes(semAcento(busca)))
     .filter((i) => !soUsados || usados.has(i.id))
     .filter((i) => verResolvidos || !resolvidos.includes(i.id))
-    .filter(passaSituacao)
+    // Linha com edição pendente ou painel aberto nunca sai da tela, seja
+    // qual for o filtro: sumir no meio do trabalho perde o que foi digitado.
+    .filter((i) => mudouI(i) || abrindo === i.id || passaSituacao(i))
     .sort((a, b) => (quantosPratos[b.id] || 0) - (quantosPratos[a.id] || 0) || a.nome.localeCompare(b.nome));
 
   const mudarOrigem = (i, origem) => setEdit((prev) => ({
@@ -1590,7 +1639,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
                               style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
                                        fontSize: 11, color: "#7A6A1E", textDecoration: "underline",
                                        fontFamily: "inherit" }}>
-                              calcular pelo que paguei
+                              editar
                             </button>
                           )}
                         </>
@@ -1783,6 +1832,25 @@ function Confirmacao({ insumo, dados, unidadeNova, origemNova, alterado, salvand
 
   return (
     <div>
+      {/* Os botões ficam AQUI, no topo. Embaixo da tabela eles sumiam da
+          tela: um insumo em 30 pratos empurra o "Confirmar" uns três
+          scrolls pra baixo, e botão que não se vê é botão que não
+          existe — foi o que já aconteceu com o Salvar da última coluna. */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        {alterado && (
+          <button onClick={onConfirmar} disabled={salvando}
+            style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6 }}>
+            <Check size={14} /> {salvando ? "Gravando…" : "Confirmar e gravar"}
+          </button>
+        )}
+        <button onClick={onCancelar} style={btnSec}>{alterado ? "Cancelar" : "Fechar"}</button>
+        {alterado && afetados.length > 0 && (
+          <span style={{ fontSize: 11.5, color: "#8A8778" }}>
+            confira a lista abaixo antes de gravar
+          </span>
+        )}
+      </div>
+
       <div style={{ fontSize: 13, color: "#22231F", marginBottom: 8 }}>
         <b>{insumo.nome}</b>
         {mudouPreco && (
@@ -1865,15 +1933,6 @@ function Confirmacao({ insumo, dados, unidadeNova, origemNova, alterado, salvand
         </>
       )}
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        {alterado && (
-          <button onClick={onConfirmar} disabled={salvando}
-            style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6 }}>
-            <Check size={14} /> {salvando ? "Gravando…" : "Confirmar e gravar"}
-          </button>
-        )}
-        <button onClick={onCancelar} style={btnSec}>{alterado ? "Cancelar" : "Fechar"}</button>
-      </div>
     </div>
   );
 }
