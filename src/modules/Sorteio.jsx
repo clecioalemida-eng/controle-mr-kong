@@ -191,7 +191,7 @@ export default function Sorteio() {
           <Opcao ativo={escopo === "periodo"} onClick={() => mexeu(setEscopo)("periodo")}
                  nome="Todos os posts do período" />
           <Opcao ativo={escopo === "colado"} onClick={() => mexeu(setEscopo)("colado")}
-                 nome="Colar uma lista de @" desc="post de colaboração de outra conta" />
+                 nome="Lista que veio de fora" desc="post de colaboração de outra conta" />
         </div>
 
         {escopo === "post" && (
@@ -265,9 +265,12 @@ export default function Sorteio() {
                       placeholder={"@fulano\n@sicrano\n@beltrano"}
                       value={colados} onChange={(e) => mexeu(setColados)(e.target.value)} />
             <div style={{ ...dica, marginTop: 6 }}>
-              Um @ por linha (ou separados por vírgula). Serve para post de colaboração de outra
-              conta: peça a lista a quem publicou e cole aqui. O sorteio roda igual, com o mesmo
-              registro guardado.
+              <b>Quem cola aqui é você, não o cliente.</b> Serve para post de colaboração que
+              pertence a outra conta: a Meta não libera os comentários dele para o Mr Kong, então
+              você pede a lista a quem publicou e cola aqui. Um @ por linha, ou separados por
+              vírgula. Aqui não existe janela de datas — @ copiado à mão não traz hora nenhuma
+              para filtrar. Se você quer sortear por data, use "Um post" ou "Todos os posts do
+              período".
             </div>
           </>
         )}
