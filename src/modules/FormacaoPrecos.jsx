@@ -592,6 +592,11 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
   const vazias = itens
     .filter((it) => !(paraBase(it.valor, porId[it.insumo_id]?.unidade) > 0))
     .map((it) => porId[it.insumo_id]?.nome || "(insumo apagado)");
+  // Salvar com TODAS as linhas em branco deixaria a ficha vazia de novo —
+  // e de fora parece que a gravação não funcionou, quando na verdade
+  // funcionou e apagou tudo. Nesse caso o botão trava. Já descartar UMA
+  // linha entre várias continua permitido: aí é escolha, não acidente.
+  const nenhumaValida = itens.length > 0 && vazias.length === itens.length;
   const mudou = JSON.stringify(itens) !== JSON.stringify(daBase());
 
   const candidatos = buscaInsumo.trim().length < 2 ? [] : insumos
@@ -787,8 +792,14 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
                       marginTop: 10, marginBottom: 0 }}>
           <AlertTriangle size={15} />
           <span>
-            {vazias.length === 1 ? "A linha" : "As linhas"} <b>{vazias.join(", ")}</b> {vazias.length === 1 ? "está" : "estão"} sem
-            quantidade. Salvando assim, {vazias.length === 1 ? "ela sai" : "elas saem"} da ficha e o custo do prato cai para zero.
+            {nenhumaValida ? (
+              <>Falta dizer <b>quanto</b> {vazias.length === 1 ? <>de <b>{vazias[0]}</b> vai</> : "vai"} no prato.
+              Digite a quantidade no campo da direita — em gramas, mililitros ou unidades, conforme o insumo.
+              Enquanto estiver em branco, não dá pra gravar: salvar assim esvaziaria a ficha.</>
+            ) : (
+              <>{vazias.length === 1 ? "A linha" : "As linhas"} <b>{vazias.join(", ")}</b> {vazias.length === 1 ? "está" : "estão"} sem
+              quantidade. Salvando assim, {vazias.length === 1 ? "ela sai" : "elas saem"} da ficha e o custo do prato cai para zero.</>
+            )}
           </span>
         </div>
       )}
@@ -796,10 +807,13 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
 
       {mudou && (
         <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <button onClick={salvar} disabled={salvando}
+          <button onClick={salvar} disabled={salvando || nenhumaValida}
+            title={nenhumaValida ? "Digite quanto vai no prato" : undefined}
             style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6,
-                     background: vazias.length > 0 ? "#8E2420" : "#22231F" }}>
+                     background: nenhumaValida ? "#B4AE9C" : vazias.length > 0 ? "#8E2420" : "#22231F",
+                     cursor: nenhumaValida ? "not-allowed" : "pointer" }}>
             <Save size={14} /> {salvando ? "Gravando…"
+              : nenhumaValida ? "Digite a quantidade primeiro"
               : vazias.length > 0 ? `Salvar mesmo assim (perde ${vazias.length})` : "Salvar ficha"}
           </button>
           <button onClick={() => setItens(daBase())} style={btnSec}>Desfazer</button>
