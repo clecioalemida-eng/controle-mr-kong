@@ -163,6 +163,16 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
   const [verResolvidos, setVerResolvidos] = useState(false);
   const [semFuncaoCompras, setSemFuncaoCompras] = useState(false);
   const [carregando, setCarregando] = useState(true);
+  // Recarregar depois de gravar NÃO pode apagar a tela.
+  //
+  // Enquanto o carregar() punha a tela toda em "Carregando…", a aba era
+  // desmontada a cada gravação — e junto iam o prato que estava aberto, a
+  // ficha em edição e a posição da rolagem. Quem precisava mexer em três
+  // coisas no mesmo produto era devolvido ao topo da lista depois da
+  // primeira. A tela cheia agora só aparece na PRIMEIRA carga; da segunda
+  // em diante é um aviso discreto no canto.
+  const [recarregando, setRecarregando] = useState(false);
+  const jaCarregou = React.useRef(false);
   const [erro, setErro] = useState("");
   const [recado, setRecado] = useState("");
 
@@ -171,7 +181,7 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
   const fimHoje = ymd(hoje);
 
   const carregar = useCallback(async () => {
-    setCarregando(true);
+    if (jaCarregou.current) setRecarregando(true); else setCarregando(true);
     setErro("");
     const base = new Date();
     const mesAnt = new Date(base.getFullYear(), base.getMonth() - 1, 1);
@@ -187,7 +197,7 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
       supabase.rpc("compras_dos_insumos"),
     ]);
     const falha = rPratos.error || rItens.error || rInsumos.error;
-    if (falha) { setErro(falha.message); setCarregando(false); return; }
+    if (falha) { setErro(falha.message); setCarregando(false); setRecarregando(false); return; }
 
     // A ligação com as compras é opcional de propósito: se a migração 147
     // ainda não rodou, a tela continua funcionando sem a coluna em vez de
@@ -238,6 +248,8 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
         faturado: vendido[chaveNome(p.nome)]?.valor || 0,
       })));
     setCarregando(false);
+    setRecarregando(false);
+    jaCarregou.current = true;
   }, [inicioMes, fimHoje]);
 
   useEffect(() => { carregar(); }, [carregar]);
@@ -273,8 +285,10 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
           <button key={a.chave} onClick={() => { setAba(a.chave); setRecado(""); if (onAba) onAba(a.chave); }}
             style={a.chave === aba ? abaAtiva : abaInativa}>{a.label}</button>
         ))}
-        <button onClick={carregar} style={{ ...btnSec, marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
-          <RefreshCw size={14} /> Atualizar
+        <button onClick={carregar} disabled={recarregando}
+          style={{ ...btnSec, marginLeft: "auto", display: "flex", alignItems: "center", gap: 6,
+                   opacity: recarregando ? 0.6 : 1 }}>
+          <RefreshCw size={14} /> {recarregando ? "Atualizando…" : "Atualizar"}
         </button>
       </div>
 
