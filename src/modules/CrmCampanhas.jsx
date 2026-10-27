@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Loader2, AlertTriangle, CheckCircle2, Sparkles, Save, Send, Pause, Play, XCircle,
-  ChevronLeft, Megaphone, Trash2, RefreshCw, CalendarClock,
+  ChevronLeft, Megaphone, Trash2, RefreshCw, CalendarClock, Download,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { podeEditar } from "../lib/permissoes";
@@ -52,6 +52,73 @@ const SEGMENTOS = [
     texto: "Oi, {nome}! Queremos comemorar seu aniversário com você 🎂 Responde aqui com o dia e o mês (ex.: 15/03) e no seu mês tem *Sagui de presente* no Mr. Kong." },
 ];
 const SEG = Object.fromEntries(SEGMENTOS.map((s) => [s.chave, s]));
+
+// ---------------------------------------------------------------------------
+// Baixar a lista de um segmento
+//
+// As regras de quem está em cada segmento são as mesmas da tela de Clientes —
+// não inventei filtro novo aqui, senão o número do cartão e o do arquivo
+// divergiriam e você não saberia em qual acreditar.
+//
+// O arquivo sai em CSV com ponto e vírgula e BOM: é o formato que o Excel em
+// português abre com um duplo clique, já nas colunas certas. CSV "puro" com
+// vírgula abre tudo numa coluna só.
+// ---------------------------------------------------------------------------
+const COLUNAS = [
+  ["nome", "Nome"], ["telefone", "Telefone"], ["bairro", "Bairro"],
+  ["pedidos", "Pedidos"], ["total_gasto", "Total gasto"], ["ticket_medio", "Ticket médio"],
+  ["ultimo_dia", "Último pedido"], ["intervalo_medio_dias", "Intervalo médio (dias)"],
+  ["favorito", "Favorito"], ["canal_preferido", "Canal"], ["aniversario", "Aniversário"],
+  ["aceita_mensagens", "Aceita mensagens"], ["email", "E-mail"],
+];
+
+function mesDeHoje() { return new Date().getMonth() + 1; }
+
+// O Supabase devolve no máximo 1.000 linhas por vez. "Só cadastro" tem mais
+// que isso, então a lista vem em páginas até acabar — sem isso o arquivo
+// sairia cortado e ninguém perceberia.
+async function clientesDoSegmento(chave) {
+  const campos = COLUNAS.map(([c]) => c).join(", ");
+  const tudo = [];
+  for (let de = 0; de < 20000; de += 1000) {
+    let q = supabase.from("clientes").select(campos)
+      .order("total_gasto", { ascending: false, nullsFirst: false })
+      .range(de, de + 999);
+    if (chave === "aniversario_mes") q = q.eq("aniversario_mes", mesDeHoje());
+    else if (chave === "sem_aniversario") q = q.is("aniversario", null);
+    else q = q.eq("segmento", chave);
+
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    tudo.push(...(data ?? []));
+    if (!data || data.length < 1000) break;
+  }
+  return tudo;
+}
+
+function celula(v) {
+  if (v == null) return "";
+  if (v === true) return "sim";
+  if (v === false) return "não";
+  // Vírgula decimal: é o que o Excel em português entende como número.
+  if (typeof v === "number") return String(v).replace(".", ",");
+  // Ponto e vírgula e quebra de linha dentro do texto quebrariam a coluna.
+  return String(v).replace(/[;\r\n]+/g, " ").trim();
+}
+
+function baixarCsv(nomeArquivo, linhas) {
+  const corpo = [
+    COLUNAS.map(([, titulo]) => titulo).join(";"),
+    ...linhas.map((l) => COLUNAS.map(([c]) => celula(l[c])).join(";")),
+  ].join("\r\n");
+  // O \uFEFF faz o Excel ler os acentos certo.
+  const url = URL.createObjectURL(new Blob(["\uFEFF" + corpo], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = nomeArquivo;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 const STATUS = {
   rascunho: { nome: "Rascunho", fundo: "#ECEAE3", cor: "#4A574D" },
@@ -137,6 +204,8 @@ function faltaMigracao(msg) {
 export default function CrmCampanhas({ permissoes }) {
   const editar = podeEditar(permissoes, "crm");
   const [segs, setSegs] = useState(null);
+  const [baixando, setBaixando] = useState("");
+  const [erroBaixa, setErroBaixa] = useState("");
   const [lista, setLista] = useState([]);
   const [resumo, setResumo] = useState(null);
   const [erro, setErro] = useState("");
@@ -173,6 +242,23 @@ export default function CrmCampanhas({ permissoes }) {
   if (carregando) return <div style={carregandoStyle}><Loader2 size={16} /> Carregando campanhas…</div>;
   if (erro && !segs) return <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0 }} /><div>{erro}</div></div>;
 
+  const baixar = async (s) => {
+    setErroBaixa(""); setBaixando(s.chave);
+    try {
+      const linhas = await clientesDoSegmento(s.chave);
+      if (!linhas.length) {
+        setErroBaixa(`Não há ninguém em "${s.nome}" para baixar.`);
+        return;
+      }
+      const dia = new Date().toISOString().slice(0, 10);
+      baixarCsv(`mrkong-${s.chave}-${dia}.csv`, linhas);
+    } catch (e) {
+      setErroBaixa(`Não consegui montar a lista de "${s.nome}": ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setBaixando("");
+    }
+  };
+
   if (tela.tipo === "editor") {
     return (
       <Editor inicial={tela.campanha} editar={editar}
@@ -201,6 +287,10 @@ export default function CrmCampanhas({ permissoes }) {
         bloquear o número.
       </div>
 
+      {erroBaixa && (
+        <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0 }} /><div>{erroBaixa}</div></div>
+      )}
+
       <div>
         <div style={sectionLabel}>Montar campanha por segmento</div>
         <div style={gridCards}>
@@ -214,15 +304,25 @@ export default function CrmCampanhas({ permissoes }) {
                   <span style={{ fontSize: 20, fontWeight: 800, color: "#22231F" }}>{num(n.aceitam)}</span>
                   <span style={{ fontSize: 12, color: "#8A8778" }}>podem receber · {num(n.total)} no segmento</span>
                 </div>
-                {editar && (
-                  <button style={btnSecondary}
-                    onClick={() => setTela({ tipo: "editor", campanha: {
-                      nome: `${s.ideia} · ${s.nome}`, segmentos: [s.chave], texto: s.texto, filtros: {},
-                      botao_cardapio: true, dia: amanha(), hora_inicio: "17:30", hora_fim: "20:00",
-                    } })}>
-                    <Megaphone size={14} /> Montar
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {editar && (
+                    <button style={{ ...btnSecondary, flex: 1 }}
+                      onClick={() => setTela({ tipo: "editor", campanha: {
+                        nome: `${s.ideia} · ${s.nome}`, segmentos: [s.chave], texto: s.texto, filtros: {},
+                        botao_cardapio: true, dia: amanha(), hora_inicio: "17:30", hora_fim: "20:00",
+                      } })}>
+                      <Megaphone size={14} /> Montar
+                    </button>
+                  )}
+                  {/* Baixa TODO o segmento, não só quem aceita mensagem: a
+                      lista serve para ligar, imprimir e analisar, não só
+                      para campanha. */}
+                  <button style={btnSecondary} onClick={() => baixar(s)}
+                          disabled={!!baixando || !(Number(n.total) > 0)}
+                          title={`Baixar os ${num(n.total)} clientes de ${s.nome} em Excel`}>
+                    {baixando === s.chave ? <Loader2 size={14} /> : <Download size={14} />} Baixar lista
                   </button>
-                )}
+                </div>
               </div>
             );
           })}
