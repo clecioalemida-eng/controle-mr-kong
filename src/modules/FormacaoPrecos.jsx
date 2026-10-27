@@ -141,6 +141,19 @@ async function tabelaInteira(tabela, colunas, ordenarPor) {
   return { data: tudo, error: null };
 }
 
+// Filtros da aba Preços. "Sem margem" e "sem preço" são coisas
+// diferentes e vale não confundir: sem margem é prato sem ficha (não se
+// sabe o custo); sem preço é prato que não tem preço de venda cadastrado
+// (vende por quanto?). Os dois somem de qualquer conta de lucro, mas por
+// motivos opostos.
+const FILTROS_MARGEM = [
+  { chave: "todos",      label: "Todos os pratos" },
+  { chave: "maior",      label: "Margem maior ou igual a" },
+  { chave: "menor",      label: "Margem menor ou igual a" },
+  { chave: "semmargem",  label: "Sem margem (falta ficha)" },
+  { chave: "sempreco",   label: "Sem preço de venda" },
+];
+
 const ABAS = [
   { chave: "precos",  label: "Preços" },
   { chave: "tabela",  label: "Tabela de preços" },
@@ -317,6 +330,8 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
 // ===========================================================================
 function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onRecado, recarregar }) {
   const [busca, setBusca] = useState("");
+  const [filtro, setFiltro] = useState("todos");
+  const [corte, setCorte] = useState("65");
   const [aberto, setAberto] = useState(null);
   const [salvando, setSalvando] = useState(null);
   const [sim, setSim] = useState({});   // { [id]: { margem, preco } }
@@ -361,9 +376,39 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onR
     recarregar();
   };
 
+  const margemDe = (p) => (p.temFicha && p.custo > 0)
+    ? margemPeloPreco(p.custo, Number(p.preco_venda) || 0)
+    : null;
+  const n = paraNumero(corte);
+  const passaFiltro = (p) => {
+    const m = margemDe(p);
+    if (filtro === "maior")     return m != null && n != null && m >= n;
+    if (filtro === "menor")     return m != null && n != null && m <= n;
+    if (filtro === "semmargem") return m == null;
+    if (filtro === "sempreco")  return !(Number(p.preco_venda) > 0);
+    return true;
+  };
+
   const visiveis = pratos
     .filter((p) => chaveNome(p.nome).includes(chaveNome(busca)))
-    .sort((a, b) => b.faturado - a.faturado || a.nome.localeCompare(b.nome));
+    .filter(passaFiltro)
+    .sort((a, b) => {
+      // Filtrando por margem, o que interessa é a ponta: no "menor" os
+      // piores primeiro, no "maior" os melhores. Sem filtro, manda o
+      // faturamento — o que mais pesa no caixa aparece em cima.
+      if (filtro === "menor" || filtro === "maior") {
+        const ma = margemDe(a), mb = margemDe(b);
+        if (ma != null && mb != null && ma !== mb) return filtro === "menor" ? ma - mb : mb - ma;
+      }
+      return b.faturado - a.faturado || a.nome.localeCompare(b.nome);
+    });
+
+  // Quanto do seu mês está dentro do filtro — é isso que diz se a lista
+  // que você está olhando importa ou é um canto do cardápio.
+  const doFiltro = visiveis.reduce((acc, p) => ({
+    qtd: acc.qtd + (p.vendidos || 0),
+    faturado: acc.faturado + (p.faturado || 0),
+  }), { qtd: 0, faturado: 0 });
 
   const difLucro = resumo.lucroSim - resumo.lucroAtual;
 
@@ -401,11 +446,33 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onR
         </div>
       </div>
 
-      <div style={{ position: "relative", marginBottom: 12 }}>
-        <Search size={15} color="#8A8778" style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)" }} />
-        <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar prato…"
-          style={{ ...input, paddingLeft: 33, width: "100%" }} />
+      <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: 1, minWidth: 170 }}>
+          <Search size={15} color="#8A8778" style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)" }} />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar prato…"
+            style={{ ...input, paddingLeft: 33, width: "100%" }} />
+        </div>
+        <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={{ ...input, minWidth: 210 }}>
+          {FILTROS_MARGEM.map((f) => <option key={f.chave} value={f.chave}>{f.label}</option>)}
+        </select>
+        {(filtro === "maior" || filtro === "menor") && (
+          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <input value={corte} inputMode="decimal" onFocus={(e) => e.target.select()}
+              onChange={(e) => setCorte(e.target.value)}
+              style={{ ...input, width: 72, textAlign: "right" }} />
+            <span style={{ fontSize: 13, color: "#8A8778" }}>%</span>
+          </div>
+        )}
       </div>
+
+      {filtro !== "todos" && (
+        <div style={{ fontSize: 11.5, color: "#8A8778", marginBottom: 10, lineHeight: 1.6 }}>
+          <b style={{ color: "#22231F" }}>{visiveis.length}</b> {visiveis.length === 1 ? "prato" : "pratos"}
+          {doFiltro.qtd > 0 && <> · {doFiltro.qtd} vendidos no mês · <b style={{ color: "#22231F" }}>{brl(doFiltro.faturado)}</b> de faturamento</>}
+          {filtro === "semmargem" && <> — sem ficha técnica, entram no lucro com custo zero</>}
+          {filtro === "sempreco" && <> — sem preço de venda cadastrado</>}
+        </div>
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {visiveis.map((p) => {
@@ -515,7 +582,9 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onR
           );
         })}
         {visiveis.length === 0 && (
-          <div style={{ ...card, fontSize: 13, color: "#8A8778" }}>Nenhum prato com esse nome.</div>
+          <div style={{ ...card, fontSize: 13, color: "#8A8778" }}>
+            {filtro === "todos" ? "Nenhum prato com esse nome." : "Nenhum prato nesse filtro."}
+          </div>
         )}
       </div>
     </div>
