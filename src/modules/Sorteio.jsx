@@ -1,416 +1,543 @@
-import Link from "next/link";
-import { supabaseServidor } from "@/lib/supabase/server";
-import { moverEtapa, moverSituacao } from "../acoes";
+import React, { useState, useEffect, useCallback } from "react";
 import {
-  ETAPAS, NO_QUADRO, SITUACOES, ABERTAS, data, venceu, frenteVenceu, faltam, responsavel,
-  nomeSegmento, nomePrioridade, nomeEtapa, nomeSituacao, um, type Projeto,
-} from "../comum";
+  Loader2, AlertTriangle, Info, Gift, Copy, Download, RefreshCw, ExternalLink, Check,
+} from "lucide-react";
+import { supabase } from "../lib/supabaseClient";
 
-// O Kanban tem duas leituras do mesmo cadastro:
+// ---------------------------------------------------------------------------
+// Sorteio — pelos comentários de um post, ou de todos os posts do período.
 //
-//   por FRENTE (padrão) — uma coluna por frente do catálogo. O projeto aparece
-//   em cada coluna em que tem frente aberta, porque ele está em várias ao mesmo
-//   tempo. É a pergunta de quem desenha: "o que está no Estrutural hoje?".
+// Por que comentário e não curtida: a Meta entrega a CONTAGEM de curtidas e
+// nunca a lista de quem curtiu. Repost idem. Comentário é o único lugar onde
+// o @ de quem participou vem junto. Seguidor também não dá: vem o número,
+// não os nomes.
 //
-//   por FASE — o quadro antigo, uma coluna por fase do projeto. Continua aqui
-//   porque Parado e Aguardando cliente são do projeto, não de uma frente.
-//
-// Nada novo no banco: lê arq_frentes e arq_projeto_frentes, os mesmos do Mapa.
-//
-// O QUE MUDOU NA 55 — a coluna é do que está ANDANDO
-//
-// Antes, "na vez" mostrava também as `a_fazer` cujas dependências já tinham
-// terminado. A coluna virava uma mistura de "alguém está mexendo nisto" com
-// "isto poderia começar", e as duas coisas pedem ações diferentes de quem olha.
-// Agora a coluna mostra só o que saiu de `a_fazer`, e a fila vira um número no
-// topo — ela não some, deixa de ser cartão.
-//
-// O número leva para /quadro/tudo, que já existia: era o botão "tudo que está
-// aberto". Não inventei rota nem parâmetro — e parâmetro aqui seria defeito,
-// porque as ações voltam para `de` + "?aviso=…" e um endereço com "?" sairia
-// quebrado. O comentário abaixo, sobre os três endereços, continua valendo.
-//
-// E o relógio deixou de ser "distância até a data prevista" e passou a ser
-// "há quanto tempo está nesta etapa", lido de `inicio` — o carimbo que a
-// migração 55 passou a manter. São perguntas diferentes: a primeira é "furamos
-// o combinado?", a segunda é "há quanto tempo isto está em cima da mesa?". O
-// quadro responde a segunda; a data prevista continua no rodapé do cartão para
-// quem precisa da primeira.
+// A ideia que manda nesta tela: um sorteio só vale se você puder mostrar
+// depois como ele foi feito. Por isso nada some sem motivo — quem fica de
+// fora aparece riscado, com a razão escrita do lado — e a lista inteira
+// fica guardada junto com a semente do sorteio.
+// ---------------------------------------------------------------------------
 
-type FrenteCat = {
-  id: number; nome: string; tipo: string; ordem: number;
-  depende_de: number[] | null;
-  // Entrou na 55: é contra ele que o relógio da etapa é medido.
-  prazo_dias: number | null;
-};
-type Linha = {
-  id: number; projeto_id: number; frente_id: number; situacao: string;
-  previsto: string | null; responsavel_id: string | null;
-  // Carimbo de quando entrou em em_andamento. Null em a_fazer, por regra do
-  // gatilho: voltar para a fila zera o relógio.
-  inicio: string | null;
-  perfis?: { nome: string | null } | { nome: string | null }[] | null;
-};
+export { Gift as IconeSorteio };
 
-const CHIP: React.CSSProperties = {
-  padding: "5px 11px", borderRadius: 7, border: "1px solid var(--border)", background: "var(--raised)",
-  color: "var(--ink-2)", fontSize: 12, textDecoration: "none", whiteSpace: "nowrap",
-};
-const CHIP_ON: React.CSSProperties = { ...CHIP, background: "var(--ink)", borderColor: "var(--ink)", color: "#fff", fontWeight: 600 };
-const TITULO_COL = (tipo: string): React.CSSProperties => ({
-  display: "inline-block", fontSize: 11, fontWeight: 600, padding: "2.5px 9px", borderRadius: 3, whiteSpace: "nowrap",
-  background: tipo === "aprovacao" ? "rgba(91,75,158,.12)" : tipo === "sem" ? "var(--sunken)" : "rgba(45,95,158,.10)",
-  color: tipo === "aprovacao" ? "#5b4b9e" : tipo === "sem" ? "var(--ink-2)" : "var(--azul)",
-});
-const VAZIA: React.CSSProperties = {
-  border: "1px dashed var(--border-strong)", borderRadius: 9, padding: "14px 12px", fontSize: 12, color: "var(--ink-3)", textAlign: "center",
-};
-// A fila que espera. Linha de texto e não caixa tracejada: tracejado no painel
-// quer dizer "falta alguma coisa", e aqui não falta — tem gente na fila.
-const FILA: React.CSSProperties = {
-  display: "block", fontSize: 11.5, color: "var(--ink-3)", textDecoration: "none",
-  padding: "2px 3px 9px",
-};
-const RELOGIO: React.CSSProperties = {
-  display: "flex", alignItems: "center", gap: 7, fontSize: 11.5, color: "var(--ink-3)", margin: "6px 0 2px",
-};
-const MEDIDOR: React.CSSProperties = {
-  flex: "0 1 54px", height: 3, borderRadius: 2, background: "var(--border)", overflow: "hidden",
-};
-
-// Data de verdade? O quadro já mostrou "730477 d atrasada" porque uma linha
-// tinha o ano gravado como 26 em vez de 2026. Conta feita em cima de lixo não
-// vira aviso: vira número absurdo que ninguém sabe ler. Melhor dizer que a data
-// está errada.
-function dataOk(iso: string | null): boolean {
-  if (!iso) return false;
-  const ano = Number(iso.slice(0, 4));
-  return Number.isFinite(ano) && ano >= 1900 && ano <= 2100;
-}
-
-// Quantos dias desde `inicio`. `faltam` devolve dias ATÉ a data (negativo no
-// passado), então o sinal se inverte.
-function diasNaEtapa(inicio: string | null): number | null {
-  if (!dataOk(inicio)) return null;
-  const f = faltam(inicio);
-  return f == null ? null : Math.max(0, -f);
-}
-
-// Três endereços, uma tela: /quadro (na vez), /quadro/tudo e /quadro/fase. São
-// caminhos e não ?parâmetros porque as ações voltam para `de` + "?aviso=…":
-// um endereço que já tivesse "?" sairia quebrado.
-export type Modo = "vez" | "tudo" | "fase";
-
-export default async function Kanban(
-  { modo, searchParams }: { modo: Modo; searchParams: Promise<{ aviso?: string; tipo?: string }> },
-) {
-  const q = await searchParams;
-  const porFase = modo === "fase";
-  const tudo = modo === "tudo";
-  const supabase = await supabaseServidor();
-
-  const [{ data: minhas }, { data: lista }, catRes, linhasRes] = await Promise.all([
-    supabase.rpc("minhas_permissoes"),
-    supabase
-      .from("arq_projetos")
-      .select("id, nome, responsavel_id, segmento, etapa, prioridade, previsao_arquitetonico, entrega, responsavel_nome, perfis!arq_projetos_responsavel_id_fkey(nome)")
-      .order("previsao_arquitetonico", { ascending: true, nullsFirst: false }),
-    porFase ? Promise.resolve({ data: [], error: null })
-      : supabase.from("arq_frentes").select("id, nome, tipo, ordem, depende_de, prazo_dias").eq("ativa", true),
-    porFase ? Promise.resolve({ data: [], error: null })
-      : supabase.from("arq_projeto_frentes")
-          .select("id, projeto_id, frente_id, situacao, previsto, inicio, responsavel_id, perfis!arq_projeto_frentes_responsavel_id_fkey(nome)"),
-  ]);
-
-  const permissoes: string[] = (minhas as string[]) ?? [];
-  const podeMover = permissoes.includes("arquitetura.etapa")
-    || permissoes.includes("arquitetura.lancar");
-
-  const projetos = (lista ?? []) as unknown as Projeto[];
-  const endereco = (ver: string, mostrar: string) =>
-    `/arquitetura/quadro${ver === "fase" ? "/fase" : mostrar === "tudo" ? "/tudo" : ""}`;
-  const aqui = endereco(porFase ? "fase" : "frente", tudo ? "tudo" : "vez");
-
-  const filtros = (
-    <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center", margin: "0 0 14px", fontSize: 12, color: "var(--ink-3)" }}>
-      Ver por
-      <Link href={endereco("frente", tudo ? "tudo" : "vez")} style={porFase ? CHIP : CHIP_ON}>Frente</Link>
-      <Link href={endereco("fase", "vez")} style={porFase ? CHIP_ON : CHIP}>Fase do projeto</Link>
-      {!porFase && (
-        <>
-          <span style={{ marginLeft: 8 }}>Mostrar</span>
-          <Link href={endereco("frente", "vez")} style={tudo ? CHIP : CHIP_ON}>o que está andando</Link>
-          <Link href={endereco("frente", "tudo")} style={tudo ? CHIP_ON : CHIP}>tudo que está aberto</Link>
-        </>
-      )}
-    </div>
-  );
-
-  const recado = q.aviso && (
-    <div className="recado" data-tipo={q.tipo === "erro" ? "erro" : undefined}>{q.aviso}</div>
-  );
-
-  // ------------------------------------------------------------ por fase ---
-  if (porFase) {
-    return (
-      <>
-        {recado}
-        {filtros}
-        <div className="quadro">
-          {NO_QUADRO.map((etapa) => {
-            const daColuna = projetos.filter((p) => p.etapa === etapa.cod);
-            return (
-              <div className="coluna" key={etapa.cod}>
-                <div className="topo">
-                  <span className="etapa" data-e={etapa.cod}>{etapa.nome}</span>
-                  <span className="qt">{daColuna.length}</span>
-                </div>
-
-                {daColuna.map((p) => {
-                  const resp = responsavel(p);
-                  // A data do cartão é sempre a previsão do arquitetônico: é ela que
-                  // o cliente ouviu, e é por ela que alguém cobra. A data de entrega
-                  // real só interessa depois de entregue, e isso vive em Fechados.
-                  const quando = p.previsao_arquitetonico;
-                  const atrasou = venceu(p.previsao_arquitetonico, p.etapa);
-                  return (
-                    <div className="cartao" key={p.id}>
-                      <b>
-                        <a href={`/arquitetura/projeto/${p.id}`} style={{ color: "var(--ink)" }}>
-                          {p.nome}
-                        </a>
-                      </b>
-
-                      {(p.segmento || p.prioridade) && (
-                        <div className="meta">
-                          {p.segmento && <span className="stage-chip">{nomeSegmento(p.segmento)}</span>}
-                          {p.prioridade && (
-                            <span className="prio" data-p={p.prioridade}>{nomePrioridade(p.prioridade)}</span>
-                          )}
-                        </div>
-                      )}
-
-                      <div className="pe">
-                        <span className={atrasou ? "quando venceu" : "quando"}>{data(quando)}</span>
-                        {resp && <span className="resp">{resp}</span>}
-                      </div>
-
-                      {podeMover && (
-                        <form action={moverEtapa} className="mover">
-                          <input type="hidden" name="id" value={p.id} />
-                          <input type="hidden" name="de" value="/arquitetura/quadro/fase" />
-                          <select name="etapa" defaultValue={p.etapa} aria-label={`Etapa de ${p.nome}`}>
-                            {ETAPAS.map((e) => <option key={e.cod} value={e.cod}>{e.nome}</option>)}
-                          </select>
-                          <button className="acao calma" type="submit"
-                            style={{ fontSize: 11.5, padding: "3px 9px", marginLeft: 5 }}>ok</button>
-                        </form>
-                      )}
-                    </div>
-                  );
-                })}
-
-                {daColuna.length === 0 && (
-                  <div style={{
-                    border: "1px dashed var(--border-strong)", borderRadius: 9,
-                    padding: "14px 12px", fontSize: 12, color: "var(--ink-3)", textAlign: "center",
-                  }}>
-                    vazia
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <p className="rodape-nota" style={{ borderTop: 0, paddingLeft: 0 }}>
-          Projeto entregue não aparece aqui — está em <b>Fechados</b>. A fase é do projeto inteiro e muda pelo seletor do cartão.
-        </p>
-      </>
-    );
+async function chamarProxy(acao, corpo = {}) {
+  const { data, error } = await supabase.functions.invoke("meta-ads-proxy", {
+    body: { acao, ...corpo },
+  });
+  if (error) {
+    let detalhe = error.message;
+    try { const j = await error.context?.json?.(); if (j?.error) detalhe = j.error; } catch { /* não era json */ }
+    return { erro: detalhe };
   }
+  if (data?.error) return { erro: data.error };
+  return { data };
+}
 
-  // ---------------------------------------------------------- por frente ---
-  const erro = catRes.error?.message ?? linhasRes.error?.message ?? null;
-  const frentes = ((catRes.data ?? []) as unknown as FrenteCat[])
-    // Disciplinas antes das aprovações, e dentro de cada grupo a ordem do catálogo.
-    .sort((a, b) => (a.tipo === b.tipo ? a.ordem - b.ordem : a.tipo === "disciplina" ? -1 : 1));
-  const todas = (linhasRes.data ?? []) as unknown as Linha[];
+// Hoje e 30 dias atrás, no formato que o <input type="date"> entende.
+function hojeISO(deslocaDias = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() + deslocaDias);
+  return d.toISOString().slice(0, 10);
+}
 
-  const vivos = projetos.filter((p) => p.etapa !== "entregue");
-  const porId = new Map(vivos.map((p) => [p.id, p]));
-  const chave = (p: number, f: number) => `${p}:${f}`;
-  const indice = new Map(todas.map((l) => [chave(l.projeto_id, l.frente_id), l]));
-  const FIM: string[] = SITUACOES.filter((s) => s.fim).map((s) => s.cod);
+function dataBonita(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
 
-  // Andando = saiu da fila. Escrito pela negativa, e não como uma lista
-  // ("em_andamento ou reprovado"), de propósito: se amanhã nascer uma situação
-  // nova — "em revisão", "com o cliente" —, ela aparece sozinha. Uma lista
-  // fechada esconderia a novidade até alguém reparar na falta.
-  const andando = (l: Linha) => l.situacao !== "a_fazer";
+export default function Sorteio() {
+  const [posts, setPosts] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [aviso, setAviso] = useState("");
 
-  // Quem está na fila e já poderia começar: `a_fazer` com tudo de que depende
-  // concluído NESTE projeto. Dependência que o projeto nem abriu não segura
-  // ninguém — ela não se aplica a ele. Não vira cartão; vira contagem no topo.
-  const podeComecar = (l: Linha, f: FrenteCat): boolean => {
-    if (l.situacao !== "a_fazer") return false;
-    return (f.depende_de ?? []).every((d) => {
-      const dep = indice.get(chave(l.projeto_id, d));
-      return !dep || FIM.includes(dep.situacao);
-    });
+  // O que a pessoa escolheu.
+  const [escopo, setEscopo] = useState("post");          // post | periodo | colado
+  const [midiaId, setMidiaId] = useState(null);
+  const [de, setDe] = useState(hojeISO(-30));
+  const [ate, setAte] = useState(hojeISO());
+  const [regra, setRegra] = useState("pessoa");          // pessoa | comentario | marcou
+  const [minimo, setMinimo] = useState(1);
+  const [teto, setTeto] = useState("");
+  const [tirarCasa, setTirarCasa] = useState(true);
+  const [tirarRespostas, setTirarRespostas] = useState(true);
+  const [suplentes, setSuplentes] = useState(2);
+  const [colados, setColados] = useState("");
+  // No período a janela é obrigatória. Num post só, ela é opcional: o padrão
+  // é valer tudo desde que o post saiu.
+  const [usarJanela, setUsarJanela] = useState(false);
+
+  // O que voltou do servidor.
+  const [previa, setPrevia] = useState(null);
+  const [resultado, setResultado] = useState(null);
+  const [ocupado, setOcupado] = useState("");
+  const [erro, setErro] = useState("");
+  const [historico, setHistorico] = useState([]);
+  const [copiado, setCopiado] = useState(false);
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    const [r, h] = await Promise.all([
+      chamarProxy("patrocinio_dados"),
+      supabase.from("v_sorteios").select("*").limit(8),
+    ]);
+    if (r.erro) setAviso(r.erro);
+    else setPosts(r.data?.posts ?? []);
+    setHistorico(h.data ?? []);
+    setCarregando(false);
+  }, []);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  // Trocar qualquer coisa invalida o que já estava na tela: prévia velha com
+  // regra nova é a forma mais fácil de alguém sortear achando que filtrou.
+  const mexeu = (fn) => (v) => { setPrevia(null); setResultado(null); setErro(""); fn(v); };
+
+  // Quando a janela de datas vale: sempre no período, e no post só se você
+  // pedir. Colar lista não tem data nenhuma — os @ vêm sem hora.
+  const comJanela = escopo === "periodo" || (escopo === "post" && usarJanela);
+
+  const corpo = () => ({
+    escopo,
+    midia_id: midiaId,
+    de: comJanela ? `${de}T00:00:00` : null,
+    ate: comJanela ? `${ate}T23:59:59` : null,
+    regra,
+    min_comentarios: Number(minimo) || 1,
+    teto_chances: regra === "comentario" && teto ? Number(teto) : null,
+    tirar_casa: tirarCasa,
+    tirar_respostas: tirarRespostas,
+    suplentes: Number(suplentes) || 0,
+    arrobas: escopo === "colado"
+      ? colados.split(/[\s,;\n]+/).map((x) => x.trim()).filter(Boolean)
+      : undefined,
+  });
+
+  const conferir = async () => {
+    setErro(""); setResultado(null); setOcupado("previa");
+    const r = await chamarProxy("sorteio_previa", corpo());
+    setOcupado("");
+    if (r.erro) { setErro(r.erro); return; }
+    setPrevia(r.data);
   };
 
-  const abertas = todas.filter((l) => ABERTAS.includes(l.situacao) && porId.has(l.projeto_id));
-  const comFrenteAberta = new Set(abertas.map((l) => l.projeto_id));
-  const semFrente = vivos.filter((p) => !comFrenteAberta.has(p.id));
+  const sortear = async () => {
+    setErro(""); setOcupado("sorteio");
+    const r = await chamarProxy("sortear", corpo());
+    setOcupado("");
+    if (r.erro) { setErro(r.erro); return; }
+    setResultado(r.data);
+    setPrevia(null);
+    const h = await supabase.from("v_sorteios").select("*").limit(8);
+    setHistorico(h.data ?? []);
+  };
 
-  const colunas = frentes.map((f) => {
-    const daFrente = abertas.filter((l) => l.frente_id === f.id);
-    const cartoes = daFrente
-      .filter((l) => (tudo ? true : andando(l)))
-      // Mais tempo na etapa em cima — é o que está travado há mais tempo.
-      // Quem não tem carimbo vai para o fim: não dá para ordenar o que não se
-      // sabe, e fingir que é zero poria o desconhecido no lugar do mais novo.
-      .sort((a, b) => (diasNaEtapa(b.inicio) ?? -1) - (diasNaEtapa(a.inicio) ?? -1));
-    const naFila = daFrente.filter((l) => l.situacao === "a_fazer");
-    const prontas = naFila.filter((l) => podeComecar(l, f)).length;
-    return { f, cartoes, fila: naFila.length, prontas };
-  });
-  const atrasadas = abertas.filter((l) => frenteVenceu(l)).length;
-  const emFila = colunas.reduce((n, c) => n + c.fila, 0);
-  const andandoTotal = abertas.filter(andando).length;
+  const lista = (resultado ?? previa)?.participantes ?? [];
+  const fora = (resultado ?? previa)?.descartados ?? [];
+  const contas = resultado ?? previa;
+
+  const textoDaLista = () =>
+    lista.map((p) => p.arroba + (p.chances > 1 ? ` (${p.chances})` : "")).join("\n");
+
+  const copiar = async () => {
+    try {
+      await navigator.clipboard.writeText(textoDaLista());
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 2500);
+    } catch {
+      setErro("O navegador não deixou copiar. Use o botão de baixar.");
+    }
+  };
+
+  const baixar = () => {
+    const cab = resultado
+      ? `Sorteio Mr Kong — ${dataBonita(resultado.criado_em)}\nGanhador: ${resultado.ganhador}\n` +
+        `Participantes: ${resultado.total_pessoas} · Comentários: ${resultado.total_comentarios}\n` +
+        `Semente: ${resultado.semente}\n\n`
+      : `Participantes — prévia\n\n`;
+    const url = URL.createObjectURL(new Blob([cab + textoDaLista()], { type: "text/plain;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sorteio-mrkong-${hojeISO()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  if (carregando) {
+    return <div style={{ ...dica, padding: 14 }}><Loader2 size={13} /> Carregando os posts…</div>;
+  }
 
   return (
-    <>
-      {recado}
-      {erro && <div className="recado" data-tipo="erro">Não consegui ler as frentes: {erro}</div>}
-      {filtros}
+    <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+      {aviso && (
+        <div style={avisoInfo}><Info size={14} /><span>{aviso}</span></div>
+      )}
 
-      <p style={{ margin: "0 0 12px", fontSize: 12.5, color: "var(--ink-2)" }}>
-        <b>{andandoTotal}</b> frente(s) andando em <b>{comFrenteAberta.size}</b> projeto(s)
-        {atrasadas > 0 && <> · <span className="venceu">{atrasadas} passou do prazo</span></>}
-        {!tudo && emFila > 0 && <> · <b>{emFila}</b> esperando alguém começar</>}
-      </p>
-
-      <div className="quadro">
-        <div className="coluna">
-          <div className="topo">
-            <span style={TITULO_COL("sem")}>Sem frentes abertas</span>
-            <span className="qt">{semFrente.length}</span>
-          </div>
-          {semFrente.map((p) => (
-            <div className="cartao" key={p.id}>
-              <b><a href={`/arquitetura/projeto/${p.id}`} style={{ color: "var(--ink)" }}>{p.nome}</a></b>
-              <div className="pe">
-                <span className="etapa" data-e={p.etapa}>{nomeEtapa(p.etapa)}</span>
-                <a href={`/arquitetura/projeto/${p.id}`} style={{ fontSize: 11.5 }}>abrir frentes →</a>
-              </div>
-            </div>
-          ))}
-          {semFrente.length === 0 && <div style={VAZIA}>nenhum</div>}
+      <div style={cardStyle}>
+        <div style={sectionLabel}>O que a Meta deixa sortear</div>
+        <div style={{ ...dica, fontSize: 11.5 }}>
+          A Meta entrega a <b>contagem</b> de curtidas, de reposts e de seguidores — nunca os
+          nomes. Comentário é o único lugar onde o @ de quem participou vem junto. Por isso o
+          sorteio é pelos comentários, e não por curtida ou por seguidor novo.
         </div>
-
-        {colunas.map(({ f, cartoes, fila, prontas }) => (
-          <div className="coluna" key={f.id}>
-            <div className="topo">
-              <span style={TITULO_COL(f.tipo)}>{f.nome}</span>
-              <span className="qt">{cartoes.length}</span>
-            </div>
-
-            {/* A fila: um número, não cartões. Continua achável — o link é o
-                mesmo "tudo que está aberto" que já existia no topo da tela. */}
-            {!tudo && fila > 0 && (
-              <Link href={endereco("frente", "tudo")} style={FILA}>
-                <b style={{ fontFamily: "var(--mono)", color: "var(--ink-2)" }}>{fila}</b>
-                {" a fazer"}
-                {prontas > 0 && <>, <b style={{ color: "var(--ink-2)" }}>{prontas}</b> já pode começar</>}
-              </Link>
-            )}
-
-            {cartoes.map((l) => {
-              const p = porId.get(l.projeto_id)!;
-              const atrasou = frenteVenceu(l);
-              const quem = um(l.perfis)?.nome ?? null;
-              const dias = diasNaEtapa(l.inicio);
-              const prazo = f.prazo_dias ?? null;
-              const estourou = dias != null && prazo != null && dias > prazo;
-              const cor = estourou ? "var(--alert)" : "var(--ink)";
-              return (
-                <div className="cartao" key={l.id} style={estourou ? { borderLeft: "3px solid var(--alert)" } : undefined}>
-                  <b><a href={`/arquitetura/projeto/${p.id}`} style={{ color: "var(--ink)" }}>{p.nome}</a></b>
-
-                  <div className="meta">
-                    <span className="sit" data-s={l.situacao}>{nomeSituacao(l.situacao)}</span>
-                    {p.etapa === "parado" || p.etapa === "aguardando_cliente"
-                      ? <span className="etapa" data-e={p.etapa}>{nomeEtapa(p.etapa)}</span>
-                      : p.prioridade === "alta" && <span className="prio" data-p="alta">Alta</span>}
-                  </div>
-
-                  {/* O relógio da etapa. Cartão dentro do prazo não ganha cor:
-                      se tudo fosse colorido, nada chamaria atenção. */}
-                  <div style={RELOGIO}>
-                    {dias == null ? (
-                      <span>sem carimbo de início</span>
-                    ) : (
-                      <>
-                        <b style={{ fontFamily: "var(--mono)", fontSize: 12.5, color: cor }}>{dias} d</b>
-                        {prazo != null && (
-                          <>
-                            <span style={MEDIDOR}>
-                              <span style={{
-                                display: "block", height: "100%", borderRadius: 2,
-                                width: `${Math.min(100, Math.round((dias / Math.max(1, prazo)) * 100))}%`,
-                                background: estourou ? "var(--alert)" : "var(--ink-3)",
-                              }} />
-                            </span>
-                            <span style={estourou ? { color: "var(--alert)" } : undefined}>
-                              {estourou ? `${dias - prazo} d além de ${prazo}` : `de ${prazo} d`}
-                            </span>
-                          </>
-                        )}
-                        {prazo == null && <span>nesta etapa</span>}
-                      </>
-                    )}
-                  </div>
-
-                  <div className="pe">
-                    <span className={atrasou ? "quando venceu" : "quando"}>
-                      {!l.previsto ? "sem prazo"
-                        : !dataOk(l.previsto) ? "data inválida"
-                        : `vence ${data(l.previsto)}`}
-                    </span>
-                    <span className="resp">{quem ?? "— ninguém cobra"}</span>
-                  </div>
-
-                  {podeMover && (
-                    <form action={moverSituacao} className="mover">
-                      <input type="hidden" name="id" value={l.id} />
-                      <input type="hidden" name="de" value={aqui} />
-                      <select name="situacao" defaultValue={l.situacao} aria-label={`Situação de ${f.nome} em ${p.nome}`}>
-                        {SITUACOES.map((s) => <option key={s.cod} value={s.cod}>{s.nome}</option>)}
-                      </select>
-                      <button className="acao calma" type="submit"
-                        style={{ fontSize: 11.5, padding: "3px 9px", marginLeft: 5 }}>ok</button>
-                    </form>
-                  )}
-                </div>
-              );
-            })}
-
-            {cartoes.length === 0 && (
-              <div style={VAZIA}>{fila > 0 && !tudo ? "ninguém tocando nisto agora" : "vazia"}</div>
-            )}
-          </div>
-        ))}
       </div>
 
-      <p className="rodape-nota" style={{ borderTop: 0, paddingLeft: 0 }}>
-        Uma coluna por frente do catálogo (disciplinas em azul, aprovações em roxo), na ordem da aba <b>Frentes</b>.
-        O mesmo projeto aparece em mais de uma coluna porque está em várias frentes ao mesmo tempo. O seletor muda a
-        situação <b>daquela frente</b>, não do projeto. Frente marcada Entregue, Aprovado ou Não se aplica sai da coluna.
-        {" "}O número cinza no topo é a <b>fila</b>: o que está a fazer e ainda não virou cartão.
-        {" "}O relógio conta desde o dia em que alguém marcou <b>Em andamento</b>, contra o prazo da frente no catálogo —
-        voltar para A fazer zera a contagem, porque tempo parado não é tempo trabalhado.
-      </p>
-    </>
+      {/* 1 — de onde vêm os comentários */}
+      <div style={cardStyle}>
+        <div style={sectionLabel}>1 · De onde</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 9 }}>
+          <Opcao ativo={escopo === "post"} onClick={() => mexeu(setEscopo)("post")} nome="Um post" />
+          <Opcao ativo={escopo === "periodo"} onClick={() => mexeu(setEscopo)("periodo")}
+                 nome="Todos os posts do período" />
+          <Opcao ativo={escopo === "colado"} onClick={() => mexeu(setEscopo)("colado")}
+                 nome="Colar uma lista de @" desc="post de colaboração de outra conta" />
+        </div>
+
+        {escopo === "post" && (
+          <>
+            <div style={{ display: "grid", gap: 8,
+                          gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}>
+              {posts.map((p) => {
+                const on = midiaId === p.id;
+                return (
+                  <div key={p.id} onClick={() => mexeu(setMidiaId)(on ? null : p.id)}
+                       style={{ border: on ? "2px solid #22231F" : "1px solid #E8E2D2",
+                                borderRadius: 10, overflow: "hidden", cursor: "pointer",
+                                background: "#fff", minWidth: 0 }}>
+                    <div style={{ height: 86, background: "#F0ECE2", display: "flex",
+                                  alignItems: "center", justifyContent: "center" }}>
+                      {p.foto ? <img src={p.foto} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                              : <span style={{ fontSize: 18 }}>{p.tipo === "VIDEO" ? "▶" : "▣"}</span>}
+                    </div>
+                    <div style={{ padding: "6px 8px 8px" }}>
+                      <div style={{ fontSize: 11.5, lineHeight: 1.3, overflow: "hidden",
+                                    display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                        {p.texto || "sem legenda"}
+                      </div>
+                      <div style={{ ...dica, marginTop: 3 }}>
+                        {(p.data || "").slice(8, 10)}/{(p.data || "").slice(5, 7)} ·{" "}
+                        {p.comentarios ?? 0} comentário{p.comentarios === 1 ? "" : "s"}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ ...dica, marginTop: 7 }}>
+              Os posts mais recentes do Instagram da casa — colaboração incluída, quando o convite
+              partiu daqui. Post em que outra conta convidou o Mr Kong pertence a ela, e a Meta não
+              libera os comentários: nesse caso use "Colar uma lista de @".
+            </div>
+          </>
+        )}
+
+        {escopo === "post" && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 11 }}>
+            <Opcao ativo={!usarJanela} onClick={() => mexeu(setUsarJanela)(false)}
+                   nome="Desde que o post saiu" desc="vale todo comentário" />
+            <Opcao ativo={usarJanela} onClick={() => mexeu(setUsarJanela)(true)}
+                   nome="Só entre datas" desc="fecha a janela do sorteio" />
+          </div>
+        )}
+
+        {comJanela && (
+          <>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center",
+                          marginTop: 9 }}>
+              <span style={{ ...dica, fontWeight: 700, color: "#22231F" }}>Comentários de</span>
+              <input type="date" style={inputStyle} value={de} onChange={(e) => mexeu(setDe)(e.target.value)} />
+              <span style={{ ...dica, fontWeight: 700, color: "#22231F" }}>até</span>
+              <input type="date" style={inputStyle} value={ate} onChange={(e) => mexeu(setAte)(e.target.value)} />
+            </div>
+            <div style={{ ...dica, marginTop: 7 }}>
+              A janela vai das 00h00 do primeiro dia às 23h59 do último. Quem comentou fora fica de
+              fora e aparece riscado com o motivo — é o que deixa você sortear no dia 31 valendo só
+              o que foi dito até o dia 30, com o post ainda recebendo comentário.
+              {escopo === "periodo" && " Entram todos os posts publicados dentro dela."}
+            </div>
+          </>
+        )}
+
+        {escopo === "colado" && (
+          <>
+            <textarea style={{ ...inputStyle, width: "100%", minHeight: 96, resize: "vertical" }}
+                      placeholder={"@fulano\n@sicrano\n@beltrano"}
+                      value={colados} onChange={(e) => mexeu(setColados)(e.target.value)} />
+            <div style={{ ...dica, marginTop: 6 }}>
+              Um @ por linha (ou separados por vírgula). Serve para post de colaboração de outra
+              conta: peça a lista a quem publicou e cole aqui. O sorteio roda igual, com o mesmo
+              registro guardado.
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 2 — a regra */}
+      <div style={cardStyle}>
+        <div style={sectionLabel}>2 · Quem entra</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <Opcao ativo={regra === "pessoa"} onClick={() => mexeu(setRegra)("pessoa")}
+                 nome="Uma chance por pessoa" desc="comentou 5 vezes, entra 1" />
+          <Opcao ativo={regra === "comentario"} onClick={() => mexeu(setRegra)("comentario")}
+                 nome="Uma chance por comentário" desc="comentou 5 vezes, tem 5 chances" />
+          <Opcao ativo={regra === "marcou"} onClick={() => mexeu(setRegra)("marcou")}
+                 nome="Só quem marcou amigo" desc="precisa ter um @ no comentário" />
+        </div>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+          <label style={{ ...dica, fontWeight: 700, color: "#22231F" }}>
+            Mínimo por pessoa{" "}
+            <input type="number" min="1" max="50" style={{ ...inputStyle, width: 68, marginLeft: 5 }}
+                   value={minimo} onChange={(e) => mexeu(setMinimo)(e.target.value)} />
+          </label>
+          {regra === "comentario" && (
+            <label style={{ ...dica, fontWeight: 700, color: "#22231F" }}>
+              Teto de chances{" "}
+              <input type="number" min="1" max="500" placeholder="sem teto"
+                     style={{ ...inputStyle, width: 92, marginLeft: 5 }}
+                     value={teto} onChange={(e) => mexeu(setTeto)(e.target.value)} />
+            </label>
+          )}
+          <label style={{ ...dica, fontWeight: 700, color: "#22231F" }}>
+            Suplentes{" "}
+            <input type="number" min="0" max="5" style={{ ...inputStyle, width: 62, marginLeft: 5 }}
+                   value={suplentes} onChange={(e) => mexeu(setSuplentes)(e.target.value)} />
+          </label>
+        </div>
+
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 9 }}>
+          <Opcao ativo={tirarCasa} onClick={() => mexeu(setTirarCasa)(!tirarCasa)}
+                 nome="Tirar comentários da própria casa" />
+          <Opcao ativo={tirarRespostas} onClick={() => mexeu(setTirarRespostas)(!tirarRespostas)}
+                 nome="Tirar respostas a outros comentários" />
+        </div>
+
+        {regra === "comentario" && !teto && (
+          <div style={{ ...avisoInfo, marginTop: 10 }}>
+            <AlertTriangle size={14} />
+            <span>Sem teto, quem estiver disposto a comentar 50 vezes ganha quase sempre, e o
+              resto percebe. Um teto de 10 mantém o estímulo a comentar sem entregar o sorteio
+              a uma pessoa só.</span>
+          </div>
+        )}
+      </div>
+
+      {/* 3 — conferir e sortear */}
+      <div style={cardStyle}>
+        <div style={sectionLabel}>3 · Conferir e sortear</div>
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+          <button style={btnSecondary} onClick={conferir} disabled={!!ocupado}>
+            {ocupado === "previa" ? <Loader2 size={13} /> : <RefreshCw size={13} />} Conferir antes
+          </button>
+          <button style={btnPrimary} onClick={sortear} disabled={!!ocupado}>
+            {ocupado === "sorteio" ? <Loader2 size={13} /> : <Gift size={13} />} Sortear
+          </button>
+        </div>
+
+        {erro && (
+          <div style={{ ...avisoErro, marginTop: 10 }}><AlertTriangle size={14} /><span>{erro}</span></div>
+        )}
+
+        {contas && (
+          <>
+            <div style={{ display: "grid", gap: 10, marginTop: 12,
+                          gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))" }}>
+              <Numero v={contas.total_comentarios} r="comentários lidos" />
+              <Numero v={contas.total_pessoas} r="entraram no sorteio" />
+              <Numero v={fora.length} r="ficaram de fora" />
+              {contas.posts > 0 && <Numero v={contas.posts} r={contas.posts === 1 ? "post" : "posts"} />}
+            </div>
+            {contas.truncado && (
+              <div style={{ ...avisoInfo, marginTop: 10 }}>
+                <AlertTriangle size={14} />
+                <span>Esse post tem comentários demais e eu parei de ler em 3.000. A lista pode
+                  estar incompleta — prefiro dizer isso a te entregar meia lista como se fosse
+                  inteira.</span>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* o ganhador */}
+      {resultado && (
+        <div style={{ ...cardStyle, border: "2px solid #2F8F5B" }}>
+          <div style={{ ...sectionLabel, color: "#2F8F5B", marginBottom: 4 }}>
+            Ganhador · sorteado {dataBonita(resultado.criado_em)}
+          </div>
+          <div style={{ fontSize: 24, fontWeight: 800, wordBreak: "break-all" }}>{resultado.ganhador}</div>
+          {resultado.ganhador_comentario && (
+            <div style={{ fontSize: 13, marginTop: 7, paddingLeft: 9,
+                          borderLeft: "2px solid #E8E2D2", lineHeight: 1.45 }}>
+              “{resultado.ganhador_comentario}”
+            </div>
+          )}
+          <div style={{ ...dica, marginTop: 7 }}>
+            Comentou em {dataBonita(resultado.ganhador_quando)}. Entre {resultado.total_pessoas} nomes.
+            {" "}Semente <code>{resultado.semente}</code> — com ela e a lista, qualquer pessoa refaz
+            o sorteio e chega no mesmo nome.
+          </div>
+
+          {resultado.suplentes?.length > 0 && (
+            <div style={{ marginTop: 9 }}>
+              <div style={{ ...dica, fontWeight: 700, color: "#22231F" }}>Se o primeiro não responder</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                {resultado.suplentes.map((s, i) => (
+                  <span key={s} style={chip}>{i + 1}º · {s}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ ...avisoInfo, marginTop: 11 }}>
+            <Info size={14} />
+            <span>Se a regra era "siga o perfil", confira agora: abra o perfil do ganhador e veja se
+              ele segue. A Meta não entrega a lista de seguidores, então essa parte é no olho — mas
+              é um perfil para olhar, não {resultado.total_pessoas}.</span>
+          </div>
+
+          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }}>
+            <a href={`https://instagram.com/${String(resultado.ganhador).replace(/^@/, "")}`}
+               target="_blank" rel="noreferrer" style={{ ...btnSecondary, textDecoration: "none" }}>
+              <ExternalLink size={13} /> Abrir o perfil
+            </a>
+            <button style={btnSecondary} onClick={sortear} disabled={!!ocupado}>
+              <RefreshCw size={13} /> Sortear outro nome
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* a lista */}
+      {lista.length > 0 && (
+        <div style={cardStyle}>
+          <div style={sectionLabel}>Os {lista.length} que entraram</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+            {lista.map((p) => (
+              <span key={p.arroba} style={chip}>
+                {p.arroba}{p.chances > 1 ? ` · ${p.chances}` : ""}
+              </span>
+            ))}
+          </div>
+
+          {fora.length > 0 && (
+            <>
+              <div style={{ ...sectionLabel, marginTop: 12 }}>E os {fora.length} que ficaram de fora</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {fora.slice(0, 120).map((f, i) => (
+                  <span key={i} style={{ ...chip, color: "#8A8778", textDecoration: "line-through" }}
+                        title={f.motivo}>
+                    {f.arroba} · {f.motivo}
+                  </span>
+                ))}
+              </div>
+              {fora.length > 120 && (
+                <div style={{ ...dica, marginTop: 5 }}>
+                  …e mais {fora.length - 120}. O arquivo baixado traz todos.
+                </div>
+              )}
+            </>
+          )}
+
+          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 11 }}>
+            <button style={btnSecondary} onClick={copiar}>
+              {copiado ? <Check size={13} /> : <Copy size={13} />} {copiado ? "Copiado" : "Copiar a lista"}
+            </button>
+            <button style={btnSecondary} onClick={baixar}>
+              <Download size={13} /> Baixar em texto
+            </button>
+          </div>
+          <div style={{ ...dica, marginTop: 7 }}>
+            Essa lista é o que você publica no story. É ela que responde a quem disser que o
+            sorteio foi arranjado.
+          </div>
+        </div>
+      )}
+
+      {/* o que já foi sorteado antes */}
+      {historico.length > 0 && (
+        <div style={cardStyle}>
+          <div style={sectionLabel}>Sorteios anteriores</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            {historico.map((h) => (
+              <div key={h.id} style={{ display: "flex", gap: 9, flexWrap: "wrap",
+                                       alignItems: "baseline", borderBottom: "1px solid #F0ECE2",
+                                       paddingBottom: 6 }}>
+                <b style={{ fontSize: 13 }}>{h.ganhador}</b>
+                <span style={dica}>
+                  {dataBonita(h.criado_em)} · {h.total_pessoas} participantes ·{" "}
+                  {h.regra === "pessoa" ? "uma chance por pessoa"
+                    : h.regra === "comentario" ? "uma chance por comentário" : "só quem marcou amigo"}
+                  {h.posts > 0 ? ` · ${h.posts} post${h.posts === 1 ? "" : "s"}` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={avisoInfo}>
+        <Info size={14} />
+        <span><b>Antes de publicar:</b> sorteio no Instagram precisa dizer que o Instagram não
+          participa nem patrocina a promoção, e não pode exigir que a pessoa marque a si mesma
+          numa foto. Marcar amigos de verdade, pode.</span>
+      </div>
+    </div>
   );
 }
+
+function Numero({ v, r }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+      <b style={{ fontSize: 23, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{v ?? 0}</b>
+      <span style={dica}>{r}</span>
+    </div>
+  );
+}
+
+function Opcao({ ativo, onClick, nome, desc }) {
+  return (
+    <button onClick={onClick}
+            style={{ textAlign: "left", border: ativo ? "2px solid #22231F" : "1px solid #E8E2D2",
+                     borderRadius: 9, background: ativo ? "#FBF9F4" : "#fff",
+                     padding: ativo ? "6px 10px" : "7px 11px", cursor: "pointer", color: "#22231F" }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700 }}>{nome}</div>
+      {desc && <div style={{ fontSize: 10.5, color: "#8A8778" }}>{desc}</div>}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// estilos (os mesmos do MetaAds.jsx e do Patrocinar.jsx)
+// ---------------------------------------------------------------------------
+const cardStyle = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: 13 };
+const sectionLabel = {
+  fontSize: 11, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase",
+  color: "#8A8778", marginBottom: 7,
+};
+const dica = { fontSize: 10.5, color: "#8A8778", lineHeight: 1.5 };
+const btnPrimary = {
+  display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
+  background: "#22231F", color: "#F3EFE3", border: "none",
+  borderRadius: 8, padding: "9px 15px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+};
+const btnSecondary = {
+  display: "inline-flex", alignItems: "center", gap: 6,
+  background: "#F6F1E7", border: "1px solid #E8E2D2", color: "#22231F",
+  borderRadius: 8, padding: "8px 13px", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+};
+const inputStyle = {
+  padding: "7px 9px", borderRadius: 8, border: "1px solid #E8E2D2",
+  fontSize: 13, background: "#FFFFFF", color: "#22231F", boxSizing: "border-box",
+};
+const chip = { border: "1px solid #E8E2D2", borderRadius: 999, padding: "3px 9px",
+               fontWeight: 600, fontSize: 11.5 };
+const avisoInfo = {
+  display: "flex", gap: 8, background: "#FBF3D9", border: "1px solid #E8D48A",
+  color: "#7A6A1E", borderRadius: 10, padding: "12px 13px", fontSize: 12.5, lineHeight: 1.5,
+};
+const avisoErro = {
+  display: "flex", gap: 8, background: "#C4432B12", border: "1px solid #C4432B",
+  color: "#A5351F", borderRadius: 10, padding: "12px 13px", fontSize: 12.5, lineHeight: 1.5,
+};
