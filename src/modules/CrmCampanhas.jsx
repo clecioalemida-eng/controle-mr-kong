@@ -64,8 +64,11 @@ const SEG = Object.fromEntries(SEGMENTOS.map((s) => [s.chave, s]));
 // português abre com um duplo clique, já nas colunas certas. CSV "puro" com
 // vírgula abre tudo numa coluna só.
 // ---------------------------------------------------------------------------
+// Telefone é a PRIMEIRA coluna de propósito: os disparadores de lista
+// (WA Web Plus e parecidos) leem o número da coluna 1 e ignoram o resto.
+// Com o nome na frente, a importação não acha telefone nenhum.
 const COLUNAS = [
-  ["nome", "Nome"], ["telefone", "Telefone"], ["bairro", "Bairro"],
+  ["telefone", "Telefone"], ["nome", "Nome"], ["bairro", "Bairro"],
   ["pedidos", "Pedidos"], ["total_gasto", "Total gasto"], ["ticket_medio", "Ticket médio"],
   ["ultimo_dia", "Último pedido"], ["intervalo_medio_dias", "Intervalo médio (dias)"],
   ["favorito", "Favorito"], ["canal_preferido", "Canal"], ["aniversario", "Aniversário"],
