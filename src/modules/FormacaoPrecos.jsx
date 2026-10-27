@@ -621,6 +621,7 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
   const [naCaixa, setNaCaixa] = useState("");
   const [editandoPreco, setEditandoPreco] = useState(null);
   const [precoTexto, setPrecoTexto] = useState("");
+  const [unidadeTexto, setUnidadeTexto] = useState("un");
   const [salvandoPreco, setSalvandoPreco] = useState(false);
 
   // Grava o preço do INSUMO (não a quantidade da ficha).
@@ -630,10 +631,21 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
   // está certo — errado é a garrafa custar R$ 24,00, que é o fardo. Mexer
   // na quantidade pra compensar preço errado conserta um prato e deixa
   // todos os outros quebrados.
-  const gravarPrecoInsumo = async (ins, valor) => {
+  const gravarPrecoInsumo = async (ins, valor, unidade) => {
     if (!(valor > 0)) { onErro("O preço precisa ser maior que zero."); return; }
     setSalvandoPreco(true);
     onErro(""); onRecado("");
+    const trocouUnidade = unidade && unidade !== ins.unidade;
+    if (trocouUnidade) {
+      const { error: eUn } = await supabase.from("insumos")
+        .update({ unidade, atualizado_em: new Date().toISOString() })
+        .eq("id", ins.id);
+      if (eUn) { setSalvandoPreco(false); onErro(`${ins.nome}: ${eUn.message}`); return; }
+      // A quantidade digitada era na unidade ANTIGA. Guardá-la seria
+      // mentir com cara de verdade: 100 em "un" vira 100.000 g em kg.
+      // Melhor apagar e pedir de novo, agora na unidade certa.
+      setItens((prev) => prev.map((x) => (x.insumo_id === ins.id ? { ...x, valor: "" } : x)));
+    }
     const { error } = await supabase.rpc("definir_custo_insumo", {
       p_insumo: ins.id, p_origem: "manual", p_valor: valor,
     });
@@ -645,8 +657,11 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
       return;
     }
     const n = usoPorInsumo?.[ins.id] || 0;
+    const un = unidade || ins.unidade;
     setDividindo(null); setEditandoPreco(null); setNaCaixa("");
-    onRecado(`${ins.nome}: ${brl(valor)} por ${ins.unidade}, travado em manual.${n > 1 ? ` ${n} pratos tiveram o custo recalculado.` : ""}`);
+    onRecado(`${ins.nome}: ${brl(valor)} por ${un}, travado em manual.`
+      + (trocouUnidade ? ` A unidade mudou de ${ins.unidade} para ${un} — digite de novo quanto vai no prato.` : "")
+      + (n > 1 ? ` ${n} pratos usam este insumo.` : ""));
     recarregar();
   };
 
@@ -723,7 +738,7 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
                 {ins?.nome || "(insumo apagado)"}
                 <div style={rotuloMini}>
                   {ins ? (
-                    <button onClick={() => { setEditandoPreco(it.insumo_id); setPrecoTexto(String(ins.custo_medio_atual ?? "").replace(".", ",")); setDividindo(null); }}
+                    <button onClick={() => { setEditandoPreco(it.insumo_id); setPrecoTexto(String(ins.custo_medio_atual ?? "").replace(".", ",")); setUnidadeTexto(ins.unidade || "un"); setDividindo(null); }}
                       style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
                                fontSize: 10.5, color: "#7A6A1E", textDecoration: "underline", fontFamily: "inherit" }}>
                       {brl(ins.custo_medio_atual)} / {ins.unidade} · editar
@@ -760,23 +775,40 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
               </button>
             </div>
             {editandoPreco === it.insumo_id && ins && (
-              <div style={caixaAuxiliar}>
-                <span>Preço de uma {unidadeDigitada(ins.unidade) === "g" ? "unidade (por kg)" : ins.unidade}: R$</span>
-                <input value={precoTexto} inputMode="decimal" autoFocus
-                  onChange={(e) => setPrecoTexto(e.target.value)}
-                  style={{ ...input, width: 92, textAlign: "right", padding: "5px 7px" }} />
-                <button disabled={salvandoPreco || !(num(precoTexto) > 0)}
-                  onClick={() => gravarPrecoInsumo(ins, num(precoTexto))}
-                  style={{ ...btnPri, padding: "5px 10px", fontSize: 12 }}>
-                  {salvandoPreco ? "Gravando…" : "Gravar preço"}
-                </button>
-                <button onClick={() => setEditandoPreco(null)} style={{ ...btnSec, padding: "5px 10px", fontSize: 12 }}>
-                  Cancelar
-                </button>
-                {(usoPorInsumo?.[it.insumo_id] || 0) > 1 && (
-                  <span style={{ color: "#8E2420" }}>
-                    muda o custo de {usoPorInsumo[it.insumo_id]} pratos
-                  </span>
+              <div style={{ ...caixaAuxiliar, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                  <span>R$</span>
+                  <input value={precoTexto} inputMode="decimal" autoFocus
+                    onChange={(e) => setPrecoTexto(e.target.value)}
+                    style={{ ...input, width: 92, textAlign: "right", padding: "5px 7px" }} />
+                  <span>por</span>
+                  <select value={unidadeTexto} onChange={(e) => setUnidadeTexto(e.target.value)}
+                    style={{ ...input, padding: "5px 6px", fontSize: 12, width: 68,
+                             color: unidadeTexto !== ins.unidade ? "#8E2420" : "#55534A",
+                             fontWeight: unidadeTexto !== ins.unidade ? 700 : 400 }}>
+                    {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                  <button disabled={salvandoPreco || !(num(precoTexto) > 0)}
+                    onClick={() => gravarPrecoInsumo(ins, num(precoTexto), unidadeTexto)}
+                    style={{ ...btnPri, padding: "5px 10px", fontSize: 12 }}>
+                    {salvandoPreco ? "Gravando…" : "Gravar"}
+                  </button>
+                  <button onClick={() => setEditandoPreco(null)} style={{ ...btnSec, padding: "5px 10px", fontSize: 12 }}>
+                    Cancelar
+                  </button>
+                  {(usoPorInsumo?.[it.insumo_id] || 0) > 1 && (
+                    <span style={{ color: "#8E2420" }}>
+                      muda o custo de {usoPorInsumo[it.insumo_id]} pratos
+                    </span>
+                  )}
+                </div>
+                {unidadeTexto !== ins.unidade && (
+                  <div style={{ fontSize: 11.5, color: "#8E2420", lineHeight: 1.6 }}>
+                    Trocando de <b>{ins.unidade}</b> para <b>{unidadeTexto}</b>: a quantidade que você
+                    digitou na ficha era na unidade antiga, então ela vai ser apagada e você digita de
+                    novo — em {unidadeDigitada(unidadeTexto)}. Guardá-la seria virar 100 un em
+                    100.000 g sem ninguém perceber.
+                  </div>
                 )}
               </div>
             )}
@@ -792,7 +824,7 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
                   <>
                     <button
                       disabled={salvandoPreco}
-                      onClick={() => gravarPrecoInsumo(ins, (Number(ins.custo_medio_atual) || 0) / num(naCaixa))}
+                      onClick={() => gravarPrecoInsumo(ins, (Number(ins.custo_medio_atual) || 0) / num(naCaixa), ins.unidade)}
                       style={{ ...btnPri, padding: "5px 10px", fontSize: 12 }}>
                       {salvandoPreco ? "Gravando…"
                         : `Corrigir para ${brl((Number(ins.custo_medio_atual) || 0) / num(naCaixa))} por ${ins.unidade}`}
