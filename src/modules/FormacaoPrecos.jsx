@@ -575,6 +575,7 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onR
 
                   <FichaEditor prato={p} linhas={fichas[p.id] || SEM_FICHA} insumos={insumos}
                     compras={compras} usoPorInsumo={usoPorInsumo}
+                    pratos={pratos} fichas={fichas}
                     onErro={onErro} onRecado={onRecado} recarregar={recarregar} />
                 </div>
               )}
@@ -601,7 +602,7 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onR
 // A quantidade é digitada em g/ml/un e guardada em kg/l/un — a conversão
 // acontece no paraBase/paraTela, nunca no meio da tela.
 // ===========================================================================
-function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, onRecado, recarregar }) {
+function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, pratos, fichas, onErro, onRecado, recarregar }) {
   const porId = useMemo(() => {
     const m = {};
     insumos.forEach((i) => { m[i.id] = i; });
@@ -617,6 +618,8 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
   const [buscaInsumo, setBuscaInsumo] = useState("");
   const [salvando, setSalvando] = useState(false);
   const [aviso1, setAviso1] = useState("");
+  const [copiando, setCopiando] = useState(false);
+  const [buscaPrato, setBuscaPrato] = useState("");
   const [dividindo, setDividindo] = useState(null);   // insumo_id com a caixa aberta
   const [naCaixa, setNaCaixa] = useState("");
   const [editandoPreco, setEditandoPreco] = useState(null);
@@ -666,6 +669,43 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
   };
 
   useEffect(() => { setItens(daBase()); setAviso1(""); }, [daBase]);
+
+  // Copiar a ficha de outro prato SOMA ao que já está aqui, em vez de
+  // substituir — é o caso do combo, que é o lanche mais a batata mais a
+  // bebida. Ingrediente que já existe nesta ficha não entra de novo: a
+  // quantidade que vale é a que você já tinha escolhido.
+  const pratosComFicha = useMemo(() => (pratos || [])
+    .filter((x) => x.id !== prato.id && (fichas?.[x.id] || []).length > 0)
+    .map((x) => ({ ...x, nLinhas: (fichas[x.id] || []).length }))
+    .sort((a, b) => b.faturado - a.faturado || a.nome.localeCompare(b.nome)),
+    [pratos, fichas, prato.id]);
+
+  const candidatosPrato = buscaPrato.trim().length < 2 ? [] : pratosComFicha
+    .filter((x) => chaveNome(x.nome).includes(chaveNome(buscaPrato)))
+    .slice(0, 8);
+
+  const copiarDe = (origem) => {
+    const vindas = (fichas[origem.id] || []).map((l) => ({
+      insumo_id: l.insumo_id,
+      valor: String(paraTela(l.quantidade, porId[l.insumo_id]?.unidade)).replace(".", ","),
+    }));
+    // A contagem é feita AQUI, com o estado atual — não dentro do
+    // setItens. O atualizador do React roda depois, e quando rodava lá o
+    // aviso saía sempre "0 ingredientes vieram", porque as variáveis
+    // ainda valiam zero na hora de montar a frase.
+    const tem = new Set(itens.map((x) => x.insumo_id));
+    const add = vindas.filter((v) => !tem.has(v.insumo_id));
+    const novos = add.length;
+    const repetidos = vindas.length - novos;
+    setItens((prev) => {
+      const jaTem = new Set(prev.map((x) => x.insumo_id));
+      return [...prev, ...vindas.filter((v) => !jaTem.has(v.insumo_id))];
+    });
+    setCopiando(false); setBuscaPrato("");
+    setAviso1(`${novos} ${novos === 1 ? "ingrediente veio" : "ingredientes vieram"} de "${origem.nome}"`
+      + (repetidos > 0 ? `; ${repetidos} já estava${repetidos === 1 ? "" : "m"} aqui e não ${repetidos === 1 ? "foi" : "foram"} repetido${repetidos === 1 ? "" : "s"}` : "")
+      + ". Confira as quantidades e salve.");
+  };
 
   const custoDaLinha = (it) => {
     const ins = porId[it.insumo_id];
@@ -850,6 +890,44 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, onErro, on
           </React.Fragment>
           );
         })}
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        {!copiando ? (
+          <button onClick={() => { setCopiando(true); setBuscaPrato(""); }}
+            style={{ ...btnSec, display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <Plus size={13} /> Copiar a ficha de outro prato
+          </button>
+        ) : (
+          <div style={{ ...caixaAuxiliar, flexDirection: "column", alignItems: "stretch", gap: 7 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+              <input value={buscaPrato} onChange={(e) => setBuscaPrato(e.target.value)} autoFocus
+                placeholder="De qual prato? — digite 2 letras…"
+                style={{ ...input, flex: 1, minWidth: 180, padding: "6px 9px" }} />
+              <button onClick={() => { setCopiando(false); setBuscaPrato(""); }}
+                style={{ ...btnSec, padding: "5px 10px", fontSize: 12 }}>Cancelar</button>
+            </div>
+            {candidatosPrato.map((x) => (
+              <button key={x.id} onClick={() => copiarDe(x)}
+                style={{ display: "flex", alignItems: "center", gap: 8, background: "#FFFFFF",
+                         border: "1px solid #E8E2D2", borderRadius: 8, padding: "7px 10px",
+                         cursor: "pointer", fontSize: 12.5, color: "#22231F", textAlign: "left",
+                         fontFamily: "inherit" }}>
+                {x.nome}
+                <span style={{ marginLeft: "auto", color: "#8A8778", fontSize: 11.5 }}>
+                  {x.nLinhas} {x.nLinhas === 1 ? "ingrediente" : "ingredientes"} · custo {brl(x.custo)}
+                </span>
+              </button>
+            ))}
+            {buscaPrato.trim().length >= 2 && candidatosPrato.length === 0 && (
+              <span style={{ fontSize: 11.5, color: "#8A8778" }}>Nenhum prato com ficha e esse nome.</span>
+            )}
+            <span style={{ fontSize: 11, color: "#8A8778", lineHeight: 1.6 }}>
+              Os ingredientes vêm <b>somando</b> ao que já está nesta ficha — é o caso do combo, que é o
+              lanche mais a batata mais a bebida. O que já estiver aqui não é repetido.
+            </span>
+          </div>
+        )}
       </div>
 
       <div style={{ marginTop: 10, position: "relative" }}>
