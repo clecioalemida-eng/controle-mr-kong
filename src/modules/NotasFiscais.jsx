@@ -6,6 +6,26 @@ import {
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
+// Para onde vai o item de nota que NÃO é insumo (migração 171).
+//
+// Nota tem desinfetante, compressor, caneta, desconto. Até 29/10/2026 a
+// conferência exigia vincular tudo a um insumo, e o que não era insumo
+// travava a nota — 68 notas, R$ 31 mil fora do DRE — ou virava insumo
+// falso só para destravar ("Transferência Pix" = abafador de hambúrguer).
+//
+// As chaves são os centros de custo de Contas a Pagar, menos
+// "nao_produto": desconto, Pix, linha de pagamento. Esse não é custo de
+// nada; só acerta o total pago, e o valor dele vai junto com o maior
+// grupo da nota.
+const DESTINOS_NAO_INSUMO = [
+  { valor: "utensilios",     rotulo: "Limpeza e utensílios" },
+  { valor: "manutencao",     rotulo: "Consertos e manutenção" },
+  { valor: "imobilizado",    rotulo: "Equipamento" },
+  { valor: "administrativo", rotulo: "Escritório" },
+  { valor: "pessoas",        rotulo: "Consumo da equipe" },
+  { valor: "nao_produto",    rotulo: "Não é produto" },
+];
+const rotuloDestino = (valor) => DESTINOS_NAO_INSUMO.find((d) => d.valor === valor)?.rotulo || valor;
 // Padrão, usado só se a migração 080 ainda não rodou ou se a consulta
 // falhar. A lista de verdade fica em `listas_opcoes` e é editada em
 // DRE → Listas.
@@ -1635,14 +1655,19 @@ function Conferencia({ documento, onVoltar }) {
   const [formEmb, setFormEmb] = useState({ pacotes: "1", porPacote: "1", unidade: "un", precoPor: "pacote" });
   const [aplicadas, setAplicadas] = useState({});                // itemId -> { texto, anterior }
   const regrasJaAplicadas = useRef(false);
+  // --- "não é insumo" (migração 171) ----------------------------------
+  const [naoInsumoAberto, setNaoInsumoAberto] = useState(null);  // id do item com os destinos abertos
+  const [lembrarNaoInsumo, setLembrarNaoInsumo] = useState(true);
   const carregar = useCallback(async () => {
     setCarregando(true);
-    const [{ data: itensData }, { data: insumosData }, { data: fornecedoresData }, { data: regrasData }, { data: maiorData }] = await Promise.all([
+    const [{ data: itensData }, { data: insumosData }, { data: fornecedoresData }, { data: regrasData }, { data: maiorData }, { data: naoInsumoData }] = await Promise.all([
       supabase.from("itens_documento_compra").select("*").eq("documento_id", documento.id).order("criado_em"),
       supabase.from("insumos").select("id, nome, unidade").order("nome"),
       supabase.from("fornecedores").select("*").order("nome"),
       supabase.from("produto_regras").select("*"),
       supabase.from("documentos_compra").select("valor_total").not("valor_total", "is", null).order("valor_total", { ascending: false }).limit(1),
+      // Volta vazio se a 171 não rodou — aí a tela só não lembra nada.
+      supabase.from("nomes_nao_insumo").select("nome_variante, despesa_centro"),
     ]);
     setInsumos(insumosData || []);
     setFornecedores(fornecedoresData || []);
@@ -1655,6 +1680,7 @@ function Conferencia({ documento, onVoltar }) {
     if (!regrasJaAplicadas.current) {
       regrasJaAplicadas.current = true;
       listaFinal = await aplicarRegras(listaFinal, regrasData || []);
+      listaFinal = await aplicarNaoInsumo(listaFinal, naoInsumoData || []);
     }
     setItens(listaFinal);
     setCarregando(false);
@@ -1745,6 +1771,55 @@ function Conferencia({ documento, onVoltar }) {
     }
     if (Object.keys(banners).length) setAplicadas(banners);
     return saida;
+  };
+
+  // Nota lida ANTES de alguém ensinar o nome (as 68 paradas de outubro)
+  // não passou pela Edge Function com a lista nova. Aplica aqui, só em
+  // item ainda sem decisão — vínculo feito por uma pessoa não é desfeito.
+  const aplicarNaoInsumo = async (lista, nomes) => {
+    if (!nomes.length) return lista;
+    const mapa = new Map(nomes.map((n) => [norm(n.nome_variante), n.despesa_centro]));
+    const saida = [];
+    for (const item of lista) {
+      const centro = mapa.get(norm(item.nome_lido));
+      if (!centro || item.insumo_id || item.despesa_centro) { saida.push(item); continue; }
+      const { error } = await supabase.from("itens_documento_compra").update({ despesa_centro: centro }).eq("id", item.id);
+      saida.push(error ? item : { ...item, despesa_centro: centro });
+    }
+    return saida;
+  };
+
+  const marcarNaoInsumo = async (item, centro) => {
+    setErro("");
+    const { error } = await supabase.from("itens_documento_compra")
+      .update({ despesa_centro: centro, insumo_id: null }).eq("id", item.id);
+    if (error) {
+      setErro(/despesa_centro/.test(error.message || "")
+        ? "Falta rodar a migração 171 no Supabase antes de usar \"não é insumo\"."
+        : error.message);
+      return;
+    }
+    if (lembrarNaoInsumo) {
+      const nome = String(item.nome_lido || "").trim();
+      // Já lembrado (índice único em lower(nome)) atualiza o destino;
+      // não dá pra usar upsert porque o índice é de expressão.
+      const { error: errIns } = await supabase.from("nomes_nao_insumo")
+        .insert({ nome_variante: nome, despesa_centro: centro });
+      if (errIns && (errIns.code === "23505" || /duplicate key/i.test(errIns.message || ""))) {
+        await supabase.from("nomes_nao_insumo").update({ despesa_centro: centro }).ilike("nome_variante", nome);
+      }
+    }
+    setItens((prev) => prev.map((it) => (it.id === item.id ? { ...it, despesa_centro: centro, insumo_id: null } : it)));
+    setNaoInsumoAberto(null);
+  };
+
+  // Desfazer também esquece o nome: se a pessoa voltou atrás nesta nota,
+  // a próxima não deve chegar marcada com a decisão que ela desfez.
+  const desfazerNaoInsumo = async (item) => {
+    const { error } = await supabase.from("itens_documento_compra").update({ despesa_centro: null }).eq("id", item.id);
+    if (error) { setErro(error.message); return; }
+    await supabase.from("nomes_nao_insumo").delete().ilike("nome_variante", String(item.nome_lido || "").trim());
+    setItens((prev) => prev.map((it) => (it.id === item.id ? { ...it, despesa_centro: null } : it)));
   };
 
   const desfazerRegra = async (item) => {
@@ -1863,6 +1938,7 @@ function Conferencia({ documento, onVoltar }) {
       unidade: formEdicao.unidade,
       preco_unitario: parseFloat(formEdicao.preco_unitario) || 0,
       insumo_id: formEdicao.insumo_id || null,
+      ...(formEdicao.insumo_id ? limparNaoInsumo(editandoId) : {}),
     }).eq("id", editandoId).select().single();
     if (error) { setErro(error.message); return; }
     carregar();
@@ -1877,8 +1953,13 @@ function Conferencia({ documento, onVoltar }) {
     });
   }, []);
 
+  // Vincular a um insumo desfaz o "não é insumo" do item. O campo só vai
+  // no update quando estava preenchido: se a 171 ainda não rodou, mandar
+  // despesa_centro faria o vínculo falhar calado.
+  const limparNaoInsumo = (itemId) =>
+    (itens.find((it) => it.id === itemId)?.despesa_centro ? { despesa_centro: null } : {});
   const vincularInsumo = async (itemId, insumoId) => {
-    await supabase.from("itens_documento_compra").update({ insumo_id: insumoId }).eq("id", itemId);
+    await supabase.from("itens_documento_compra").update({ insumo_id: insumoId, ...limparNaoInsumo(itemId) }).eq("id", itemId);
     carregar();
   };
   const criarEVincularInsumo = async (item) => {
@@ -1903,7 +1984,7 @@ function Conferencia({ documento, onVoltar }) {
       }
     }
     if (error) { setErro(error.message); return; }
-    await supabase.from("itens_documento_compra").update({ insumo_id: insumo.id }).eq("id", item.id);
+    await supabase.from("itens_documento_compra").update({ insumo_id: insumo.id, ...limparNaoInsumo(item.id) }).eq("id", item.id);
     setInsumos((prev) => [...prev, insumo].sort((a, b) => a.nome.localeCompare(b.nome)));
     // Se esse item estava com o formulário de edição aberto, sincroniza o
     // vínculo ali também — senão, clicar em "Confirmar edição" logo
@@ -1913,7 +1994,27 @@ function Conferencia({ documento, onVoltar }) {
     setNovoInsumoNome("");
     carregar();
   };
-  const todosVinculados = itens.length > 0 && itens.every((it) => it.insumo_id);
+  // "Decidido" = vinculado a um insumo OU marcado como não é insumo.
+  const todosVinculados = itens.length > 0 && itens.every((it) => it.insumo_id || it.despesa_centro);
+  // Como a nota se reparte no financeiro: um grupo pro estoque, um por
+  // centro de custo do que não é insumo. "Não é produto" (desconto, Pix)
+  // não é grupo — o valor dele vai junto com o maior grupo, porque só
+  // acerta o quanto foi pago.
+  const reparticao = useMemo(() => {
+    const grupos = {};
+    let semGrupo = 0;
+    for (const it of itens) {
+      const v = (it.quantidade || 0) * (it.preco_unitario || 0);
+      const chave = it.despesa_centro || (it.insumo_id ? "insumos" : null);
+      if (!chave) continue;
+      if (chave === "nao_produto") { semGrupo += v; continue; }
+      grupos[chave] = (grupos[chave] || 0) + v;
+    }
+    const lista = Object.entries(grupos).map(([centro, valor]) => ({ centro, valor }))
+      .sort((a, b) => (a.centro === "insumos" ? -1 : b.centro === "insumos" ? 1 : b.valor - a.valor));
+    return { lista, semGrupo };
+  }, [itens]);
+  const temNaoInsumo = itens.some((it) => it.despesa_centro);
   const algumaUnidadeDivergente = itens.some((it) => {
     const ins = insumos.find((i) => i.id === it.insumo_id);
     return ins && ins.unidade !== it.unidade;
@@ -1938,13 +2039,20 @@ function Conferencia({ documento, onVoltar }) {
   const implausiveis = itens.filter((it) => motivoImplausivel(it) && !conferidos.has(it.id));
   const podeConfirmar = todosVinculados && !algumaUnidadeDivergente && implausiveis.length === 0;
   const confirmar = async () => {
-    if (!todosVinculados) { setErro("Vincule todos os itens a um insumo antes de confirmar."); return; }
+    if (!todosVinculados) { setErro("Vincule cada item a um insumo ou marque como \"não é insumo\" antes de confirmar."); return; }
+    if (reparticao.lista.length === 0 && Math.abs(reparticao.semGrupo) > 0.004) {
+      setErro("Todos os itens estão como \"não é produto\". Escolha para onde vai pelo menos um deles — senão o valor pago não entra em lugar nenhum.");
+      return;
+    }
     if (algumaUnidadeDivergente) { setErro("Tem item com unidade diferente da do insumo — corrija pelo lápis antes de confirmar."); return; }
     if (implausiveis.length > 0) { setErro("Tem item com valor implausível — ajuste a embalagem ou marque \"conferi, está certo\" antes de confirmar."); return; }
     setSalvando(true);
     setErro("");
     const { data: userData } = await supabase.auth.getUser();
     for (const item of itens) {
+      // Não é insumo: não entra no estoque nem ensina sinônimo. O valor
+      // vai pra Contas a Pagar, no centro de custo escolhido, logo abaixo.
+      if (!item.insumo_id) continue;
       // grava a movimentação de entrada no estoque
       const { error: errMov } = await supabase.from("movimentacoes_estoque").insert({
         insumo_id: item.insumo_id,
@@ -1997,25 +2105,36 @@ function Conferencia({ documento, onVoltar }) {
       // quando a compra aconteceu, não quando a nota foi conferida.
       const dataDaNota = documento.data_documento || new Date().toISOString().slice(0, 10);
       const vencimento = ehBoleto ? (vencimentoBoleto || dataDaNota) : dataDaNota;
-      const valorTotal = round2(itens.reduce((s, it) => s + it.quantidade * it.preco_unitario, 0));
-      await supabase.from("contas_pagar").insert({
-        documento_compra_id: documento.id,
-        fornecedor_id: fornecedorAtual.id,
-        fornecedor_nome: fornecedorAtual.nome,
-        descricao: `Nota fiscal — ${fornecedorAtual.nome || "fornecedor não identificado"}`,
-        valor_total: valorTotal,
-        valor_pago: ehBoleto ? 0 : valorTotal,
-        status: ehBoleto ? "pendente" : "pago",
-        forma_pagamento: formaPagamento,
-        categoria: "compra",
-        centro_custo: "insumos",
-        data_compra: documento.data_documento || new Date().toISOString().slice(0, 10),
-        data_vencimento: vencimento,
-        // Sempre dia 1: guardar 20/08 e 31/08 como competencias diferentes
-        // criaria dois "agostos" que nao somam juntos em lugar nenhum.
-        competencia: competencia ? `${competencia}-01` : null,
-        criado_por: userData?.user?.id,
+      // Uma linha por centro de custo, todas ligadas à mesma nota: o DRE
+      // lê o centro de cada linha, então uma linha só jogaria o compressor
+      // em "insumos". Nota só de insumo continua gerando uma linha, igual
+      // a antes. O "não é produto" entra no maior grupo.
+      const nomeForn = fornecedorAtual.nome || "fornecedor não identificado";
+      const maiorIdx = reparticao.lista.reduce((m, g, i, arr) => (g.valor > arr[m].valor ? i : m), 0);
+      const linhas = reparticao.lista.map((g, i) => {
+        const valor = round2(g.valor + (i === maiorIdx ? reparticao.semGrupo : 0));
+        return {
+          documento_compra_id: documento.id,
+          fornecedor_id: fornecedorAtual.id,
+          fornecedor_nome: fornecedorAtual.nome,
+          descricao: g.centro === "insumos"
+            ? `Nota fiscal — ${nomeForn}`
+            : `Nota fiscal — ${nomeForn} · ${rotuloDestino(g.centro)}`,
+          valor_total: valor,
+          valor_pago: ehBoleto ? 0 : valor,
+          status: ehBoleto ? "pendente" : "pago",
+          forma_pagamento: formaPagamento,
+          categoria: "compra",
+          centro_custo: g.centro,
+          data_compra: documento.data_documento || new Date().toISOString().slice(0, 10),
+          data_vencimento: vencimento,
+          // Sempre dia 1: guardar 20/08 e 31/08 como competencias diferentes
+          // criaria dois "agostos" que nao somam juntos em lugar nenhum.
+          competencia: competencia ? `${competencia}-01` : null,
+          criado_por: userData?.user?.id,
+        };
       });
+      if (linhas.length > 0) await supabase.from("contas_pagar").insert(linhas);
     }
     setSalvando(false);
     onVoltar();
@@ -2095,19 +2214,21 @@ function Conferencia({ documento, onVoltar }) {
               A ordenação é estável: dentro de cada grupo, a sequência
               original da nota é mantida. */}
           {[...itens].sort((a, b) => {
-            const peso = (i) => recemAdicionados.has(i.id) ? 0 : (i.insumo_id ? 1 : 2);
+            const peso = (i) => recemAdicionados.has(i.id) ? 0 : (i.insumo_id || i.despesa_centro ? 1 : 2);
             return peso(a) - peso(b);
           }).map((item, idx) => {
-            const semInsumo = !item.insumo_id;
+            const naoInsumo = !!item.despesa_centro;
+            const semInsumo = !item.insumo_id && !naoInsumo;
             const insumoVinculadoRow = insumos.find((i) => i.id === item.insumo_id);
-            const unidadeDivergente = !semInsumo && insumoVinculadoRow && insumoVinculadoRow.unidade !== item.unidade;
+            const unidadeDivergente = !!item.insumo_id && insumoVinculadoRow && insumoVinculadoRow.unidade !== item.unidade;
             const motivo = motivoImplausivel(item);
             const alertaAtivo = motivo && !conferidos.has(item.id);
             const det = detectarEmbalagem(item.nome_lido);
             const temRegra = regras.some((r) => norm(r.nome_lido) === norm(item.nome_lido));
             return (
               <div key={item.id} style={{
-                background: alertaAtivo ? "#FCEBEB" : item.alerta_preco ? "#FCEBEB" : unidadeDivergente ? "#FBF3D9" : "#FFFFFF",
+                background: alertaAtivo ? "#FCEBEB" : item.alerta_preco ? "#FCEBEB" : unidadeDivergente ? "#FBF3D9"
+                  : (naoInsumo || naoInsumoAberto === item.id) ? "#F7F1E6" : "#FFFFFF",
                 borderTop: idx > 0 ? "1px solid #F0EBDD" : "none",
               }}>
                 <div style={linhaTabela}>
@@ -2123,10 +2244,19 @@ function Conferencia({ documento, onVoltar }) {
                     <button onClick={() => removerItem(item.id)} style={{ ...ghostIconBtn, color: "#C4432B" }} aria-label="Remover item"><Trash2 size={14} /></button>
                   </span>
                 </div>
-                {semInsumo && (
-                  <div style={{ fontSize: 11, color: "#8A6A0F", padding: "0 10px 8px" }}>→ insumo não reconhecido — escolher ou criar abaixo</div>
+                {semInsumo && naoInsumoAberto !== item.id && (
+                  <div style={{ fontSize: 11, color: "#8A6A0F", padding: "0 10px 8px" }}>→ insumo não reconhecido — escolher, criar ou marcar "não é insumo" abaixo</div>
                 )}
-                {!semInsumo && (
+                {naoInsumo && naoInsumoAberto !== item.id && (
+                  <div style={{ fontSize: 11, color: "#8A8778", padding: "0 10px 8px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <span>
+                      → não é insumo · {rotuloDestino(item.despesa_centro)} · {item.despesa_centro === "nao_produto" ? "só acerta o total" : "não entra no estoque"}
+                    </span>
+                    <button onClick={() => setNaoInsumoAberto(item.id)} style={{ ...linkBtn, fontSize: 11, color: "#8A8778", fontWeight: 400 }}>trocar</button>
+                    <button onClick={() => desfazerNaoInsumo(item)} style={{ ...linkBtn, fontSize: 11, color: "#C4432B", fontWeight: 400 }}>desfazer</button>
+                  </div>
+                )}
+                {!!item.insumo_id && (
                   <div style={{ fontSize: 11, color: item.alerta_preco ? "#791F1F" : "#8A8778", padding: "0 10px 8px" }}>
                     → vinculado a: {insumoVinculadoRow?.nome}
                   </div>
@@ -2249,7 +2379,7 @@ function Conferencia({ documento, onVoltar }) {
                 {/* Escondido enquanto o lápis está aberto: o formulário de
                     edição já tem o campo "Vinculado a", e os dois juntos
                     davam duas caixas pra mesma coisa na mesma tela. */}
-                {criarInsumoAberto !== item.id && editandoId !== item.id && (
+                {criarInsumoAberto !== item.id && editandoId !== item.id && !naoInsumo && naoInsumoAberto !== item.id && (
                   <div style={{
                     display: "flex", gap: 6, padding: "8px 10px", alignItems: "center",
                     borderTop: `1px dashed ${semInsumo ? "#E8D48A" : "#E8E2D2"}`,
@@ -2272,6 +2402,43 @@ function Conferencia({ documento, onVoltar }) {
                       <button onClick={() => { setCriarInsumoAberto(item.id); setNovoInsumoNome(item.nome_lido); setNovoInsumoUnidade(item.unidade); }}
                         style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Criar novo</button>
                     )}
+                    {semInsumo && (
+                      <button onClick={() => { setNaoInsumoAberto(item.id); setLembrarNaoInsumo(true); }}
+                        style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px", background: "#F7F1E6", borderColor: "#C9BFA6" }}>
+                        Não é insumo
+                      </button>
+                    )}
+                  </div>
+                )}
+                {/* Não é insumo: escolhe pra onde o valor vai. Ao clicar no
+                    destino já grava — é uma decisão de um toque, como o
+                    vínculo. "Lembrar" vem marcado porque desinfetante de
+                    hoje é desinfetante da próxima nota também. */}
+                {naoInsumoAberto === item.id && (
+                  <div style={{ padding: "8px 10px 10px", borderTop: "1px dashed #C9BFA6" }}>
+                    <div style={{ fontSize: 11, color: "#22231F", marginBottom: 7 }}>Não vai pro estoque. Entra como despesa de:</div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {DESTINOS_NAO_INSUMO.map((d) => {
+                        const ativo = item.despesa_centro === d.valor;
+                        return (
+                          <button key={d.valor} onClick={() => marcarNaoInsumo(item, d.valor)}
+                            style={{
+                              fontSize: 12, borderRadius: 999, padding: "5px 11px", cursor: "pointer", fontFamily: "inherit",
+                              border: ativo ? "1px solid #22231F" : "1px solid #E8E2D2",
+                              background: ativo ? "#22231F" : "#FFFFFF", color: ativo ? "#F6F1E7" : "#22231F",
+                            }}>
+                            {d.rotulo}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 9 }}>
+                      <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11, color: "#22231F", cursor: "pointer" }}>
+                        <input type="checkbox" checked={lembrarNaoInsumo} onChange={(e) => setLembrarNaoInsumo(e.target.checked)} />
+                        Lembrar: "{item.nome_lido}" nunca é insumo
+                      </label>
+                      <button onClick={() => setNaoInsumoAberto(null)} style={{ ...linkBtn, fontSize: 11, color: "#8A8778", fontWeight: 400 }}>cancelar</button>
+                    </div>
                   </div>
                 )}
                 {criarInsumoAberto === item.id && (
@@ -2392,6 +2559,48 @@ function Conferencia({ documento, onVoltar }) {
           {itens.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Nenhum item lido nesse documento.</div>}
         </div>
       )}
+      {/* Como a nota se reparte no financeiro. Só aparece quando tem item
+          "não é insumo" — nota só de insumo continua igual a antes, uma
+          linha só em Contas a Pagar. */}
+      {temNaoInsumo && !carregando && (() => {
+        const totalItens = round2(itens.reduce((s, it) => s + (it.quantidade || 0) * (it.preco_unitario || 0), 0));
+        const lido = Number(documento.valor_total) || 0;
+        const bate = !lido || Math.abs(lido - totalItens) < 0.05;
+        const linhaRep = { display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderTop: "1px solid #F0EBDD" };
+        return (
+          <div style={{ ...cardStyle, marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 6 }}>Como esta nota entra no financeiro</div>
+            {reparticao.lista.map((g, i) => (
+              <div key={g.centro} style={{ ...linhaRep, borderTop: i === 0 ? "none" : linhaRep.borderTop }}>
+                <span>{g.centro === "insumos" ? "Insumos → estoque e custo" : rotuloDestino(g.centro)}</span>
+                <span>{brl(g.valor)}</span>
+              </div>
+            ))}
+            {Math.abs(reparticao.semGrupo) > 0.004 && (
+              <div style={{ ...linhaRep, color: "#8A8778" }}>
+                <span>Não é produto (desconto, Pix…)</span>
+                <span>{brl(reparticao.semGrupo)}</span>
+              </div>
+            )}
+            {itens.some((it) => !it.insumo_id && !it.despesa_centro) && (
+              <div style={{ ...linhaRep, color: "#8A6A0F" }}>
+                <span>Ainda sem decisão</span>
+                <span>{brl(itens.filter((it) => !it.insumo_id && !it.despesa_centro).reduce((s, it) => s + (it.quantidade || 0) * (it.preco_unitario || 0), 0))}</span>
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, paddingTop: 7, marginTop: 3, borderTop: "1px solid #E8E2D2" }}>
+              <span>Total da nota</span>
+              <span>{brl(totalItens)}</span>
+            </div>
+            <div style={{ fontSize: 11, marginTop: 6, color: bate ? "#2F8F5B" : "#854F0B" }}>
+              {bate
+                ? `Vira ${reparticao.lista.length === 1 ? "1 linha" : `${reparticao.lista.length} linhas`} em Contas a Pagar, uma por destino.`
+                : `A soma dos itens não bate com o total lido da nota (${brl(lido)}) — confira se falta item ou desconto.`}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ------------------------------------------------------------
           A que mes esta despesa pertence
 
@@ -2486,7 +2695,7 @@ function Conferencia({ documento, onVoltar }) {
         Confirmar e lançar no estoque
       </button>
       {!todosVinculados && !carregando && itens.length > 0 && (
-        <div style={{ fontSize: 12, color: "#8A8778", marginTop: 8, textAlign: "center" }}>Vincule todos os itens a um insumo pra poder confirmar.</div>
+        <div style={{ fontSize: 12, color: "#8A8778", marginTop: 8, textAlign: "center" }}>Vincule cada item a um insumo, ou marque "não é insumo", pra poder confirmar.</div>
       )}
       {todosVinculados && algumaUnidadeDivergente && !carregando && (
         <div style={{ fontSize: 12, color: "#854F0B", marginTop: 8, textAlign: "center" }}>Corrija a unidade divergente (destacada em amarelo) pra poder confirmar.</div>

@@ -201,14 +201,37 @@ Deno.serve(async (req) => {
     // 4) Casa cada item com um insumo (nome exato -> sinônimo aprendido -> aproximação simples)
     const { data: todosInsumos } = await supabase.from("insumos").select("id, nome, custo_medio_atual");
     const { data: todosSinonimos } = await supabase.from("insumo_sinonimos").select("nome_variante, insumo_id");
+    // Nomes que alguém já marcou na conferência como "não é insumo"
+    // (desinfetante, desconto, compressor...). Se a tabela ainda não
+    // existir (migração 171 não rodada), volta vazio e nada muda.
+    const { data: todosNaoInsumo } = await supabase.from("nomes_nao_insumo").select("nome_variante, despesa_centro");
 
     const mapaSinonimos = new Map((todosSinonimos || []).map((s: any) => [normalizar(s.nome_variante), s.insumo_id]));
+    const mapaNaoInsumo = new Map((todosNaoInsumo || []).map((n: any) => [normalizar(n.nome_variante), n.despesa_centro]));
     const mapaExato = new Map((todosInsumos || []).map((i: any) => [normalizar(i.nome), i]));
 
     let valorTotal = 0;
     const linhasParaGravar = itensConsolidados.map((item) => {
       valorTotal += (item.quantidade || 0) * (item.preco_unitario || 0);
       const chave = normalizar(item.nome);
+
+      // "Não é insumo" vem antes de qualquer casamento: foi uma pessoa que
+      // decidiu, e a aproximação por nome logo abaixo não pode passar por
+      // cima disso e vincular o item num insumo qualquer.
+      if (mapaNaoInsumo.has(chave)) {
+        return {
+          documento_id,
+          nome_lido: item.nome,
+          quantidade: item.quantidade,
+          unidade: item.unidade,
+          preco_unitario: item.preco_unitario,
+          insumo_id: null,
+          despesa_centro: mapaNaoInsumo.get(chave),
+          alerta_preco: false,
+          preco_anterior: null,
+        };
+      }
+
       let insumo: any = mapaExato.get(chave);
       if (!insumo && mapaSinonimos.has(chave)) {
         insumo = (todosInsumos || []).find((i: any) => i.id === mapaSinonimos.get(chave));
