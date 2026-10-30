@@ -1,0 +1,123 @@
+﻿decisao;nome_lido;em_nota;vezes;valor;vincular_em;sugestao_do_banco;observacao
+VINCULAR;CERV HEINEKEN PURO MALT 4BUN;parada;1;287,52;Heineken 24x330ml;Heineken 24x330ml;Conferir se o insumo é o fardo ou a garrafa e acertar a quantidade.
+VINCULAR;REFRI COCA COLA LI 36UN;parada;1;280,08;Coca lata;Coca lata;Quantidade em latas.
+VINCULAR;QUEIJO MUSS PECA kg PRO;parada;2;263,75;Mussarela fatiada;Bacon peça;"Sugestão errada (Bacon peça). É mussarela em peça; se controlar peça separado, criar 'Mussarela peça'."
+VINCULAR;LIHG CALABRESA BOUA 2UN;parada;1;198,80;LINGUICA CALABRESA;LINGUICA CALABRESA;
+VINCULAR;REFRI COCA COLP LT 4BUN;parada;1;186,73;Coca lata;Coca lata;Quantidade em latas.
+VINCULAR;SACHET CATCHUP NET 40U;parada;1;179,96;CATCHUP SACHE;CATCHUP SACHE;
+VINCULAR;CERV HEINEKEN PURO MALT 24UN;parada;1;143,76;Heineken 24x330ml;Heineken 24x330ml;Conferir fardo × garrafa.
+VINCULAR;CERU HEINEKEN PURO MALT 230M;parada;1;135,47;Heineken 24x330ml;Heineken 24x330ml;Conferir fardo × garrafa.
+VINCULAR;Disk Gás;parada;1;130,00;Gás Divino;Gás Divino;
+VINCULAR;01 go;parada;1;130,00;Gás Divino;;Leitura de '01 gás', R$ 130 como os outros.
+VINCULAR;AGUA C/GAS CRYS LI 24UN;parada;2;121,92;Água com gás;Água com gás;
+VINCULAR;PASTELZINHO RECHEIO CAMARAO 300G;parada;1;119,50;Pastelzinho de camarão;Pastelzinho de camarão;
+VINCULAR;AGUA S/GAS CRYS LI 24UN;parada;2;83,52;Água sem gás;Água com gás;"Sugestão errada (com gás). Usar 'Água sem gás'; criar se não existir."
+VINCULAR;REFRI COCA COLA LT 18UN;parada;1;71,82;Coca lata;Coca lata;
+VINCULAR;FARINHA ROSCA YOKI;parada;1;69,99;Farinha de rosca;Farinha de rosca;
+VINCULAR;FAR ROSCA YUKI PC 5 XUN;parada;1;59,96;Farinha de rosca;Farinha de rosca;
+VINCULAR;BEB ENERG RED BULL L 3UN;parada;1;53,94;Red Bull 270ml;Red Bull 270ml;
+VINCULAR;BEB ENERG RED BULL L 6UN;parada;1;53,94;Red Bull 270ml;Red Bull 270ml;
+VINCULAR;AGUA S/GAS INDAIA 24UN;parada;1;47,76;Água sem gás;Água com gás;Sugestão errada (com gás).
+VINCULAR;AGUA M.SABORAKI C/GA;parada;1;40,56;Água com gás;Água com gás;
+VINCULAR;AGUA S/GAS MINEIRO 24UN;parada;1;38,16;Água sem gás;Água com gás;Sugestão errada (com gás).
+VINCULAR;REFRI COLA COLA LT 24UN;parada;1;33,38;Coca lata;;Leitura de 'Coca Cola'.
+VINCULAR;SACHET CATCHUP HEL 1UN;parada;1;32,99;CATCHUP SACHE;CATCHUP SACHE;
+VINCULAR;REQ CUL BISM CANTO;parada;1;29,98;REQ CREM COL BISN C 10N;MIST REQ PIRACANJUB 1UN;Requeijão culinário em bisnaga.
+VINCULAR;REP COL BISM CONIO 1UN;parada;1;29,98;REQ CREM COL BISN C 10N;REQ CREM COL BISN C 10N;Requeijão culinário em bisnaga.
+VINCULAR;RED CUL BISM CANIO 1UN;parada;1;27,98;REQ CREM COL BISN C 10N;Red Bull 270ml;Sugestão errada (Red Bull). É requeijão em bisnaga.
+VINCULAR;AGUA C/GAS INDAIA 12UH;parada;1;22,69;Água com gás;Água com gás;
+VINCULAR;AGUA S/GAS INDAIA;parada;1;19,08;Água sem gás;Água com gás;Sugestão errada (com gás).
+VINCULAR;LING CALABRESA SEARA 1UN;parada;1;18,79;LINGUICA CALABRESA;LINGUICA CALABRESA;
+VINCULAR;SUCO AGUA S/GAS MINEIRO 12UH;parada;1;17,88;Água sem gás;Água com gás;Sugestão errada (com gás).
+VINCULAR;ESPONJA LISH LV4PG3 2UN;parada;1;9,98;ESPONJA TAMPANO CJ 1UN;ESPONJA TAMPANO CJ 1UN;Ou marcar como limpeza.
+VINCULAR;CANI./DOS SHAKE TRAD. (20X100U) 21CMX8MM;parada;1;9,80;CANUDOS SHAKE TRAD. (20X100U) 21CMX8MM;CANUDOS SHAKE TRAD. (20X100U) 21CMX8MM;
+VINCULAR;CERU HEINEKEN PURO MALTE 1UN;parada;1;5,89;Heineken 24x330ml;Heineken 24x330ml;Conferir fardo × garrafa.
+VINCULAR;PIMENTA CHEIRO GRANEL U 0.300KG;parada;1;5,10;Pimenta de cheiro;Pimenta de cheiro;
+VINCULAR;AGUA S/GAS CRYS LTR 1UN;parada;1;2,39;Água sem gás;Água com gás;Sugestão errada (com gás).
+VINCULAR;SACOLA BIO COSTA AT 10N;parada;2;0,98;SACOLA COSTA;SACOLA COSTA;
+VINCULAR E AJUSTAR;BATATA 7MM 2,5KG CO FAST FOOD MCCAIN;parada;1;759,60;Batata frita;Batata frita;Insumo em kg: cada pacote = 2,5 kg. Quantidade = pacotes × 2,5.
+VINCULAR E AJUSTAR;Brioche (01 unid);parada;1;400,00;Pão brioche;Pão brioche;Veio 1 unidade por R$ 400. Corrigir a quantidade para o número de pães.
+VINCULAR E AJUSTAR;OLEO SOJA PET 900M 20UN;parada;3;388,60;Óleo de soja;Óleo de soja;Insumo em litro: 20 × 0,9 = 18 l por caixa.
+VINCULAR E AJUSTAR;OLEO ABOBORA 172 1UN;parada;1;239,99;Óleo de algodão;Óleo de soja;Mesmo preço do óleo de algodão Liza (R$ 239,99): leitura errada. Insumo em litro.
+VINCULAR E AJUSTAR;OLEO ALGODAO LIZA 1 1UN;parada;1;239,99;Óleo de algodão;Óleo de algodão;Insumo em litro: informar os litros da embalagem.
+VINCULAR E AJUSTAR;OLEO ALGODAN 117M;parada;1;205,90;Óleo de algodão;Óleo de soja;Sugestão errada (soja). É algodão. Insumo em litro.
+VINCULAR E AJUSTAR;Caixa com 360 ovos brancos médios;parada;1;180,00;Ovos;Ovos;Quantidade = 360 (ovo custa por unidade desde a 156).
+VINCULAR E AJUSTAR;BATATA CONG MCCAIN 1UN;parada;2;143,97;Batata frita;Batata palha;Sugestão errada (Batata palha). Informar os kg do pacote.
+VINCULAR E AJUSTAR;LARANJA PERA UNIAO Kg;parada;1;37,83;Laranja;MARALUJA UNIAO kg;Sugestão errada (maracujá). Laranja é medida em litro de suco (160): converter.
+VINCULAR E AJUSTAR;MEL SOL 450G SILU;parada;1;27,69;Mel;Mel;Insumo em litro: ~0,33 l por pote de 450 g.
+VINCULAR E AJUSTAR;SAL REFINADO LEBRE;parada;1;14,99;Sal;Sal;Insumo em kg: 1 kg por pacote.
+CRIAR INSUMO;CREME DE AVEIA COM CACAU 1,05KG;parada;1;201,00;Creme de aveia com cacau;Creme de leite;Sugestão errada (creme de leite).
+CRIAR INSUMO;BOMBOM LOLLO NESTL 30UN;parada;1;149,70;Bombom Lollo;Bombom Oreo;Sugestão errada (Bombom Oreo).
+CRIAR INSUMO;CREME DE AVEIA COM CACAU 3KG;parada;1;132,00;Creme de aveia com cacau;Creme de leite;Mesmo insumo do de 1,05 kg.
+CRIAR INSUMO;DOCE PASTOSO C LEIT 1UN;parada;1;99,99;Doce de leite;;"Só se for usado em receita; se for revenda, criar o insumo de revenda."
+CRIAR INSUMO;CHOC NESTLE KITKAT 24UN;parada;1;95,76;KitKat;;Revenda.
+CRIAR INSUMO;CP PP 330ML LISO COPOZAM - 20X50U;parada;1;79,00;Copo 330ml;;Caixa com 1.000 copos (20×50). Quantidade em copos.
+CRIAR INSUMO;Queijo Nat C Mofo A;parada;3;59,87;Queijo azul;Queijo ralado;Queijo de mofo azul, em kg. Sugestão errada (ralado).
+CRIAR INSUMO;EMBUTIR HAMBURGER CONGELADO HAMBURGUER BOVINO TRADICIONAL 90G 5X3 SOLIDA;parada;1;51,48;Hambúrguer congelado 90g;Hamburguer 180g;Sugestão errada (180 g).
+CRIAR INSUMO;BALA ARCOR BUTTER I 2UH;parada;1;49,98;Bala butter toffee;;Revenda ou brinde.
+CRIAR INSUMO;S01 - 30X40 7PP FD (100DL);parada;1;49,90;Saco 30x40;;Embalagem.
+CRIAR INSUMO;301 - 30X40 2PP FD (1000L);parada;1;49,90;Saco 30x40;;Mesmo item da linha anterior.
+CRIAR INSUMO;PT 104 FUNDO   8CM APETITE   6X100U;parada;1;39,00;Pote 104 8cm;;Embalagem, 600 por caixa.
+CRIAR INSUMO;GELATINA PO DR OETK 3UN;parada;1;27,54;Gelatina em pó;;Só se for usada em receita.
+CRIAR INSUMO;MANT ARCOR BUTTER 10N;parada;1;24,99;Bala butter toffee;;Mesmo da 'BALA ARCOR BUTTER'.
+CRIAR INSUMO;QUEIJO AZUL FRAC TIROLE 0,172KG;parada;1;22,10;Queijo azul;QUEIJO COALHO;Sugestão errada (coalho).
+CRIAR INSUMO;QUEIJO AZUL FRAC TIROLE 0,174KG;parada;1;22,10;Queijo azul;Queijo ralado;Sugestão errada (ralado).
+CRIAR INSUMO;QUEIJO AZUL FRAC TIROLE 0,170KG;parada;1;22,10;Queijo azul;QUEIJO COALHO;Sugestão errada (coalho).
+CRIAR INSUMO;TP PT 100/102/104 - 8CM APETITE - 6X100U;parada;1;20,90;Tampa pote 8cm;;Embalagem, 600 por caixa.
+CRIAR INSUMO;FAR TRIGO FARINHA PL 2UN;parada;1;7,18;Farinha de trigo;farinha biju;Sugestão errada (farinha biju).
+CRIAR INSUMO;Cheiro Vd Imperio Hi;parada;1;5,98;Cheiro verde;Pimenta de cheiro;Sugestão errada (pimenta de cheiro).
+CONFERIR NA NOTA;TEMP RIOS PC 30G PT 9UN;parada;1;727,38;;;R$ 727 para tempero de 30 g não fecha. Ver na foto da nota o que é e a quantidade.
+CONFERIR NA NOTA;Picado de 200;parada;1;600,00;;;R$ 600, Casa do Espeteiro. Provavelmente espeto/carne picada de 200 g. Ver qual insumo de espeto usar ou criar.
+CONFERIR NA NOTA;CERV STELLA ARTOIS 24UN;parada;1;179,76;stella artois pure gold;stella artois pure gold;Stella comum e Pure Gold são produtos diferentes. Ver na nota.
+CONFERIR NA NOTA;HALAM SEM PELE;parada;1;168,00;;Bacon sem pele;Leitura ruim (salame? bacon?). Sugestão 'Bacon sem pele' é em kg. Ver na nota.
+CONFERIR NA NOTA;BOLINHO DE BACALHAU - 80G;parada;1;129,90;BOLINHO DE BACALHAU 300G;BOLINHO DE BACALHAU 300G;80 g × 300 g: ver na nota se é o mesmo pacote.
+CONFERIR NA NOTA;SC de 20 KL;parada;1;100,00;;;Saco de 20 kg de quê? R$ 100. Ver na nota (carvão? farinha?).
+CONFERIR NA NOTA;REFRI AHT GUARANA 24UN;parada;1;90,96;Guaraná zero;Guaraná zero;"Antarctica normal ou zero? Ver na nota; se normal, criar/usar 'Guaraná lata'."
+CONFERIR NA NOTA;GUARANAPO MAXIM P 10UN;parada;1;80,70;;;Guaraná de outra marca? Ver na nota.
+CONFERIR NA NOTA;BEB ENERG MONSTER L 6UN;parada;1;62,94;monster zero;monster zero;Monster comum ou zero? Ver na nota.
+CONFERIR NA NOTA;TEMP RIOS PC 30G PI 7UN;parada;1;62,93;;;Mesmo produto do 'TEMP RIOS 9UN'. Ver na nota.
+CONFERIR NA NOTA;BEB ENERG MONSTER LT 6UN;parada;1;59,94;monster zero;monster zero;Monster comum ou zero? Ver na nota.
+CONFERIR NA NOTA;SC. laranja;parada;1;50,00;;SUCO NATURAL LARANJA BACURI 5LT;Saco de laranja? R$ 50. Se for laranja, usar o insumo Laranja (em litro de suco desde a 160).
+CONFERIR NA NOTA;REFRI ANT GUARANA 12UN;parada;1;45,48;Guaraná zero;Guaraná zero;Normal ou zero? Ver na nota.
+CONFERIR NA NOTA;AGUA M.INDAIA PET;parada;1;38,16;;Água com gás;Com ou sem gás? Ver na nota.
+CONFERIR NA NOTA;AGUA MIN CRYSTAL;parada;1;26,41;;Água com gás;Com ou sem gás? Ver na nota.
+CONFERIR NA NOTA;PACOCA 750 GRAMAS;parada;1;21,00;Adicional de paçoca;Adicional de paçoca;"'Adicional de paçoca' parece prato, não insumo. Conferir; senão criar 'Paçoca'."
+CONFERIR NA NOTA;UVA PTA SELETA UNIA SUN;parada;1;20,97;;;Uva passa? Só se for usada em receita.
+CONFERIR NA NOTA;BASE CULINARIA TRIA;parada;1;10,29;;;Creme culinário? Ver na nota.
+CONFERIR NA NOTA;REQ WHEY VERDE CAMP;parada;1;8,99;MIST REQ PIRACANJUB 1UN;MIST REQ PIRACANJUB 1UN;Requeijão whey Verde Campo ≠ Piracanjuba. Criar se for diferente.
+CONFERIR NA NOTA;SALADA SIM COSTA 21 1UN;parada;1;8,94;;SACOLA COSTA;Leitura ruim. Sugestão errada (sacola).
+NÃO É INSUMO;RESFRIADO BOVINO - COMPRESSOR TECUMSEH LINHA 1 120P-4 KBTU/H BAIXA 220V MONO;parada;1;1854,16;;COMPRESSOR EMBRACO ASPERA 1/2HP 220V 60HZ MEDIA R404A INLET;Compressor de geladeira (Frigelar). É manutenção/equipamento, não vai para estoque.
+NÃO É INSUMO;Ração 30 KG;parada;1;130,00;;;Ração não é insumo do cardápio.
+NÃO É INSUMO;Transferência Pix;parada;1;110,00;;abafador inox para hambúrguer;ATENÇÃO: existe sinônimo errado ensinando Pix = 'abafador inox'. Não aceitar.
+NÃO É INSUMO;WINDOW MARKER BRANCO 519;parada;1;39,60;;Lacta branco;Caneta para vidro.
+NÃO É INSUMO;WINDOW MARKER BRANCO 51#;parada;1;39,60;;Lacta branco;Caneta para vidro.
+NÃO É INSUMO;CORTADOR LEGUMES IM 1UN;parada;1;29,99;;CORTADOR DE LEGUMES;Utensílio. Já existe insumo 'CORTADOR DE LEGUMES', mas utensílio não deveria ser insumo.
+NÃO É INSUMO;PAPEL HIB.PERSONAL;parada;1;29,89;;Papel filme;Papel higiênico: limpeza.
+NÃO É INSUMO;FITA FIXA FORTE SCO 1UN;parada;1;24,99;;;Fita adesiva.
+NÃO É INSUMO;FITA ASA DO BRASIL 1UN;parada;1;19,99;;TABUA PLAST ASA DD;Fita. Sugestão errada (tábua).
+NÃO É INSUMO;PAPEL TOALHA 20X20CM INTERFOLHAS QUANTUM ESPECIAL BLACI;parada;1;19,90;;PAPEL TOALHA BOBINA;Limpeza. Se quiser controlar, 'Papel toalha interfolha' (é diferente da bobina).
+NÃO É INSUMO;PA P/LIXO CONDOR;parada;1;17,99;;Saco de lixo 50l;Pá de lixo. Sugestão errada (saco de lixo).
+NÃO É INSUMO;DESINF PROEZA GL 5L 1UN;parada;1;12,99;;;Limpeza.
+NÃO É INSUMO;DESINF PROEZA GL 5L;parada;1;12,99;;;Limpeza.
+NÃO É INSUMO;AGUA SANITARIA PROE;parada;1;11,99;;Água com gás;Limpeza. Sugestão errada (água com gás).
+NÃO É INSUMO;FITA VEDA ROSCA ASA 1UN;parada;2;9,98;;Farinha de rosca;Material de obra. Sugestão errada (farinha de rosca).
+NÃO É INSUMO;PEIJAO CARIOCA KICA 1UN;parada;1;8,39;;;Feijão: consumo da equipe, a não ser que esteja no cardápio.
+NÃO É INSUMO;Pao Frances Kg;parada;1;6,93;;Pão brioche;Pão francês: provavelmente consumo da equipe. Sugestão errada (brioche).
+NÃO É INSUMO;RECIBO COMERCIAL S/CARBONO PEQUENO 50FLS;parada;1;6,30;;Bloco de recibo;Material de escritório (existe 'Bloco de recibo' como insumo, mas não deveria).
+NÃO É INSUMO;RECIBO COMERCIAL S/CANHOTO PEQUENO 50FLS;parada;1;6,30;;Bloco de recibo;Material de escritório.
+NÃO É INSUMO;DESTUE PROEZO FR 2L 1UN;parada;1;5,99;;;Limpeza (desinfetante Proeza).
+NÃO É INSUMO;SALSINHA mui DUO 10 IFC;parada;1;0,00;;;R$ 0,00. Sem valor, não muda nada.
+NÃO É INSUMO;DESCONTO;parada;1;-1,94;;;Desconto da nota, não é produto.
+VINCULAR;ISCA DE FRANGO EMPANADA 450 G;confirmada;2;719,20;Isca de frango empanada 450g;Isca de frango empanada 450g;Nota já confirmada.
+VINCULAR;BOLINHO DE COSTELA DESFIADA RECHEADO COM QUEIJO 350G;confirmada;2;572,50;Bolinho de costela c/ queijo 350g;Bolinho de costela c/ queijo 350g;Nota já confirmada.
+VINCULAR;Bife de filé mignon;confirmada;1;550,00;Bife filé mignon;Bife filé mignon;Nota já confirmada.
+VINCULAR;MUSSARELA FATIADA;confirmada;1;473,24;Mussarela fatiada;Mussarela fatiada;Nota já confirmada.
+VINCULAR;MUSSARELA;confirmada;1;467,95;Mussarela fatiada;Mussarela fatiada;Nota já confirmada.
+VINCULAR;DISQUINHO DE COSTELA E BACON COM CHEDDAR 350G;confirmada;2;459,80;Disquinho de costela c/ cheddar e bacon 350g;Disquinho de costela c/ cheddar e bacon 350g;Nota já confirmada.
+VINCULAR;BATATA 7MM D.SEC FRIT FAST FOOD MCCAIN II;confirmada;1;379,80;Batata frita;Batata palha;Sugestão errada (palha). Nota já confirmada.
+VINCULAR;KIBE RECH C/ REQUEIJAO CREMOSO 350G;confirmada;2;245,70;Kibe recheado com requeijão cremoso;Kibe recheado com requeijão cremoso;Nota já confirmada.
+VINCULAR;APRESUNTADO;confirmada;1;23,54;APRESUNTADO FATIADO;APRESUNTADO FATIADO;Nota já confirmada.
+VINCULAR;ACUCAR TAI CRISTAL;confirmada;1;11,30;Açúcar;Açúcar;Nota já confirmada.
+VINCULAR E AJUSTAR;Bife de frango;confirmada;4;1000,00;Frango grelhado 120g;Frango grelhado 120g;Já está em nota confirmada. Insumo em un, nota em kg: converter.
+VINCULAR E AJUSTAR;COBERTURA CHOCOLATE MARVI;confirmada;1;23,00;Cobertura chocolate;Cobertura chocolate;Nota já confirmada. Insumo em litro.
+CRIAR INSUMO;CP PP LISO 550ML - COPOZAN 20X50U;confirmada;1;270,00;Copo 550ml;;Nota já confirmada. Caixa com 1.000 copos.
