@@ -165,12 +165,16 @@ function ConexaoKong({ editar }) {
   };
 
   const desconectar = async () => {
-    if (!window.confirm("Voltar o agente para o número de teste? O WhatsApp do Kong continua funcionando normal no celular.")) return;
+    // "Número oficial" = o da API da Meta, o que a Edge Function usa quando
+    // a coexistência não está ligada. Até 30/10/2026 estes textos diziam
+    // "número de teste", herança de antes de 22/09, quando era mesmo o de
+    // teste da Meta — e confundiam quem lia achando que o agente estava fora.
+    if (!window.confirm("Voltar o agente para o número oficial (API)? O WhatsApp do Kong continua funcionando normal no celular.")) return;
     setTrabalhando(true); setErro("");
     const { error } = await supabase.functions.invoke("whatsapp-agente", { body: { acao: "desconectar" } });
     setTrabalhando(false);
     if (error) setErro(await lerErroDaFuncao(error));
-    else { setMsg("Voltou para o número de teste."); carregar(); }
+    else { setMsg("O agente voltou para o número oficial (API)."); carregar(); }
   };
 
   if (st === null) return null; // migração 129 ainda não rodou
@@ -193,7 +197,7 @@ function ConexaoKong({ editar }) {
           <div style={{ fontSize: 12, color: "#8A8778" }}>
             {ativo
               ? `${numeroFmt}${st.nome ? ` · ${st.nome}` : ""}. App do celular e agente no mesmo número; ligações continuam no app.`
-              : "Conecte o número que já está no app WhatsApp Business. Nada é apagado; o agente está no número de teste."}
+              : "Conecte o número que já está no app WhatsApp Business. Nada é apagado; enquanto isso, o agente continua respondendo pelo número oficial (API)."}
           </div>
         </div>
         {editar && !ativo && (
@@ -202,7 +206,7 @@ function ConexaoKong({ editar }) {
           </button>
         )}
         {editar && ativo && (
-          <button onClick={desconectar} disabled={trabalhando} style={btnSecondary}>Voltar para o número de teste</button>
+          <button onClick={desconectar} disabled={trabalhando} style={btnSecondary}>Voltar para o número oficial</button>
         )}
       </div>
       {!ativo && editar && (
