@@ -1634,8 +1634,12 @@ function Conferencia({ documento, onVoltar }) {
   const [prazoAprendido, setPrazoAprendido] = useState(null); // { dias, de }
   const [erro, setErro] = useState("");
   const [editandoId, setEditandoId] = useState(null);
-  const [formEdicao, setFormEdicao] = useState({ nome_lido: "", quantidade: 0, unidade: "un", preco_unitario: 0, insumo_id: "" });
+  // tipo: "insumo" (vai pro estoque) ou "nao_insumo" (vai pra despesa_centro).
+  // nome_original guarda o que estava escrito ao abrir, pra mostrar o que a
+  // nota dizia enquanto a pessoa corrige o nome.
+  const [formEdicao, setFormEdicao] = useState({ nome_lido: "", nome_original: "", quantidade: 0, unidade: "un", preco_unitario: 0, insumo_id: "", tipo: "insumo", despesa_centro: "" });
   const [calcPacotes, setCalcPacotes] = useState({ qtd: "", tamanho: "", unidade: "g" });
+  const [avisoCalc, setAvisoCalc] = useState("");
   const [renomeandoInsumo, setRenomeandoInsumo] = useState(false);
   const [nomeInsumoInput, setNomeInsumoInput] = useState("");
   const [criarInsumoAberto, setCriarInsumoAberto] = useState(null); // id do item pedindo criação de insumo
@@ -1789,6 +1793,17 @@ function Conferencia({ documento, onVoltar }) {
     return saida;
   };
 
+  // Já lembrado (índice único em lower(nome)) atualiza o destino;
+  // não dá pra usar upsert porque o índice é de expressão.
+  const lembrarNomeNaoInsumo = async (nome, centro) => {
+    if (!nome) return;
+    const { error: errIns } = await supabase.from("nomes_nao_insumo")
+      .insert({ nome_variante: nome, despesa_centro: centro });
+    if (errIns && (errIns.code === "23505" || /duplicate key/i.test(errIns.message || ""))) {
+      await supabase.from("nomes_nao_insumo").update({ despesa_centro: centro }).ilike("nome_variante", nome);
+    }
+  };
+
   const marcarNaoInsumo = async (item, centro) => {
     setErro("");
     const { error } = await supabase.from("itens_documento_compra")
@@ -1799,16 +1814,7 @@ function Conferencia({ documento, onVoltar }) {
         : error.message);
       return;
     }
-    if (lembrarNaoInsumo) {
-      const nome = String(item.nome_lido || "").trim();
-      // Já lembrado (índice único em lower(nome)) atualiza o destino;
-      // não dá pra usar upsert porque o índice é de expressão.
-      const { error: errIns } = await supabase.from("nomes_nao_insumo")
-        .insert({ nome_variante: nome, despesa_centro: centro });
-      if (errIns && (errIns.code === "23505" || /duplicate key/i.test(errIns.message || ""))) {
-        await supabase.from("nomes_nao_insumo").update({ despesa_centro: centro }).ilike("nome_variante", nome);
-      }
-    }
+    if (lembrarNaoInsumo) await lembrarNomeNaoInsumo(String(item.nome_lido || "").trim(), centro);
     setItens((prev) => prev.map((it) => (it.id === item.id ? { ...it, despesa_centro: centro, insumo_id: null } : it)));
     setNaoInsumoAberto(null);
   };
@@ -1915,12 +1921,24 @@ function Conferencia({ documento, onVoltar }) {
   };
   const abrirEdicao = (item) => {
     setEditandoId(item.id);
-    setFormEdicao({ nome_lido: item.nome_lido, quantidade: item.quantidade, unidade: item.unidade, preco_unitario: item.preco_unitario, insumo_id: item.insumo_id || "" });
+    setFormEdicao({
+      nome_lido: item.nome_lido, nome_original: item.nome_lido,
+      quantidade: item.quantidade, unidade: item.unidade, preco_unitario: item.preco_unitario,
+      insumo_id: item.insumo_id || "",
+      tipo: item.despesa_centro ? "nao_insumo" : "insumo",
+      despesa_centro: item.despesa_centro || "",
+    });
     setCalcPacotes({ qtd: "", tamanho: "", unidade: item.unidade || "g" });
+    setAvisoCalc("");
+    setNaoInsumoAberto(null);
   };
+  // Com o quadro vazio a conta dava 0 e zerava a quantidade do item sem
+  // ninguém perceber — o item sumia do total da nota.
   const aplicarCalculadoraPacotes = () => {
     const qtd = parseFloat(calcPacotes.qtd) || 0;
     const tamanho = parseFloat(calcPacotes.tamanho) || 0;
+    if (qtd <= 0 || tamanho <= 0) { setAvisoCalc("Preencha pacotes e tamanho antes de usar o valor."); return; }
+    setAvisoCalc("");
     setFormEdicao((f) => ({ ...f, quantidade: round2(qtd * tamanho), unidade: calcPacotes.unidade }));
   };
   const renomearInsumoVinculado = async () => {
@@ -1931,16 +1949,30 @@ function Conferencia({ documento, onVoltar }) {
     setInsumos((prev) => prev.map((i) => i.id === formEdicao.insumo_id ? { ...i, nome } : i).sort((a, b) => a.nome.localeCompare(b.nome)));
     setRenomeandoInsumo(false);
   };
+  // Nome, valores e destino (insumo ou "não é insumo") num salvar só.
   const salvarEdicao = async () => {
+    setErro("");
+    const quantidade = parseFloat(formEdicao.quantidade) || 0;
+    const naoInsumo = formEdicao.tipo === "nao_insumo";
+    if (naoInsumo && !formEdicao.despesa_centro) { setErro("Escolha pra onde vai o valor deste item (Consertos, Limpeza…)."); return; }
+    if (quantidade <= 0 && !window.confirm("A quantidade está 0: o item fica com R$ 0 e sai do total da nota. Salvar assim mesmo?")) return;
+    const nome = String(formEdicao.nome_lido || "").trim();
     const { error } = await supabase.from("itens_documento_compra").update({
-      nome_lido: formEdicao.nome_lido,
-      quantidade: parseFloat(formEdicao.quantidade) || 0,
+      nome_lido: nome,
+      quantidade,
       unidade: formEdicao.unidade,
       preco_unitario: parseFloat(formEdicao.preco_unitario) || 0,
-      insumo_id: formEdicao.insumo_id || null,
-      ...(formEdicao.insumo_id ? limparNaoInsumo(editandoId) : {}),
+      ...(naoInsumo
+        ? { insumo_id: null, despesa_centro: formEdicao.despesa_centro }
+        : { insumo_id: formEdicao.insumo_id || null, ...limparNaoInsumo(editandoId) }),
     }).eq("id", editandoId).select().single();
-    if (error) { setErro(error.message); return; }
+    if (error) {
+      setErro(/despesa_centro/.test(error.message || "")
+        ? "Falta rodar a migração 171 no Supabase antes de usar \"não é insumo\"."
+        : error.message);
+      return;
+    }
+    if (naoInsumo && lembrarNaoInsumo) await lembrarNomeNaoInsumo(nome, formEdicao.despesa_centro);
     carregar();
     setEditandoId(null);
   };
@@ -2458,6 +2490,9 @@ function Conferencia({ documento, onVoltar }) {
                       <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Descrição</label>
                       <input value={formEdicao.nome_lido} onChange={(e) => setFormEdicao((f) => ({ ...f, nome_lido: e.target.value }))}
                         style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+                      {String(formEdicao.nome_lido || "").trim() !== String(formEdicao.nome_original || "").trim() && (
+                        <div style={{ fontSize: 10, color: "#8A8778", marginTop: 3 }}>Lido na nota: {formEdicao.nome_original}</div>
+                      )}
                     </div>
                     <div style={{ border: "1px dashed #37A0E5", borderRadius: 8, padding: 10 }}>
                       <div style={{ fontSize: 11, color: "#185FA5", marginBottom: 8 }}>Veio em pacotes/potes? Calcule a quantidade total aqui</div>
@@ -2485,6 +2520,7 @@ function Conferencia({ documento, onVoltar }) {
                         </span>
                         <button onClick={aplicarCalculadoraPacotes} style={{ ...btnSecondary, fontSize: 11, padding: "4px 10px" }}>Usar esse valor</button>
                       </div>
+                      {avisoCalc && <div style={{ fontSize: 11, color: "#854F0B", marginTop: 4 }}>{avisoCalc}</div>}
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <div style={{ flex: 1 }}>
@@ -2520,36 +2556,91 @@ function Conferencia({ documento, onVoltar }) {
                       </div>
                     </div>
                     <div style={{ fontSize: 10, color: "#8A8778" }}>Preenche um dos dois — o outro calcula sozinho (baseado na quantidade).</div>
+                    {/* O que é este item: insumo (busca de sempre) ou "não é
+                        insumo" (destino da despesa). Fica tudo no mesmo
+                        formulário pra corrigir nome e destino num salvar só. */}
                     <div>
-                      <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Vinculado a</label>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <BuscaInsumo
-                          insumos={insumos}
-                          valor={formEdicao.insumo_id}
-                          alerta={!formEdicao.insumo_id}
-                          onEscolher={(id) => setFormEdicao((f) => ({ ...f, insumo_id: id || "" }))}
-                          onCriar={(texto) => {
-                            setCriarInsumoAberto(item.id);
-                            setNovoInsumoNome(texto);
-                            setNovoInsumoUnidade(formEdicao.unidade);
-                          }}
-                        />
-                        {formEdicao.insumo_id && !renomeandoInsumo && (
-                          <button onClick={() => { setNomeInsumoInput(insumos.find((i) => i.id === formEdicao.insumo_id)?.nome || ""); setRenomeandoInsumo(true); }}
-                            style={ghostIconBtn} aria-label="Renomear insumo vinculado" title="Renomear esse insumo (corrige em todo lugar que usa ele)">
-                            <Pencil size={14} />
-                          </button>
-                        )}
-                        <button onClick={salvarEdicao} style={{ ...ghostIconBtn, color: "#2F8F5B" }} aria-label="Confirmar edição"><Check size={16} /></button>
+                      <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>O que é este item?</label>
+                      <div style={{ display: "flex", border: "1px solid #E8E2D2", borderRadius: 6, overflow: "hidden", marginBottom: 8 }}>
+                        {[
+                          { valor: "insumo", rotulo: "Insumo · entra no estoque" },
+                          { valor: "nao_insumo", rotulo: "Não é insumo" },
+                        ].map((op) => {
+                          const ativo = formEdicao.tipo === op.valor;
+                          return (
+                            <button key={op.valor} onClick={() => setFormEdicao((f) => ({ ...f, tipo: op.valor }))}
+                              style={{
+                                flex: 1, padding: "7px 8px", fontSize: 12, cursor: "pointer", fontFamily: "inherit", border: "none",
+                                background: ativo ? (op.valor === "insumo" ? "#E7F2EA" : "#F7F1E6") : "#FFFFFF",
+                                color: ativo ? (op.valor === "insumo" ? "#2F6B45" : "#6B4E12") : "#8A8778",
+                                fontWeight: ativo ? 700 : 400,
+                              }}>
+                              {op.rotulo}
+                            </button>
+                          );
+                        })}
                       </div>
-                      {renomeandoInsumo && (
-                        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                          <input value={nomeInsumoInput} onChange={(e) => setNomeInsumoInput(e.target.value)} autoFocus
-                            onKeyDown={(e) => e.key === "Enter" && renomearInsumoVinculado()}
-                            placeholder="Novo nome do insumo" style={{ flex: 1, padding: "5px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 12 }} />
-                          <button onClick={renomearInsumoVinculado} style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Salvar nome</button>
-                        </div>
+                      {formEdicao.tipo === "insumo" ? (
+                        <>
+                          <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Vinculado a</label>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <BuscaInsumo
+                              insumos={insumos}
+                              valor={formEdicao.insumo_id}
+                              alerta={!formEdicao.insumo_id}
+                              onEscolher={(id) => setFormEdicao((f) => ({ ...f, insumo_id: id || "" }))}
+                              onCriar={(texto) => {
+                                setCriarInsumoAberto(item.id);
+                                setNovoInsumoNome(texto);
+                                setNovoInsumoUnidade(formEdicao.unidade);
+                              }}
+                            />
+                            {formEdicao.insumo_id && !renomeandoInsumo && (
+                              <button onClick={() => { setNomeInsumoInput(insumos.find((i) => i.id === formEdicao.insumo_id)?.nome || ""); setRenomeandoInsumo(true); }}
+                                style={ghostIconBtn} aria-label="Renomear insumo vinculado" title="Renomear esse insumo (corrige em todo lugar que usa ele)">
+                                <Pencil size={14} />
+                              </button>
+                            )}
+                          </div>
+                          {renomeandoInsumo && (
+                            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                              <input value={nomeInsumoInput} onChange={(e) => setNomeInsumoInput(e.target.value)} autoFocus
+                                onKeyDown={(e) => e.key === "Enter" && renomearInsumoVinculado()}
+                                placeholder="Novo nome do insumo" style={{ flex: 1, padding: "5px 8px", borderRadius: 6, border: "1px solid #37A0E5", fontSize: 12 }} />
+                              <button onClick={renomearInsumoVinculado} style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Salvar nome</button>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: 11, color: "#22231F", marginBottom: 7 }}>Não vai pro estoque. Entra como despesa de:</div>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {DESTINOS_NAO_INSUMO.map((d) => {
+                              const ativo = formEdicao.despesa_centro === d.valor;
+                              return (
+                                <button key={d.valor} onClick={() => setFormEdicao((f) => ({ ...f, despesa_centro: d.valor }))}
+                                  style={{
+                                    fontSize: 12, borderRadius: 999, padding: "5px 11px", cursor: "pointer", fontFamily: "inherit",
+                                    border: ativo ? "1px solid #22231F" : "1px solid #E8E2D2",
+                                    background: ativo ? "#22231F" : "#FFFFFF", color: ativo ? "#F6F1E7" : "#22231F",
+                                  }}>
+                                  {d.rotulo}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11, color: "#22231F", cursor: "pointer", marginTop: 9 }}>
+                            <input type="checkbox" checked={lembrarNaoInsumo} onChange={(e) => setLembrarNaoInsumo(e.target.checked)} />
+                            Lembrar: quando "{String(formEdicao.nome_lido || "").trim() || "este item"}" vier de novo, já marcar assim
+                          </label>
+                        </>
                       )}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, borderTop: "1px solid #F0EBDD", paddingTop: 10 }}>
+                      <button onClick={() => { setEditandoId(null); setRenomeandoInsumo(false); }} style={{ ...btnSecondary, fontSize: 12, padding: "7px 14px" }}>Cancelar</button>
+                      <button onClick={salvarEdicao} style={{ ...btnPrimary, fontSize: 12.5, padding: "7px 16px", display: "flex", alignItems: "center", gap: 6 }}>
+                        <Check size={14} /> Salvar item
+                      </button>
                     </div>
                   </div>
                 )}
