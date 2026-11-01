@@ -104,6 +104,37 @@ function margemPeloPreco(custo, preco) {
   return ((preco - custo) / preco) * 100;
 }
 
+// Preço nos aplicativos (migração 176). Mesma regra da margem: os dois
+// percentuais valem sobre o preço FINAL no app, então a conta divide em vez
+// de multiplicar. 20% de margem sobre R$ 10,00 dá R$ 12,50, não R$ 12,00.
+//
+//     preço no app = preço / (1 − margem − entrega)
+//
+// Adicional não soma entrega: ninguém paga entrega por um adicional de
+// R$ 1,99, ele vem junto com o lanche.
+const CANAIS_APP = [
+  { chave: "ifood", label: "iFood" },
+  { chave: "keeta", label: "Keeta" },
+];
+// Só até a 176 rodar. Depois disso os valores vêm de `precos_canais`.
+const CANAIS_PADRAO = {
+  ifood: { margem_pct: 20, entrega_pct: 0 },
+  keeta: { margem_pct: 20, entrega_pct: 0 },
+};
+const LIMITE_CANAL = 90;
+function ehAdicional(nome) { return /\badicional\b/.test(semAcento(nome)); }
+function precoNoApp(preco, canal, nome) {
+  const total = (Number(canal?.margem_pct) || 0)
+    + (ehAdicional(nome) ? 0 : Number(canal?.entrega_pct) || 0);
+  if (!(preco > 0) || !(total < 100)) return 0;
+  return preco / (1 - total / 100);
+}
+function rotuloCanal(label, canal) {
+  const entrega = Number(canal?.entrega_pct) || 0;
+  const margem = pct(Number(canal?.margem_pct) || 0);
+  return entrega > 0 ? `${label} (${margem} + ${pct(entrega)} entrega)` : `${label} (${margem})`;
+}
+
 // Array vazio ESTÁVEL. Com `fichas[p.id] || []` o JS cria uma lista nova a
 // cada render, o useEffect do FichaEditor vê "mudou" todo render e chama
 // setItens pra sempre — tela travada em prato sem ficha. É o tipo de laço
@@ -192,6 +223,25 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
   const jaCarregou = React.useRef(false);
   const [erro, setErro] = useState("");
   const [recado, setRecado] = useState("");
+  const [canais, setCanais] = useState(CANAIS_PADRAO);
+  // Muda quando os valores chegam do banco, pra refazer os campos digitáveis.
+  const [canaisVersao, setCanaisVersao] = useState(0);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      // Sem a 176 a consulta falha e a tela fica com os valores padrão.
+      const { data, error } = await supabase.from("precos_canais").select("canal, margem_pct, entrega_pct");
+      if (!vivo || error || !data?.length) return;
+      setCanais((atual) => {
+        const novo = { ...atual };
+        for (const c of data) novo[c.canal] = { margem_pct: Number(c.margem_pct) || 0, entrega_pct: Number(c.entrega_pct) || 0 };
+        return novo;
+      });
+      setCanaisVersao((v) => v + 1);
+    })();
+    return () => { vivo = false; };
+  }, []);
 
   const hoje = new Date();
   const inicioMes = ymd(new Date(hoje.getFullYear(), hoje.getMonth(), 1));
@@ -312,11 +362,13 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
 
       {aba === "precos" && (
         <AbaPrecos pratos={pratos} insumos={insumos} fichas={fichas} compras={compras}
-          usoPorInsumo={usoPorInsumo}
+          usoPorInsumo={usoPorInsumo} canais={canais}
           onErro={setErro} onRecado={setRecado} recarregar={carregar} />
       )}
       {aba === "tabela" && (
         <AbaTabela pratos={pratos} todosOsPratos={todosOsPratos}
+          canais={canais} canaisVersao={canaisVersao}
+          onMudarCanal={(chave, valores) => setCanais((atual) => ({ ...atual, [chave]: valores }))}
           onErro={setErro} onRecado={setRecado} recarregar={carregar} />
       )}
       {aba === "insumos" && (
@@ -334,7 +386,7 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
 // ===========================================================================
 // ABA 1 — Preços, produto a produto
 // ===========================================================================
-function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onRecado, recarregar }) {
+function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, canais, onErro, onRecado, recarregar }) {
   const [busca, setBusca] = useState("");
   const [filtro, setFiltro] = useState("todos");
   const [corte, setCorte] = useState("65");
@@ -610,13 +662,15 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, onErro, onR
                         )}
                       </div>
 
-                      {/* A planilha também trabalha com o combo e o iFood em
+                      {/* A planilha também trabalha com o combo e os apps em
                           cima do mesmo custo — fica à vista pra não ter que
-                          refazer a conta num papel do lado. */}
+                          refazer a conta num papel do lado. A conta dos apps
+                          é a mesma da Tabela de preços. */}
                       <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 10, lineHeight: 1.7 }}>
                         Combo (+R$ 19,99): <b style={{ color: "#22231F" }}>{brl(novoPreco + 19.99)}</b>
-                        {" · "}iFood (+20%): <b style={{ color: "#22231F" }}>{brl(novoPreco * 1.2)}</b>
-                        {" · "}iFood com combo: <b style={{ color: "#22231F" }}>{brl(novoPreco * 1.2 + 19.99)}</b>
+                        {" · "}{rotuloCanal("iFood", canais.ifood)}: <b style={{ color: "#22231F" }}>{brl(precoNoApp(novoPreco, canais.ifood, p.nome))}</b>
+                        {" · "}iFood com combo: <b style={{ color: "#22231F" }}>{brl(precoNoApp(novoPreco, canais.ifood, p.nome) + 19.99)}</b>
+                        {" · "}{rotuloCanal("Keeta", canais.keeta)}: <b style={{ color: "#22231F" }}>{brl(precoNoApp(novoPreco, canais.keeta, p.nome))}</b>
                       </div>
                     </>
                   )}
@@ -1068,24 +1122,40 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, pratos, fi
 // (uma recalcula a outra) e grava só o que mudou, num update por prato —
 // o painel não tem upsert de preço em lote, e inventar um aqui seria
 // arriscar sobrescrever campo que esta tela nem lê.
+//
+// Os pratos vêm separados por linha, e cada linha abre com um clique. Tudo
+// começa fechado: são 241 produtos. A busca abre sozinha as linhas onde
+// achou algo, senão o prato encontrado ficaria escondido.
 // ===========================================================================
-function AbaTabela({ pratos, todosOsPratos, onErro, onRecado, recarregar }) {
+function AbaTabela({ pratos, todosOsPratos, canais, canaisVersao, onMudarCanal, onErro, onRecado, recarregar }) {
   const [edit, setEdit] = useState({});   // id -> texto do preço
   const [busca, setBusca] = useState("");
-  const [linha, setLinha] = useState("todas");
+  const [abertas, setAbertas] = useState(() => new Set());
   const [salvando, setSalvando] = useState(false);
   const [progresso, setProgresso] = useState("");
 
-  const linhasDisponiveis = useMemo(() => {
-    const s = new Set();
-    pratos.forEach((p) => s.add(p.linha_produto || "Sem linha"));
-    return ["todas", ...Array.from(s).sort()];
-  }, [pratos]);
-
+  const buscando = chaveNome(busca) !== "";
   const visiveis = pratos
     .filter((p) => chaveNome(p.nome).includes(chaveNome(busca)))
-    .filter((p) => linha === "todas" || (p.linha_produto || "Sem linha") === linha)
     .sort((a, b) => a.nome.localeCompare(b.nome));
+
+  // "Sem linha" vai por último: é o que falta classificar, não uma linha.
+  const grupos = useMemo(() => {
+    const porLinha = new Map();
+    for (const p of visiveis) {
+      const l = p.linha_produto || "Sem linha";
+      if (!porLinha.has(l)) porLinha.set(l, []);
+      porLinha.get(l).push(p);
+    }
+    return Array.from(porLinha.entries())
+      .sort(([a], [b]) => (a === "Sem linha") - (b === "Sem linha") || a.localeCompare(b));
+  }, [visiveis]);
+
+  const alternar = (l) => setAbertas((atual) => {
+    const nova = new Set(atual);
+    if (nova.has(l)) nova.delete(l); else nova.add(l);
+    return nova;
+  });
 
   const precoDe = (p) => {
     const t = edit[p.id];
@@ -1118,10 +1188,9 @@ function AbaTabela({ pratos, todosOsPratos, onErro, onRecado, recarregar }) {
           <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar prato…"
             style={{ ...input, paddingLeft: 33, width: "100%" }} />
         </div>
-        <select value={linha} onChange={(e) => setLinha(e.target.value)} style={{ ...input, minWidth: 150 }}>
-          {linhasDisponiveis.map((l) => <option key={l} value={l}>{l === "todas" ? "Todas as linhas" : l}</option>)}
-        </select>
       </div>
+
+      <QuadroCanais key={canaisVersao} canais={canais} onMudar={onMudarCanal} />
 
       <div style={{ marginBottom: 10 }}>
         <ImportarCardapio pratos={todosOsPratos || pratos}
@@ -1144,61 +1213,165 @@ function AbaTabela({ pratos, todosOsPratos, onErro, onRecado, recarregar }) {
         </div>
       )}
 
-      <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-            <thead>
-              <tr>
-                <th style={th}>Prato</th>
-                <th style={{ ...th, textAlign: "right" }}>Custo</th>
-                <th style={{ ...th, textAlign: "right" }}>Preço</th>
-                <th style={{ ...th, textAlign: "right" }}>Margem</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visiveis.map((p) => {
-                const preco = precoDe(p);
-                const m = p.temFicha && p.custo > 0 ? margemPeloPreco(p.custo, preco) : null;
-                const alterado = mudouP(p);
-                return (
-                  <tr key={p.id} style={{ borderTop: "1px solid #F0EBDD", background: alterado ? "#FBF7EC" : "transparent" }}>
-                    <td style={{ ...td, color: "#22231F" }}>
-                      {p.nome}
-                      <div style={rotuloMini}>{p.linha_produto || "sem linha"}{p.vendidos > 0 ? ` · ${p.vendidos} no mês` : ""}</div>
-                    </td>
-                    <td style={{ ...td, textAlign: "right", color: p.temFicha ? "#55534A" : "#B4AE9C" }}>
-                      {p.temFicha ? brl(p.custo) : "sem ficha"}
-                    </td>
-                    <td style={{ ...td, textAlign: "right" }}>
-                      <input value={edit[p.id] ?? (Number(p.preco_venda) || 0).toFixed(2).replace(".", ",")}
-                        inputMode="decimal" onFocus={(e) => e.target.select()}
-                        onChange={(e) => setEdit((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                        style={{ ...input, width: 88, textAlign: "right", padding: "6px 8px" }} />
-                    </td>
-                    <td style={{ ...td, textAlign: "right", fontWeight: 700,
-                                 color: m == null ? "#B4AE9C" : m < 50 ? "#8E2420" : "#27500A" }}>
-                      {m == null ? "—" : pct(m)}
-                      {p.temFicha && p.custo > 0 && (
-                        <div style={{ ...rotuloMini, fontWeight: 400 }}>
-                          65% = {brl(precoPelaMargem(p.custo, 65))}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        {visiveis.length === 0 && (
-          <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Nenhum prato com esse filtro.</div>
-        )}
-      </div>
+      {grupos.map(([nomeLinha, itens]) => {
+        const aberta = buscando || abertas.has(nomeLinha);
+        const alteradosLinha = itens.filter(mudouP).length;
+        return (
+          <div key={nomeLinha} style={{ ...card, padding: 0, overflow: "hidden", marginBottom: 8 }}>
+            <button onClick={() => alternar(nomeLinha)} aria-expanded={aberta} disabled={buscando}
+              style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+                       padding: "12px 14px", border: "none", background: "transparent", textAlign: "left",
+                       cursor: buscando ? "default" : "pointer", fontFamily: "inherit", color: "#22231F" }}>
+              <span style={{ fontSize: 14, fontWeight: 700 }}>
+                {nomeLinha}
+                <span style={{ fontSize: 12, fontWeight: 400, color: "#8A8778", marginLeft: 6 }}>
+                  {itens.length} {itens.length === 1 ? "item" : "itens"}
+                </span>
+                {alteradosLinha > 0 && (
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#854F0B", marginLeft: 8 }}>
+                    {alteradosLinha} não {alteradosLinha === 1 ? "gravado" : "gravados"}
+                  </span>
+                )}
+              </span>
+              <ChevronDown size={16} color="#8A8778"
+                style={{ transform: aberta ? "rotate(180deg)" : "none", flexShrink: 0 }} />
+            </button>
+            {aberta && (
+              <div style={{ overflowX: "auto", borderTop: "1px solid #F0EBDD" }}>
+                <table style={{ width: "100%", minWidth: 640, tableLayout: "fixed", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...th, width: "32%" }}>Prato</th>
+                      <th style={{ ...th, textAlign: "right" }}>Custo</th>
+                      <th style={{ ...th, textAlign: "right" }}>Preço</th>
+                      <th style={{ ...th, textAlign: "right" }}>Margem</th>
+                      {CANAIS_APP.map((c) => <th key={c.chave} style={{ ...th, textAlign: "right" }}>{c.label}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itens.map((p) => {
+                      const preco = precoDe(p);
+                      const m = p.temFicha && p.custo > 0 ? margemPeloPreco(p.custo, preco) : null;
+                      const alterado = mudouP(p);
+                      return (
+                        <tr key={p.id} style={{ borderTop: "1px solid #F0EBDD", background: alterado ? "#FBF7EC" : "transparent" }}>
+                          <td style={{ ...td, color: "#22231F" }}>
+                            {p.nome}
+                            {p.vendidos > 0 && <div style={rotuloMini}>{p.vendidos} no mês</div>}
+                          </td>
+                          <td style={{ ...td, textAlign: "right", color: p.temFicha ? "#55534A" : "#B4AE9C" }}>
+                            {p.temFicha ? brl(p.custo) : "sem ficha"}
+                          </td>
+                          <td style={{ ...td, textAlign: "right" }}>
+                            <input value={edit[p.id] ?? (Number(p.preco_venda) || 0).toFixed(2).replace(".", ",")}
+                              inputMode="decimal" onFocus={(e) => e.target.select()}
+                              onChange={(e) => setEdit((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                              style={{ ...input, width: 76, textAlign: "right", padding: "6px 8px" }} />
+                          </td>
+                          <td style={{ ...td, textAlign: "right", fontWeight: 700,
+                                       color: m == null ? "#B4AE9C" : m < 50 ? "#8E2420" : "#27500A" }}>
+                            {m == null ? "—" : pct(m)}
+                            {p.temFicha && p.custo > 0 && (
+                              <div style={{ ...rotuloMini, fontWeight: 400 }}>
+                                65% = {brl(precoPelaMargem(p.custo, 65))}
+                              </div>
+                            )}
+                          </td>
+                          {CANAIS_APP.map((c) => {
+                            const valor = precoNoApp(preco, canais[c.chave], p.nome);
+                            return (
+                              <td key={c.chave} style={{ ...td, textAlign: "right", fontWeight: 700, color: valor > 0 ? "#22231F" : "#B4AE9C" }}>
+                                {valor > 0 ? brl(valor) : "—"}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {visiveis.length === 0 && (
+        <div style={{ ...card, fontSize: 13, color: "#8A8778" }}>Nenhum prato com esse filtro.</div>
+      )}
 
       <div style={{ fontSize: 11, color: "#8A8778", marginTop: 10, lineHeight: 1.6 }}>
         A coluna da direita mostra a margem que o preço digitado dá, e embaixo quanto o prato
         custaria a 65% — a margem que a sua planilha usa como referência. Prato sem ficha técnica
-        não tem margem: o custo dele é desconhecido, não é zero.
+        não tem margem: o custo dele é desconhecido, não é zero. iFood e Keeta são calculados a
+        partir do preço e não são gravados: nos aplicativos o preço só muda quando você muda lá.
+      </div>
+    </div>
+  );
+}
+
+// Margem e entrega de cada aplicativo. A tabela recalcula enquanto digita;
+// grava ao sair do campo. Valor inválido não chega à conta nem ao banco.
+function QuadroCanais({ canais, onMudar }) {
+  const paraTexto = (v) => String(Number(v) || 0).replace(".", ",");
+  const [textos, setTextos] = useState(() => Object.fromEntries(CANAIS_APP.map((c) => [c.chave, {
+    margem_pct: paraTexto(canais[c.chave]?.margem_pct),
+    entrega_pct: paraTexto(canais[c.chave]?.entrega_pct),
+  }])));
+  const [erro, setErro] = useState("");
+  const [gravado, setGravado] = useState(false);
+
+  const validar = (t) => {
+    const margem = paraNumero(t.margem_pct);
+    const entrega = paraNumero(t.entrega_pct);
+    if (margem === null || entrega === null || margem < 0 || entrega < 0 || margem + entrega > LIMITE_CANAL) return null;
+    return { margem_pct: margem, entrega_pct: entrega };
+  };
+  const digitar = (chave, campo, valor) => {
+    const novo = { ...textos[chave], [campo]: valor };
+    setTextos((atual) => ({ ...atual, [chave]: novo }));
+    setGravado(false);
+    const valores = validar(novo);
+    if (!valores) { setErro(`Margem mais entrega precisa ficar entre 0 e ${LIMITE_CANAL}%.`); return; }
+    setErro("");
+    onMudar(chave, valores);
+  };
+  const gravar = async (chave) => {
+    const valores = validar(textos[chave]);
+    if (!valores) return;
+    const { error } = await supabase.from("precos_canais")
+      .upsert({ canal: chave, ...valores, atualizado_em: new Date().toISOString() }, { onConflict: "canal" });
+    if (error) {
+      setErro(/precos_canais/.test(error.message || "")
+        ? "Falta rodar a migração 176 no Supabase. A conta funciona, mas estes percentuais não ficam guardados."
+        : error.message);
+      return;
+    }
+    setGravado(true);
+  };
+
+  return (
+    <div style={{ ...card, marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>Preço nos aplicativos</div>
+        {gravado && <div style={{ fontSize: 11.5, color: "#27500A" }}>Gravado</div>}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 8 }}>
+        {CANAIS_APP.flatMap((c) => [
+          { campo: "margem_pct", rotulo: "margem %" },
+          { campo: "entrega_pct", rotulo: "entrega %" },
+        ].map((f) => (
+          <label key={`${c.chave}-${f.campo}`} style={{ fontSize: 11.5, color: "#8A8778" }}>
+            {c.label} · {f.rotulo}
+            <input value={textos[c.chave][f.campo]} inputMode="decimal" onFocus={(e) => e.target.select()}
+              onChange={(e) => digitar(c.chave, f.campo, e.target.value)}
+              onBlur={() => gravar(c.chave)}
+              style={{ ...input, width: "100%", textAlign: "right", marginTop: 3, display: "block" }} />
+          </label>
+        )))}
+      </div>
+      {erro && <div style={{ fontSize: 12, color: "#8E2420", marginTop: 7 }}>{erro}</div>}
+      <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 8, lineHeight: 1.55 }}>
+        Preço no app = preço ÷ (1 − margem − entrega). Item com "adicional" no nome não soma entrega.
       </div>
     </div>
   );
