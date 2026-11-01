@@ -8,6 +8,7 @@ import { podeVer } from "../lib/permissoes";
 // terceira aba daqui. Eram duas portas para a mesma pergunta — "como
 // estão as vendas" — e quem abria uma nunca sabia que a outra existia.
 import Dashboard from "./DashboardModulo";
+import ComercialLinhaTempo, { ultimoDiaFechado } from "./ComercialLinhaTempo";
 
 // ---------------------------------------------------------------------------
 // Módulo Comercial — Relatório do dia
@@ -269,10 +270,18 @@ function janelas3(dia) {
 
 async function carregarPainel(dia) {
   const J = janelas3(dia);
-  const [at, an, re] = J;
-  const inicioHist = somarDiasStr(dia, -63) < re.ini ? somarDiasStr(dia, -63) : re.ini;
-  const a1 = { p_inicio: at.ini, p_fim: at.fim, p_inicio_ant: an.ini, p_fim_ant: an.fim };
-  const a2 = { p_inicio: an.ini, p_fim: an.fim, p_inicio_ant: re.ini, p_fim_ant: re.fim };
+  const [at, an] = J;
+  // A previsão olha o mês do relatório, mas tudo que COMPARA usa só dias já
+  // fechados. Noite em andamento contra dia inteiro dava −89%, e o detalhe
+  // por item, que só chega depois, dava −100%. No dia 1 ainda sem dia
+  // fechado, a comparação passa a ser o último mês inteiro.
+  const fechado = ultimoDiaFechado();
+  const diaComparacao = dia < fechado ? dia : fechado;
+  const JC = janelas3(diaComparacao);
+  const [atC, anC, reC] = JC;
+  const inicioHist = [somarDiasStr(dia, -63), J[2].ini, reC.ini].sort()[0];
+  const a1 = { p_inicio: atC.ini, p_fim: atC.fim, p_inicio_ant: anC.ini, p_fim_ant: anC.fim };
+  const a2 = { p_inicio: anC.ini, p_fim: anC.fim, p_inicio_ant: reC.ini, p_fim_ant: reC.fim };
   const [rDias, rP1, rP2, rL1, rL2] = await Promise.all([
     supabase.from("vendas_diarias").select("dia, faturamento_bruto").gte("dia", inicioHist).lte("dia", at.fimMes).order("dia"),
     supabase.rpc("desempenho_produtos", a1),
@@ -354,12 +363,23 @@ async function carregarPainel(dia) {
   const linhas = [...lin.values()].filter((l) => l.v.some((x) => x > 0));
 
   // quanto do faturamento de cada mês está detalhado item a item
-  const detalhado = [0, 1, 2].map((k) => {
+  const detalhado = JC.map((j, k) => {
     const soma = linhas.reduce((s, l) => s + l.v[k], 0);
-    return meses[k].periodo ? Math.round((soma / meses[k].periodo) * 100) : null;
+    const faturado = somaEntre(j.ini, j.fim).s;
+    return faturado ? Math.round((soma / faturado) * 100) : null;
   });
 
-  return { meses, diasQueFaltam, produtos, linhas, detalhado, erroDias, erroProd: fProd ? erroProd : "" };
+  // Mês do relatório contra os mesmos dias do anterior, só com dias fechados.
+  // `ate` zero quer dizer que este mês ainda não tem dia fechado.
+  const fimFechado = at.fim < fechado ? at.fim : fechado;
+  const ateFechado = fimFechado >= at.ini ? Number(fimFechado.slice(8, 10)) : 0;
+  const fechados = {
+    ate: ateFechado,
+    atual: ateFechado ? somaEntre(at.ini, fimFechado).s : 0,
+    anterior: ateFechado ? somaEntre(an.ini, ymdDe(an.y, an.m0, Math.min(ateFechado, an.diasMes))).s : 0,
+  };
+
+  return { meses, janelasComparacao: JC, fechados, diasQueFaltam, produtos, linhas, detalhado, erroDias, erroProd: fProd ? erroProd : "" };
 }
 
 // Previsão = já vendido (número do topo, conferido ao vivo) + média por dia da semana dos dias que faltam
@@ -390,11 +410,10 @@ function Chip({ p, sufixo }) {
   );
 }
 
-function PainelComercial({ dia, mesTotal, onPrevisao }) {
+function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
   const [dados, setDados] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
-  const [verTodasLinhas, setVerTodasLinhas] = useState(false);
 
   useEffect(() => {
     let vivo = true;
@@ -411,22 +430,18 @@ function PainelComercial({ dia, mesTotal, onPrevisao }) {
   if (erro) return <div style={avisoBloqueio}><AlertTriangle size={16} /> {erro}</div>;
   if (!dados) return null;
 
-  const { meses, produtos, linhas, detalhado } = dados;
+  const { meses, janelasComparacao, fechados, produtos, detalhado } = dados;
   const [at, an, re] = meses;
   const rotulo = (k) => nomeMesCurto(meses[k].m0);
   const faixa = `dias 1 a ${at.ate}`;
+  // O que compara produtos usa só dias fechados, e pode já ser o mês anterior.
+  const rotuloC = (k) => nomeMesCurto(janelasComparacao[k].m0);
+  const faixaC = janelasComparacao[0].ate === janelasComparacao[0].diasMes
+    ? "mês inteiro" : `dias 1 a ${janelasComparacao[0].ate}`;
   const periodoAtual = mesTotal != null ? Number(mesTotal) : at.periodo;
   const valoresPeriodo = [periodoAtual, an.periodo, re.periodo];
   const maxMes = Math.max(prev ? prev.previsao : 0, an.inteiro || 0, re.inteiro || 0, 1);
   const vs = (a, b) => (b ? ((a - b) / b) * 100 : null);
-
-  // ---- linhas
-  const linhasOrd = [...linhas].sort((a, b) => b.v[0] - a.v[0]);
-  const maxLinha = Math.max(...linhasOrd.map((l) => Math.max(l.v[0], l.v[1], l.v[2])), 1);
-  const linhasVisiveis = verTodasLinhas ? linhasOrd : linhasOrd.slice(0, 8);
-  const linhasComBase = linhasOrd.filter((l) => l.v[1] > 0 && l.linha !== "Sem linha definida");
-  const linhaSobe = [...linhasComBase].sort((a, b) => (b.v[0] - b.v[1]) - (a.v[0] - a.v[1]))[0];
-  const linhaCai = [...linhasComBase].sort((a, b) => (a.v[0] - a.v[1]) - (b.v[0] - b.v[1]))[0];
 
   // ---- hambúrgueres (linha com "hamb"; se ninguém tiver linha, usa os mais vendidos)
   const ehHamb = (p) => /hamb|burg|lanche/i.test(p.linha || "");
@@ -501,14 +516,15 @@ function PainelComercial({ dia, mesTotal, onPrevisao }) {
                 </div>
                 <div style={{ fontSize: 11, color: "#8A8778", marginTop: 4, display: "flex", justifyContent: "space-between", gap: 8 }}>
                   <span>{faixa}: <b style={{ color: "#22231F", fontVariantNumeric: "tabular-nums" }}>{brlInt(valoresPeriodo[k])}</b> · {brlInt(valoresPeriodo[k] / Math.max(m.ate, 1))}/dia</span>
-                  {k < 2 && <Chip p={vs(valoresPeriodo[k], valoresPeriodo[k + 1])} sufixo={`vs ${rotulo(k + 1)}`} />}
+                  {k === 0 && fechados.ate > 0 && <Chip p={vs(fechados.atual, fechados.anterior)} sufixo={`vs ${rotulo(1)}, dias fechados`} />}
+                  {k === 1 && <Chip p={vs(an.inteiro, re.inteiro)} sufixo={`vs ${rotulo(2)} inteiro`} />}
                 </div>
               </div>
             );
           })}
         </div>
         <div style={{ fontSize: 11, color: "#8A8778", marginTop: 10 }}>
-          Barra escura = {faixa} de cada mês (comparação justa). Barra clara = mês inteiro.
+          Barra escura = {faixa} de cada mês. Barra clara = mês inteiro. A porcentagem usa só dias fechados.
           {an.diasInteiroCache < an.diasMes || re.diasInteiroCache < re.diasMes ? " Alguns dias antigos ainda não estão no cache de vendas — o total do mês pode estar menor." : ""}
         </div>
       </div>
@@ -517,56 +533,19 @@ function PainelComercial({ dia, mesTotal, onPrevisao }) {
         <div style={avisoBloqueio}><AlertTriangle size={16} /> {dados.erroProd}</div>
       ) : (
         <>
-          {/* ---------------- Linhas ---------------- */}
-          <div style={cardStyle}>
-            <div style={{ ...sectionLabel, marginBottom: 4 }}>Linhas de produto · {faixa}</div>
-            {(linhaSobe || linhaCai) && (
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "6px 0 10px" }}>
-                {linhaSobe && linhaSobe.v[0] > linhaSobe.v[1] && (
-                  <span style={{ fontSize: 12, background: "#E4F2E9", color: "#1F6B43", borderRadius: 8, padding: "5px 9px" }}>
-                    <TrendingUp size={12} style={{ verticalAlign: -2 }} /> Mais cresceu: <b>{linhaSobe.linha}</b> (+{brlInt(linhaSobe.v[0] - linhaSobe.v[1])})
-                  </span>
-                )}
-                {linhaCai && linhaCai.v[0] < linhaCai.v[1] && (
-                  <span style={{ fontSize: 12, background: "#F8E3DE", color: "#8E2F1D", borderRadius: 8, padding: "5px 9px" }}>
-                    <TrendingDown size={12} style={{ verticalAlign: -2 }} /> Mais caiu: <b>{linhaCai.linha}</b> (−{brlInt(linhaCai.v[1] - linhaCai.v[0])})
-                  </span>
-                )}
-              </div>
-            )}
-            <div style={{ display: "grid", gridTemplateColumns: grade, gap: "0 6px", alignItems: "center" }}>
-              <span style={cab}>{rotulo(2)}</span><span style={cab}>{rotulo(1)}</span><span style={cab}>{rotulo(0)}</span><span style={cab}>vs {rotulo(1)}</span>
-            </div>
-            {linhasVisiveis.map((l) => {
-              const p = vs(l.v[0], l.v[1]);
-              return (
-                <div key={l.linha} style={{ padding: "7px 0", borderTop: "1px solid #EFE9DA" }}>
-                  <div style={{ ...nome, fontWeight: 600, marginBottom: 2 }} title={l.linha}>{l.linha}</div>
-                  <div style={{ display: "grid", gridTemplateColumns: grade, gap: "0 6px", alignItems: "center" }}>
-                    <span style={{ ...cel, color: "#8A8778" }}>{brlK(l.v[2])}</span>
-                    <span style={{ ...cel, color: "#5C5A4E" }}>{brlK(l.v[1])}</span>
-                    <span style={{ ...cel, fontWeight: 700 }}>{brlK(l.v[0])}</span>
-                    <span style={cel}><Chip p={l.v[1] ? p : null} /></span>
-                  </div>
-                  <div style={{ marginTop: 4 }}><Barra valor={l.v[0]} max={maxLinha} cor={p == null || p >= 0 ? "#2F8F5B" : "#C4432B"} altura={4} /></div>
-                </div>
-              );
-            })}
-            {linhasOrd.length > 8 && (
-              <button onClick={() => setVerTodasLinhas((v) => !v)} style={{ ...linkBtn, marginTop: 6 }}>
-                {verTodasLinhas ? "Mostrar menos" : `Ver as ${linhasOrd.length} linhas`}
-              </button>
-            )}
-          </div>
+          {/* ---------------- Linha do tempo ---------------- */}
+          {/* Ela faz uma chamada por ponto do gráfico: não roda com o painel
+              escondido, que existe só para a previsão do relatório. */}
+          {!oculto && <ComercialLinhaTempo />}
 
           {/* ---------------- Hambúrgueres ---------------- */}
           <div style={cardStyle}>
-            <div style={{ ...sectionLabel, marginBottom: 4 }}>{hambPorLinha ? "Hambúrgueres mais vendidos" : "Produtos mais vendidos"} · unidades · {faixa}</div>
+            <div style={{ ...sectionLabel, marginBottom: 4 }}>{hambPorLinha ? "Hambúrgueres mais vendidos" : "Produtos mais vendidos"} · unidades · {faixaC}</div>
             {!hambPorLinha && (
               <div style={{ fontSize: 11, color: "#8A6A0F", marginBottom: 6 }}>Nenhum prato tem linha "Hambúrguer" ainda — mostrando todos. Defina a linha no Dashboard.</div>
             )}
             <div style={{ display: "grid", gridTemplateColumns: grade, gap: "0 6px", alignItems: "center" }}>
-              <span style={cab}>{rotulo(2)}</span><span style={cab}>{rotulo(1)}</span><span style={cab}>{rotulo(0)}</span><span style={cab}>vs {rotulo(1)}</span>
+              <span style={cab}>{rotuloC(2)}</span><span style={cab}>{rotuloC(1)}</span><span style={cab}>{rotuloC(0)}</span><span style={cab}>vs {rotuloC(1)}</span>
             </div>
             {hamb.map((p, i) => (
               <div key={p.produto} style={{ padding: "7px 0", borderTop: "1px solid #EFE9DA" }}>
@@ -590,7 +569,7 @@ function PainelComercial({ dia, mesTotal, onPrevisao }) {
             ].map((b) => (
               <div key={b.titulo} style={cardStyle}>
                 <div style={{ ...sectionLabel, marginBottom: 2 }}>{b.titulo}</div>
-                <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 6 }}>em R$, {rotulo(0)} × {rotulo(1)} ({faixa})</div>
+                <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 6 }}>em R$, {rotuloC(0)} × {rotuloC(1)} ({faixaC})</div>
                 {b.lista.length === 0 ? <div style={{ fontSize: 12, color: "#8A8778" }}>{b.vazio}</div> : b.lista.map((p) => (
                   <div key={p.produto} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: "1px solid #EFE9DA" }}>
                     <div style={{ minWidth: 0 }}>
@@ -627,7 +606,7 @@ function PainelComercial({ dia, mesTotal, onPrevisao }) {
 
           {detalhado.some((x) => x != null && x < 80) && (
             <div style={{ fontSize: 11, color: "#8A8778" }}>
-              Parte da venda ainda não tem o detalhe item a item ({[0, 1, 2].map((k) => `${rotulo(k)} ${detalhado[k] == null ? "—" : detalhado[k] + "%"}`).join(" · ")}).
+              Parte da venda ainda não tem o detalhe item a item ({[0, 1, 2].map((k) => `${rotuloC(k)} ${detalhado[k] == null ? "—" : detalhado[k] + "%"}`).join(" · ")}).
               Os números de produto e linha usam só a parte detalhada.
             </div>
           )}
@@ -855,7 +834,7 @@ export default function Comercial({ onVoltar, perfil, permissoes }) {
         {abaAtual === "dia" && !vendasSemAcesso && (
           <div style={{ display: "none" }} aria-hidden="true">
             <PainelComercial dia={dia} mesTotal={carregandoVendas || !vendas ? null : vendas.mes_total}
-              onPrevisao={setPrevisaoMes} />
+              onPrevisao={setPrevisaoMes} oculto />
           </div>
         )}
       </div>
@@ -895,4 +874,3 @@ const statBox = {
 };
 const statNum = { fontSize: 22, fontWeight: 800, color: "#22231F" };
 const statLabel = { fontSize: 11, color: "#8A8778", marginTop: 2 };
-const linkBtn = { background: "none", border: "none", padding: 0, color: "#2F6FA3", fontSize: 12, fontWeight: 700, cursor: "pointer" };
