@@ -32,7 +32,7 @@
 // dado com aquele preço, sem precisar esperar o mês seguinte.
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Loader2, AlertTriangle, Check, Search, RefreshCw, Plus, X, Save, ChevronDown } from "lucide-react";
-import { supabase } from "../lib/supabaseClient";
+import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function brl(v) {
   return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -1192,9 +1192,20 @@ function AbaTabela({ pratos, todosOsPratos, canais, canaisVersao, onMudarCanal, 
 
       <QuadroCanais key={canaisVersao} canais={canais} onMudar={onMudarCanal} />
 
-      <div style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start", marginBottom: 10 }}>
         <ImportarCardapio pratos={todosOsPratos || pratos}
           onPronto={(msg) => { onRecado(msg); recarregar(); }} />
+        <PuxarPrecos pratos={pratos}
+          onPronto={(msg, ids) => {
+            // O preço aplicado vale mais que o digitado e ainda não gravado.
+            setEdit((atual) => {
+              const novo = { ...atual };
+              ids.forEach((id) => { delete novo[id]; });
+              return novo;
+            });
+            onRecado(msg);
+            recarregar();
+          }} />
       </div>
 
       {alterados.length > 0 && (
@@ -1306,6 +1317,151 @@ function AbaTabela({ pratos, todosOsPratos, canais, canaisVersao, onMudarCanal, 
         partir do preço e não são gravados: nos aplicativos o preço só muda quando você muda lá.
       </div>
     </div>
+  );
+}
+
+// Traz para o painel o preço do cardápio do CardápioWeb. Mesma leitura e
+// mesmo casamento de "Conferir preços", em Fichas técnicas: primeiro o código
+// (nome muda, código não), depois o nome. Dois itens com o mesmo nome não
+// escolhem nenhum: chutar aqui é trocar o preço do prato errado.
+//
+// Nada grava sem conferir. Preço em promoção vem desmarcado, senão uma oferta
+// da semana vira o preço normal do prato, e a margem junto com ele.
+function PuxarPrecos({ pratos, onPronto }) {
+  const [lendo, setLendo] = useState(false);
+  const [aplicando, setAplicando] = useState(false);
+  const [erro, setErro] = useState("");
+  const [res, setRes] = useState(null);       // { mudam, semPar, iguais, codigos }
+  const [marcados, setMarcados] = useState({});
+  const [verSemPar, setVerSemPar] = useState(false);
+
+  const ler = async () => {
+    setLendo(true); setErro(""); setRes(null); setVerSemPar(false);
+    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
+      body: { acao: "catalogo_precos" },
+    });
+    setLendo(false);
+    if (error) { setErro(await extrairErroFuncao(error)); return; }
+    if (data?.error) { setErro(data.error); return; }
+
+    const porId = new Map();
+    const porNome = new Map();
+    (data.itens || []).forEach((it) => {
+      porId.set(it.id, it);
+      const k = chaveNome(it.nome);
+      if (!k) return;
+      if (!porNome.has(k)) porNome.set(k, []);
+      porNome.get(k).push(it);
+    });
+
+    const mudam = [], semPar = [], codigos = [];
+    let iguais = 0;
+    pratos.forEach((p) => {
+      let item = p.cardapioweb_item_id != null ? porId.get(p.cardapioweb_item_id) : null;
+      if (!item) {
+        const candidatos = porNome.get(chaveNome(p.nome)) || [];
+        if (candidatos.length > 1) { semPar.push({ prato: p, motivo: `${candidatos.length} itens com esse nome no cardápio` }); return; }
+        if (candidatos.length === 0) { semPar.push({ prato: p, motivo: "não achei no cardápio" }); return; }
+        item = candidatos[0];
+        codigos.push({ pratoId: p.id, itemId: item.id });
+      }
+      const para = Number(item.preco_efetivo) || 0;
+      const de = Number(p.preco_venda) || 0;
+      if (Math.abs(para - de) > 0.005) mudam.push({ prato: p, item, de, para });
+      else iguais += 1;
+    });
+    mudam.sort((a, b) => a.prato.nome.localeCompare(b.prato.nome));
+    semPar.sort((a, b) => a.prato.nome.localeCompare(b.prato.nome));
+    setMarcados(Object.fromEntries(mudam.map((d) => [d.prato.id, !d.item.promocao_ativa])));
+    setRes({ mudam, semPar, iguais, codigos });
+  };
+
+  const escolhidos = res ? res.mudam.filter((d) => marcados[d.prato.id]) : [];
+
+  const aplicar = async () => {
+    setAplicando(true); setErro("");
+    // O código fica gravado mesmo sem mudar o preço: da próxima vez esse
+    // prato entra pelo caminho seguro, sem depender do nome.
+    for (const c of res.codigos) {
+      await supabase.from("pratos").update({ cardapioweb_item_id: c.itemId }).eq("id", c.pratoId);
+    }
+    for (const d of escolhidos) {
+      const { error } = await supabase.from("pratos").update({ preco_venda: d.para }).eq("id", d.prato.id);
+      if (error) { setAplicando(false); setErro(`${d.prato.nome}: ${error.message}`); return; }
+    }
+    setAplicando(false);
+    const n = escolhidos.length;
+    const ids = escolhidos.map((d) => d.prato.id);
+    setRes(null);
+    onPronto(n === 0 ? "Nenhum preço alterado." : `${n} ${n === 1 ? "preço atualizado" : "preços atualizados"} a partir do CardápioWeb.`, ids);
+  };
+
+  return (
+    <>
+      <button onClick={ler} disabled={lendo} style={{ ...btnSec, display: "flex", alignItems: "center", gap: 6 }}>
+        <RefreshCw size={14} /> {lendo ? "Lendo o cardápio…" : "Puxar preços do CardápioWeb"}
+      </button>
+      {erro && (
+        <div style={{ width: "100%", fontSize: 12, color: "#8E2420", display: "flex", gap: 6, alignItems: "center" }}>
+          <AlertTriangle size={14} style={{ flexShrink: 0 }} /> {erro}
+        </div>
+      )}
+      {res && (
+        <div style={{ ...card, width: "100%" }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>
+            {res.mudam.length === 0 ? "Nenhum preço diferente no CardápioWeb"
+              : `${res.mudam.length} ${res.mudam.length === 1 ? "preço diferente" : "preços diferentes"} no CardápioWeb`}
+          </div>
+          <div style={{ fontSize: 12, color: "#8A8778", margin: "2px 0 8px" }}>
+            {res.iguais} já {res.iguais === 1 ? "igual" : "iguais"} · nada muda até você aplicar
+          </div>
+          {res.mudam.map((d) => (
+            <label key={d.prato.id} style={{ display: "grid", gridTemplateColumns: "22px minmax(0, 1fr) auto", gap: 8, alignItems: "center",
+                                             padding: "7px 0", borderTop: "1px solid #F0EBDD", fontSize: 12.5, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!marcados[d.prato.id]}
+                onChange={(e) => setMarcados((m) => ({ ...m, [d.prato.id]: e.target.checked }))} />
+              <span style={{ color: "#22231F", minWidth: 0 }}>
+                {d.prato.nome}
+                {d.item.promocao_ativa && (
+                  <div style={rotuloMini}>Em promoção no CardápioWeb. Preço cheio: {brl(d.item.preco)}</div>
+                )}
+              </span>
+              <span style={{ whiteSpace: "nowrap" }}>{brl(d.de)} → <b>{brl(d.para)}</b></span>
+            </label>
+          ))}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap",
+                        borderTop: "1px solid #F0EBDD", paddingTop: 10 }}>
+            <span style={{ fontSize: 11.5, color: "#8A8778" }}>
+              {res.mudam.length > 0 ? `${escolhidos.length} ${escolhidos.length === 1 ? "selecionado" : "selecionados"}. iFood e Keeta recalculam sozinhos.` : ""}
+            </span>
+            <span style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setRes(null)} style={btnSec}>{res.mudam.length === 0 ? "Fechar" : "Cancelar"}</button>
+              {escolhidos.length > 0 && (
+                <button onClick={aplicar} disabled={aplicando} style={btnPri}>
+                  {aplicando ? "Aplicando…" : `Aplicar ${escolhidos.length} ${escolhidos.length === 1 ? "preço" : "preços"}`}
+                </button>
+              )}
+            </span>
+          </div>
+          {res.semPar.length > 0 && (
+            <div style={{ marginTop: 10, borderTop: "1px solid #F0EBDD", paddingTop: 8 }}>
+              <button onClick={() => setVerSemPar((v) => !v)} aria-expanded={verSemPar}
+                style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "none",
+                         background: "transparent", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, color: "#22231F" }}>
+                {res.semPar.length} {res.semPar.length === 1 ? "prato não encontrado" : "pratos não encontrados"} no cardápio
+                <ChevronDown size={15} color="#8A8778" style={{ transform: verSemPar ? "rotate(180deg)" : "none" }} />
+              </button>
+              {verSemPar && res.semPar.map((x) => (
+                <div key={x.prato.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, padding: "5px 0" }}>
+                  <span style={{ color: "#22231F" }}>{x.prato.nome}</span>
+                  <span style={{ color: "#8A8778", whiteSpace: "nowrap" }}>{x.motivo}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
