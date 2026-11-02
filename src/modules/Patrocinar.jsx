@@ -1399,10 +1399,11 @@ function Numero({ v, r }) {
   );
 }
 
-// "vídeo · 8 curtidas · 1 comentário · 25/09", como no painel da Dinâmico.
+// "vídeo · 1.240 visualizações · 8 curtidas · 1 comentário · 25/09".
 const TIPOS = { VIDEO: "vídeo", IMAGE: "foto", CAROUSEL_ALBUM: "carrossel" };
 function resumoPost(p) {
   const partes = [TIPOS[p.tipo] || "post"];
+  if (p.visualizacoes != null) partes.push(`${numero(p.visualizacoes)} ${p.visualizacoes === 1 ? "visualização" : "visualizações"}`);
   if (p.curtidas != null) partes.push(`${numero(p.curtidas)} ${p.curtidas === 1 ? "curtida" : "curtidas"}`);
   if (p.comentarios != null) partes.push(`${numero(p.comentarios)} ${p.comentarios === 1 ? "comentário" : "comentários"}`);
   partes.push(dataCurta(p.data));
