@@ -114,9 +114,14 @@ function pctDe(p) {
 }
 
 function Grafico({ valores, rotulos, cor, grande, nome, foco, onFoco }) {
-  const W = grande ? 640 : 300;
-  const H = grande ? 170 : 44;
-  const pl = grande ? 52 : 4, pr = grande ? 12 : 8, pt = grande ? 10 : 6, pb = grande ? 22 : 6;
+  // Com muitas semanas, as datas do gráfico grande ficam inclinadas: assim
+  // cabe a data de todo ponto. As linhas pequenas marcam todo ponto, mas
+  // escrevem só algumas datas, para os textos não se sobreporem.
+  const inclinadas = grande && rotulos.length > 10;
+  const W = grande ? 640 : 320;
+  const H = grande ? (inclinadas ? 200 : 176) : 70;
+  const pl = grande ? 52 : 4, pr = grande ? 12 : 10, pt = grande ? 10 : 8;
+  const pb = grande ? (inclinadas ? 46 : 22) : 22;
   const max = Math.max(...valores, 1);
   // O total parte do zero, para o tamanho da subida ser honesto. As linhas
   // pequenas usam a própria escala: senão quem vende pouco vira um traço reto.
@@ -125,7 +130,8 @@ function Grafico({ valores, rotulos, cor, grande, nome, foco, onFoco }) {
   const X = (i) => pl + (valores.length > 1 ? i / (valores.length - 1) : 0.5) * (W - pl - pr);
   const Y = (v) => pt + (1 - (v - min) / faixa) * (H - pt - pb);
   const caminho = valores.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(" ");
-  const passo = Math.max(1, Math.ceil(rotulos.length / 7));
+  const passo = grande ? 1 : Math.max(1, Math.ceil(rotulos.length / 8));
+  const baseY = H - pb;
   const mover = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
     if (!r.width) return;
@@ -146,13 +152,18 @@ function Grafico({ valores, rotulos, cor, grande, nome, foco, onFoco }) {
           </text>
         </g>
       ))}
-      {grande && rotulos.map((t, i) => (i % passo === 0 ? (
-        <text key={i} x={X(i)} y={H - 5} textAnchor={i === 0 ? "start" : "middle"} fontSize="11" fill={NEUTRO}>{t}</text>
-      ) : null))}
+      {rotulos.map((t, i) => (
+        <g key={i}>
+          <line x1={X(i)} x2={X(i)} y1={baseY} y2={baseY + 4} stroke="#C9BFA6" />
+          {inclinadas ? (
+            <text transform={`translate(${X(i) + 3},${baseY + 10}) rotate(-55)`} textAnchor="end" fontSize="11" fill="#55534A">{t}</text>
+          ) : i % passo === 0 ? (
+            <text x={X(i)} y={baseY + 15} textAnchor={i === 0 && valores.length > 1 ? "start" : "middle"} fontSize="11" fill={grande ? "#55534A" : NEUTRO}>{t}</text>
+          ) : null}
+        </g>
+      ))}
       <path d={caminho} fill="none" stroke={cor} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-      {comPontos
-        ? valores.map((v, i) => <circle key={i} cx={X(i)} cy={Y(v)} r="4" fill={cor} stroke="#FFFFFF" strokeWidth="2" />)
-        : <circle cx={X(valores.length - 1)} cy={Y(valores[valores.length - 1])} r="3.5" fill={cor} stroke="#FFFFFF" strokeWidth="2" />}
+      {valores.map((v, i) => <circle key={i} cx={X(i)} cy={Y(v)} r={comPontos ? 4 : grande ? 3 : 2.5} fill={cor} stroke="#FFFFFF" strokeWidth="1" />)}
       {foco != null && (
         <>
           <line x1={X(foco)} x2={X(foco)} y1={pt} y2={H - pb} stroke="#C9BFA6" />
@@ -163,7 +174,7 @@ function Grafico({ valores, rotulos, cor, grande, nome, foco, onFoco }) {
   );
 }
 
-function LinhaItem({ item, rotulos, primeira }) {
+function LinhaItem({ item, rotulos, legendas, primeira }) {
   const [foco, setFoco] = useState(null);
   return (
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 32%) minmax(0, 1fr) 72px", gap: 10, alignItems: "center",
@@ -171,7 +182,7 @@ function LinhaItem({ item, rotulos, primeira }) {
       <div style={{ minWidth: 0 }}>
         <div title={item.nome} style={{ fontSize: 12.5, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.nome}</div>
         <div style={{ fontSize: 11, color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>
-          {foco != null ? `${rotulos[foco]}: ${brl(item.valores[foco])}` : brl(item.total)}
+          {foco != null ? `${legendas[foco]}: ${brl(item.valores[foco])}` : brl(item.total)}
         </div>
       </div>
       <Grafico valores={item.valores} rotulos={rotulos} cor={corDe(item.tendencia)} nome={item.nome} foco={foco} onFoco={setFoco} />
@@ -278,6 +289,8 @@ export default function ComercialLinhaTempo() {
   }, [prontos, visao]);
 
   const rotulos = (pontos || []).map((p) => p.rotulo);
+  // Ao apontar, a semana aparece inteira; o eixo marca só a segunda-feira.
+  const legendas = (pontos || []).map((p) => (montado.unidade === "semana" ? `${diaMes(p.ini)} a ${diaMes(p.fim)}` : p.rotulo));
   const tendenciaTotal = tendencia(total);
   const somaTotal = total.reduce((s, v) => s + v, 0);
   const unidade = montado?.unidade;
@@ -342,17 +355,17 @@ export default function ComercialLinhaTempo() {
             <Grafico valores={total} rotulos={rotulos} cor={corDe(tendenciaTotal)} grande nome="Total do período"
               foco={focoTotal} onFoco={setFocoTotal} />
             <div style={{ fontSize: 12, color: "#55534A", minHeight: 18, marginTop: 2 }}>
-              {focoTotal != null && `${rotulos[focoTotal]}: ${brl(total[focoTotal])}`}
+              {focoTotal != null && `${unidade === "semana" ? "Semana de " : ""}${legendas[focoTotal]}: ${brl(total[focoTotal])}`}
             </div>
           </div>
 
           <div style={{ ...cartao, padding: "6px 14px" }}>
-            {itens.map((item, i) => <LinhaItem key={item.nome} item={item} rotulos={rotulos} primeira={i === 0} />)}
+            {itens.map((item, i) => <LinhaItem key={item.nome} item={item} rotulos={rotulos} legendas={legendas} primeira={i === 0} />)}
           </div>
 
           <div style={{ fontSize: 11, color: "#8A8778", lineHeight: 1.55 }}>
             A porcentagem compara a primeira metade do período com a segunda.
-            {unidade === "semana" && " Só entram semanas inteiras, de segunda a domingo."}
+            {unidade === "semana" && " Só entram semanas inteiras, de segunda a domingo, e a data marcada é a segunda-feira."}
             {" "}O dia em andamento nunca entra. Cada linha pequena usa a própria escala, então compare pelo valor em R$.
             {montado.foraDoHistorico.length > 0 && ` ${montado.foraDoHistorico.join(", ").replace(/^./, (c) => c.toUpperCase())} tem só parte do mês e ficou de fora: veja por semana.`}
           </div>
