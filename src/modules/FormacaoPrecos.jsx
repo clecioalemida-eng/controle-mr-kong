@@ -32,7 +32,7 @@
 // dado com aquele preço, sem precisar esperar o mês seguinte.
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Loader2, AlertTriangle, Check, Search, RefreshCw, Plus, X, Save, ChevronDown } from "lucide-react";
-import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+import { supabase } from "../lib/supabaseClient";
 
 function brl(v) {
   return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -1320,13 +1320,20 @@ function AbaTabela({ pratos, todosOsPratos, canais, canaisVersao, onMudarCanal, 
   );
 }
 
-// Traz para o painel o preço do cardápio do CardápioWeb. Mesma leitura e
-// mesmo casamento de "Conferir preços", em Fichas técnicas: primeiro o código
-// (nome muda, código não), depois o nome. Dois itens com o mesmo nome não
-// escolhem nenhum: chutar aqui é trocar o preço do prato errado.
+// Traz para o painel o preço do CardápioWeb, lido dos PEDIDOS (migração 179):
+// o catálogo exige uma chave de parceiro que não temos. O casamento é o mesmo
+// de "Conferir preços", em Fichas técnicas: primeiro o código (nome muda,
+// código não), depois o nome. Dois itens com o mesmo nome não escolhem nenhum:
+// chutar aqui é trocar o preço do prato errado.
 //
-// Nada grava sem conferir. Preço em promoção vem desmarcado, senão uma oferta
-// da semana vira o preço normal do prato, e a margem junto com ele.
+// O pedido não diz se o preço era de promoção, então a tela olha o que vendeu.
+// Preço que dividiu as vendas ou com pouca venda vem desmarcado, senão uma
+// oferta da semana vira o preço normal do prato, e a margem junto com ele.
+// Preço simbólico, como o lanche de funcionário a R$ 0,01, nunca é proposto.
+const DIAS_PRECOS = 30;
+const PARTE_MINIMA_DO_PRECO = 0.8;
+const VENDAS_MINIMAS_DO_PRECO = 3;
+const PRECO_SIMBOLICO = 0.05;
 function PuxarPrecos({ pratos, onPronto }) {
   const [lendo, setLendo] = useState(false);
   const [aplicando, setAplicando] = useState(false);
@@ -1337,17 +1344,17 @@ function PuxarPrecos({ pratos, onPronto }) {
 
   const ler = async () => {
     setLendo(true); setErro(""); setRes(null); setVerSemPar(false);
-    const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
-      body: { acao: "catalogo_precos" },
-    });
+    const { data, error } = await supabase.rpc("precos_mais_vendidos", { p_dias: DIAS_PRECOS });
     setLendo(false);
-    if (error) { setErro(await extrairErroFuncao(error)); return; }
-    if (data?.error) { setErro(data.error); return; }
+    if (error) {
+      setErro(/precos_mais_vendidos/.test(error.message || "") ? "Falta rodar a migração 179 no Supabase." : error.message);
+      return;
+    }
 
     const porId = new Map();
     const porNome = new Map();
-    (data.itens || []).forEach((it) => {
-      porId.set(it.id, it);
+    (data || []).forEach((it) => {
+      if (it.item_id != null) porId.set(String(it.item_id), it);
       const k = chaveNome(it.nome);
       if (!k) return;
       if (!porNome.has(k)) porNome.set(k, []);
@@ -1357,22 +1364,30 @@ function PuxarPrecos({ pratos, onPronto }) {
     const mudam = [], semPar = [], codigos = [];
     let iguais = 0;
     pratos.forEach((p) => {
-      let item = p.cardapioweb_item_id != null ? porId.get(p.cardapioweb_item_id) : null;
+      let item = p.cardapioweb_item_id != null ? porId.get(String(p.cardapioweb_item_id)) : null;
       if (!item) {
         const candidatos = porNome.get(chaveNome(p.nome)) || [];
-        if (candidatos.length > 1) { semPar.push({ prato: p, motivo: `${candidatos.length} itens com esse nome no cardápio` }); return; }
-        if (candidatos.length === 0) { semPar.push({ prato: p, motivo: "não achei no cardápio" }); return; }
+        if (candidatos.length > 1) { semPar.push({ prato: p, motivo: `${candidatos.length} itens com esse nome` }); return; }
+        if (candidatos.length === 0) { semPar.push({ prato: p, motivo: `sem venda em ${DIAS_PRECOS} dias` }); return; }
         item = candidatos[0];
-        codigos.push({ pratoId: p.id, itemId: item.id });
+        if (item.item_id != null) codigos.push({ pratoId: p.id, itemId: Number(item.item_id) });
       }
-      const para = Number(item.preco_efetivo) || 0;
+      const para = Number(item.preco) || 0;
       const de = Number(p.preco_venda) || 0;
-      if (Math.abs(para - de) > 0.005) mudam.push({ prato: p, item, de, para });
-      else iguais += 1;
+      if (Math.abs(para - de) <= 0.005) { iguais += 1; return; }
+      if (para < PRECO_SIMBOLICO) { semPar.push({ prato: p, motivo: `preço simbólico de ${brl(para)} nos pedidos` }); return; }
+      const total = Number(item.total_vendidos) || 0;
+      const outros = (item.outros_precos || []).map((o) => brl(o.preco)).join(", ");
+      const dividido = total > 0 && Number(item.vendidos) / total < PARTE_MINIMA_DO_PRECO;
+      const poucas = total < VENDAS_MINIMAS_DO_PRECO;
+      const aviso = dividido
+        ? `Preço variou, pode ser promoção. Também vendeu a ${outros}. ${Number(item.vendidos)} de ${total} a ${brl(para)}.`
+        : poucas ? `Só ${total} ${total === 1 ? "venda" : "vendas"} em ${DIAS_PRECOS} dias.` : "";
+      mudam.push({ prato: p, de, para, aviso });
     });
     mudam.sort((a, b) => a.prato.nome.localeCompare(b.prato.nome));
     semPar.sort((a, b) => a.prato.nome.localeCompare(b.prato.nome));
-    setMarcados(Object.fromEntries(mudam.map((d) => [d.prato.id, !d.item.promocao_ativa])));
+    setMarcados(Object.fromEntries(mudam.map((d) => [d.prato.id, !d.aviso])));
     setRes({ mudam, semPar, iguais, codigos });
   };
 
@@ -1399,7 +1414,7 @@ function PuxarPrecos({ pratos, onPronto }) {
   return (
     <>
       <button onClick={ler} disabled={lendo} style={{ ...btnSec, display: "flex", alignItems: "center", gap: 6 }}>
-        <RefreshCw size={14} /> {lendo ? "Lendo o cardápio…" : "Puxar preços do CardápioWeb"}
+        <RefreshCw size={14} /> {lendo ? "Lendo os pedidos…" : "Puxar preços do CardápioWeb"}
       </button>
       {erro && (
         <div style={{ width: "100%", fontSize: 12, color: "#8E2420", display: "flex", gap: 6, alignItems: "center" }}>
@@ -1409,11 +1424,11 @@ function PuxarPrecos({ pratos, onPronto }) {
       {res && (
         <div style={{ ...card, width: "100%" }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>
-            {res.mudam.length === 0 ? "Nenhum preço diferente no CardápioWeb"
-              : `${res.mudam.length} ${res.mudam.length === 1 ? "preço diferente" : "preços diferentes"} no CardápioWeb`}
+            {res.mudam.length === 0 ? "Nenhum preço diferente nos pedidos"
+              : `${res.mudam.length} ${res.mudam.length === 1 ? "preço diferente" : "preços diferentes"} nos pedidos`}
           </div>
           <div style={{ fontSize: 12, color: "#8A8778", margin: "2px 0 8px" }}>
-            {res.iguais} já {res.iguais === 1 ? "igual" : "iguais"} · nada muda até você aplicar
+            Preço mais vendido no cardápio próprio, últimos {DIAS_PRECOS} dias · {res.iguais} já {res.iguais === 1 ? "igual" : "iguais"} · nada muda até você aplicar
           </div>
           {res.mudam.map((d) => (
             <label key={d.prato.id} style={{ display: "grid", gridTemplateColumns: "22px minmax(0, 1fr) auto", gap: 8, alignItems: "center",
@@ -1422,9 +1437,7 @@ function PuxarPrecos({ pratos, onPronto }) {
                 onChange={(e) => setMarcados((m) => ({ ...m, [d.prato.id]: e.target.checked }))} />
               <span style={{ color: "#22231F", minWidth: 0 }}>
                 {d.prato.nome}
-                {d.item.promocao_ativa && (
-                  <div style={rotuloMini}>Em promoção no CardápioWeb. Preço cheio: {brl(d.item.preco)}</div>
-                )}
+                {d.aviso && <div style={rotuloMini}>{d.aviso}</div>}
               </span>
               <span style={{ whiteSpace: "nowrap" }}>{brl(d.de)} → <b>{brl(d.para)}</b></span>
             </label>
@@ -1448,7 +1461,7 @@ function PuxarPrecos({ pratos, onPronto }) {
               <button onClick={() => setVerSemPar((v) => !v)} aria-expanded={verSemPar}
                 style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "none",
                          background: "transparent", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, color: "#22231F" }}>
-                {res.semPar.length} {res.semPar.length === 1 ? "prato não encontrado" : "pratos não encontrados"} no cardápio
+                {res.semPar.length} {res.semPar.length === 1 ? "prato não alterado" : "pratos não alterados"}
                 <ChevronDown size={15} color="#8A8778" style={{ transform: verSemPar ? "rotate(180deg)" : "none" }} />
               </button>
               {verSemPar && res.semPar.map((x) => (
