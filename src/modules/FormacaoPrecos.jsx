@@ -223,6 +223,11 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
   const jaCarregou = React.useRef(false);
   const [erro, setErro] = useState("");
   const [recado, setRecado] = useState("");
+  // Insumo novo entra direto na lista, sem recarregar a tela inteira:
+  // recarregar apagaria o que ainda não foi salvo na ficha aberta.
+  const incluirInsumo = useCallback((novo) => {
+    setInsumos((atual) => [...atual, novo].sort((a, b) => a.nome.localeCompare(b.nome)));
+  }, []);
   const [canais, setCanais] = useState(CANAIS_PADRAO);
   // Muda quando os valores chegam do banco, pra refazer os campos digitáveis.
   const [canaisVersao, setCanaisVersao] = useState(0);
@@ -362,7 +367,7 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
 
       {aba === "precos" && (
         <AbaPrecos pratos={pratos} insumos={insumos} fichas={fichas} compras={compras}
-          usoPorInsumo={usoPorInsumo} canais={canais}
+          usoPorInsumo={usoPorInsumo} canais={canais} onInsumoCriado={incluirInsumo}
           onErro={setErro} onRecado={setRecado} recarregar={carregar} />
       )}
       {aba === "tabela" && (
@@ -373,7 +378,7 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
       )}
       {aba === "insumos" && (
         <AbaInsumos insumos={insumos} usados={insumosUsados} pratos={pratos} fichas={fichas}
-          compras={compras} semFuncao={semFuncaoCompras}
+          compras={compras} semFuncao={semFuncaoCompras} onInsumoCriado={incluirInsumo}
           resolvidos={resolvidos}
           onResolvido={(id) => setResolvidos((prev) => (prev.includes(id) ? prev : [...prev, id]))}
           verResolvidos={verResolvidos} onVerResolvidos={setVerResolvidos}
@@ -386,7 +391,7 @@ export default function FormacaoPrecos({ abaInicial, onAba }) {
 // ===========================================================================
 // ABA 1 — Preços, produto a produto
 // ===========================================================================
-function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, canais, onErro, onRecado, recarregar }) {
+function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, canais, onInsumoCriado, onErro, onRecado, recarregar }) {
   const [busca, setBusca] = useState("");
   const [filtro, setFiltro] = useState("todos");
   const [corte, setCorte] = useState("65");
@@ -677,7 +682,7 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, canais, onE
 
                   <FichaEditor prato={p} linhas={fichas[p.id] || SEM_FICHA} insumos={insumos}
                     compras={compras} usoPorInsumo={usoPorInsumo}
-                    pratos={pratos} fichas={fichas}
+                    pratos={pratos} fichas={fichas} onInsumoCriado={onInsumoCriado}
                     onErro={onErro} onRecado={onRecado} recarregar={recarregar} />
                 </div>
               )}
@@ -704,7 +709,7 @@ function AbaPrecos({ pratos, insumos, fichas, compras, usoPorInsumo, canais, onE
 // A quantidade é digitada em g/ml/un e guardada em kg/l/un — a conversão
 // acontece no paraBase/paraTela, nunca no meio da tela.
 // ===========================================================================
-function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, pratos, fichas, onErro, onRecado, recarregar }) {
+function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, pratos, fichas, onInsumoCriado, onErro, onRecado, recarregar }) {
   const porId = useMemo(() => {
     const m = {};
     insumos.forEach((i) => { m[i.id] = i; });
@@ -718,6 +723,7 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, pratos, fi
 
   const [itens, setItens] = useState(daBase);
   const [buscaInsumo, setBuscaInsumo] = useState("");
+  const [criandoInsumo, setCriandoInsumo] = useState(false);
   const [salvando, setSalvando] = useState(false);
   const [aviso1, setAviso1] = useState("");
   const [copiando, setCopiando] = useState(false);
@@ -770,7 +776,15 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, pratos, fi
     recarregar();
   };
 
-  useEffect(() => { setItens(daBase()); setAviso1(""); }, [daBase]);
+  // Volta ao salvo só quando a FICHA mudou no banco. A lista de insumos também
+  // muda daBase, mas criar um insumo não pode apagar o que está sendo digitado.
+  const linhasVistas = React.useRef(linhas);
+  useEffect(() => {
+    if (linhasVistas.current === linhas) return;
+    linhasVistas.current = linhas;
+    setItens(daBase());
+    setAviso1("");
+  }, [linhas, daBase]);
 
   // Copiar a ficha de outro prato SOMA ao que já está aqui, em vez de
   // substituir — é o caso do combo, que é o lanche mais a batata mais a
@@ -829,6 +843,8 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, pratos, fi
     .filter((i) => semAcento(i.nome).includes(semAcento(buscaInsumo)))
     .filter((i) => !itens.some((it) => it.insumo_id === i.id))
     .slice(0, 8);
+  const buscaLimpa = buscaInsumo.trim();
+  const podeCriarInsumo = buscaLimpa.length >= 2 && !insumos.some((i) => chaveNome(i.nome) === chaveNome(buscaLimpa));
 
   const salvar = async () => {
     setSalvando(true);
@@ -1033,7 +1049,7 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, pratos, fi
       </div>
 
       <div style={{ marginTop: 10, position: "relative" }}>
-        <input value={buscaInsumo} onChange={(e) => setBuscaInsumo(e.target.value)}
+        <input value={buscaInsumo} onChange={(e) => { setBuscaInsumo(e.target.value); setCriandoInsumo(false); }}
           placeholder="Adicionar ingrediente — digite 2 letras…"
           style={{ ...input, width: "100%" }} />
         {candidatos.length > 0 && (
@@ -1060,6 +1076,32 @@ function FichaEditor({ prato, linhas, insumos, compras, usoPorInsumo, pratos, fi
                 </span>
               </button>
             ))}
+          </div>
+        )}
+        {podeCriarInsumo && !criandoInsumo && (
+          <div style={{ marginTop: 6 }}>
+            {candidatos.length === 0 && (
+              <div style={{ fontSize: 12.5, color: "#8A8778", marginBottom: 6 }}>Nenhum insumo com esse nome.</div>
+            )}
+            <button onClick={() => setCriandoInsumo(true)}
+              style={{ ...btnSec, display: "flex", alignItems: "center", gap: 6 }}>
+              <Plus size={13} /> Criar insumo "{buscaLimpa}"
+            </button>
+          </div>
+        )}
+        {criandoInsumo && (
+          <div style={{ marginTop: 6 }}>
+            <NovoInsumo nomeInicial={buscaLimpa} insumos={insumos} textoBotao="Criar e colocar na ficha"
+              onCancelar={() => setCriandoInsumo(false)}
+              onCriado={(novo, aviso) => {
+                onInsumoCriado(novo);
+                // Mesma regra da busca: un entra com 1; kg e l ficam vazios.
+                setItens((prev) => [...prev, { insumo_id: novo.id, valor: novo.unidade === "un" ? "1" : "" }]);
+                setBuscaInsumo("");
+                setCriandoInsumo(false);
+                if (aviso) onErro(aviso);
+                else onRecado(`${novo.nome} criado. Digite quanto vai no prato e salve a ficha.`);
+              }} />
           </div>
         )}
       </div>
@@ -1315,6 +1357,90 @@ function AbaTabela({ pratos, todosOsPratos, canais, canaisVersao, onMudarCanal, 
         custaria a 65% — a margem que a sua planilha usa como referência. Prato sem ficha técnica
         não tem margem: o custo dele é desconhecido, não é zero. iFood e Keeta são calculados a
         partir do preço e não são gravados: nos aplicativos o preço só muda quando você muda lá.
+      </div>
+    </div>
+  );
+}
+
+// Cadastra um insumo aqui mesmo, sem ir ao Supply Chain. Sem preço ele entra
+// com custo zero, e "Preço dos insumos" já aponta quem falta completar. Com
+// preço, passa pela mesma função de quem corrige preço nesta tela: fica
+// travado em manual, senão a próxima nota trocaria o que acabou de ser digitado.
+function NovoInsumo({ nomeInicial = "", insumos, textoBotao, onCriado, onCancelar }) {
+  const [nome, setNome] = useState(nomeInicial);
+  const [unidade, setUnidade] = useState("kg");
+  const [preco, setPreco] = useState("");
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  const criar = async () => {
+    const limpo = nome.trim();
+    if (!limpo) { setErro("Dê um nome ao insumo."); return; }
+    if (insumos.some((i) => chaveNome(i.nome) === chaveNome(limpo))) {
+      setErro("Já existe um insumo com esse nome. Procure por ele na busca.");
+      return;
+    }
+    const valor = preco.trim() === "" ? 0 : paraNumero(preco);
+    if (valor === null || valor < 0) { setErro("Digite o preço só com números, como 49,90."); return; }
+
+    setSalvando(true); setErro("");
+    const colunas = "id, nome, unidade, custo_medio_atual, composto, origem_custo, custo_manual";
+    const { data, error } = await supabase.from("insumos")
+      .insert({ nome: limpo, unidade }).select(colunas).single();
+    if (error) {
+      setSalvando(false);
+      setErro(/duplicate key|23505/i.test(error.message || "")
+        ? "Já existe um insumo com esse nome. Procure por ele na busca."
+        : error.message);
+      return;
+    }
+    let novo = data;
+    let aviso = "";
+    if (valor > 0) {
+      const { error: ePreco } = await supabase.rpc("definir_custo_insumo", {
+        p_insumo: data.id, p_origem: "manual", p_valor: valor,
+      });
+      if (ePreco) {
+        aviso = `${limpo} foi criado, mas o preço não foi gravado: ${
+          /sem_acesso/.test(ePreco.message || "") ? "seu acesso não permite mudar o custo dos insumos." : ePreco.message}`;
+      } else {
+        const { data: lido } = await supabase.from("insumos").select(colunas).eq("id", data.id).maybeSingle();
+        novo = lido || { ...data, custo_medio_atual: valor };
+      }
+    }
+    setSalvando(false);
+    onCriado(novo, aviso);
+  };
+
+  return (
+    <div style={{ ...card, background: "#FBF7EC" }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F", marginBottom: 8 }}>Novo insumo</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+        <label style={{ fontSize: 11.5, color: "#8A8778" }}>
+          Nome
+          <input value={nome} onChange={(e) => setNome(e.target.value)} autoFocus
+            style={{ ...input, width: "100%", marginTop: 3, display: "block" }} />
+        </label>
+        <label style={{ fontSize: 11.5, color: "#8A8778" }}>
+          Comprado em
+          <select value={unidade} onChange={(e) => setUnidade(e.target.value)}
+            style={{ ...input, width: "100%", marginTop: 3, display: "block" }}>
+            {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 11.5, color: "#8A8778" }}>
+          Preço por {unidade} (R$)
+          <input value={preco} onChange={(e) => setPreco(e.target.value)} inputMode="decimal" placeholder="opcional"
+            style={{ ...input, width: "100%", textAlign: "right", marginTop: 3, display: "block" }} />
+        </label>
+      </div>
+      <div style={{ fontSize: 11.5, color: "#8A8778", marginTop: 7 }}>
+        Sem preço, o insumo entra com custo zero e fica em "Preço dos insumos" para completar.
+      </div>
+      {erro && <div style={{ fontSize: 12, color: "#8E2420", marginTop: 7 }}>{erro}</div>}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 9 }}>
+        <button onClick={onCancelar} style={btnSec}>Cancelar</button>
+        <button onClick={criar} disabled={salvando} style={btnPri}>{salvando ? "Criando…" : textoBotao}</button>
       </div>
     </div>
   );
@@ -1771,7 +1897,7 @@ function textoPreco(v) {
 // A tela é uma fila de pendências: linha arrumada que continua ali é linha
 // que você vai reler amanhã pra lembrar que já tinha arrumado. Por isso o
 // insumo salvo sai da lista na hora — sai da vista, não do banco.
-function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
+function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onInsumoCriado,
                       resolvidos, onResolvido, verResolvidos, onVerResolvidos,
                       onErro, onRecado, recarregar }) {
   // edit[id] = { origem?, valor?, unidade?, forcar? }
@@ -1779,6 +1905,7 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
   const [busca, setBusca] = useState("");
   const [situacao, setSituacao] = useState("atencao");
   const [soUsados, setSoUsados] = useState(true);
+  const [criandoInsumo, setCriandoInsumo] = useState(false);
   const [abrindo, setAbrindo] = useState(null);   // id com o painel aberto sem ter mudado nada
   const [calc, setCalc] = useState({});           // id -> { pago, qtd, unidade }
   const [salvando, setSalvando] = useState(null);
@@ -2000,7 +2127,28 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao,
           <input type="checkbox" checked={soUsados} onChange={(e) => setSoUsados(e.target.checked)} />
           Só os que estão em alguma ficha
         </label>
+        <button onClick={() => setCriandoInsumo((v) => !v)} style={{ ...btnPri, display: "flex", alignItems: "center", gap: 6 }}>
+          <Plus size={14} /> Novo insumo
+        </button>
       </div>
+
+      {criandoInsumo && (
+        <div style={{ marginBottom: 10 }}>
+          <NovoInsumo nomeInicial={busca.trim()} insumos={insumos} textoBotao="Criar insumo"
+            onCancelar={() => setCriandoInsumo(false)}
+            onCriado={(novo, avisoPreco) => {
+              onInsumoCriado(novo);
+              setCriandoInsumo(false);
+              // Insumo novo não está em ficha nenhuma: com os filtros de antes
+              // ele seria criado e não apareceria, parecendo que não funcionou.
+              setBusca(novo.nome);
+              setSituacao("todos");
+              setSoUsados(false);
+              if (avisoPreco) onErro(avisoPreco);
+              else onRecado(`${novo.nome} criado.`);
+            }} />
+        </div>
+      )}
 
       {pendentes.length > 0 && (
         <div style={{ ...aviso }}>
