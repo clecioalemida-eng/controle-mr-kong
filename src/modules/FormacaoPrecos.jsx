@@ -31,7 +31,7 @@
 // − custo). Mudar a margem na tela mostra na hora quanto o mês teria
 // dado com aquele preço, sem precisar esperar o mês seguinte.
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { Loader2, AlertTriangle, Check, Search, RefreshCw, Plus, X, Save, ChevronDown } from "lucide-react";
+import { Loader2, AlertTriangle, Check, Search, RefreshCw, Plus, X, Save, ChevronDown, Pencil, Trash2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 function brl(v) {
@@ -1906,6 +1906,61 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onIns
   const [situacao, setSituacao] = useState("atencao");
   const [soUsados, setSoUsados] = useState(true);
   const [criandoInsumo, setCriandoInsumo] = useState(false);
+  const [renomeando, setRenomeando] = useState(null);   // { id, nome }
+  const [excluindo, setExcluindo] = useState(null);     // id com a confirmação aberta
+  const [gravandoLinha, setGravandoLinha] = useState(false);
+  const [erroLinha, setErroLinha] = useState("");
+
+  const abrirRenomear = (i) => { setRenomeando({ id: i.id, nome: i.nome }); setExcluindo(null); setErroLinha(""); };
+  const abrirExcluir = (i) => { setExcluindo(i.id); setRenomeando(null); setErroLinha(""); };
+
+  const salvarNome = async (i) => {
+    const nome = renomeando.nome.trim();
+    if (!nome) { setErroLinha("Dê um nome ao insumo."); return; }
+    if (nome === i.nome) { setRenomeando(null); return; }
+    if (insumos.some((x) => x.id !== i.id && chaveNome(x.nome) === chaveNome(nome))) {
+      setErroLinha("Já existe um insumo com esse nome.");
+      return;
+    }
+    setGravandoLinha(true); setErroLinha("");
+    const { error } = await supabase.from("insumos")
+      .update({ nome, atualizado_em: new Date().toISOString() }).eq("id", i.id);
+    setGravandoLinha(false);
+    if (error) {
+      setErroLinha(/duplicate key|23505/i.test(error.message || "") ? "Já existe um insumo com esse nome." : error.message);
+      return;
+    }
+    setRenomeando(null);
+    // A busca podia estar no nome antigo; sem isto o insumo sumiria da lista.
+    if (busca.trim()) setBusca(nome);
+    onRecado(`Nome alterado para ${nome}.`);
+    recarregar();
+  };
+
+  // Os pratos que usam o insumo, para o bloqueio dizer onde ele está.
+  const pratosDoInsumo = (id) => pratos
+    .filter((p) => (fichas[p.id] || []).some((l) => l.insumo_id === id))
+    .map((p) => p.nome);
+
+  // A exclusão segura do Supply Chain: recusa quem está em ficha ou tem
+  // movimento de estoque. Um delete direto apagaria esse histórico junto.
+  const confirmarExclusao = async (i) => {
+    const usam = pratosDoInsumo(i.id);
+    if (usam.length > 0) {
+      const lista = usam.slice(0, 5).join(", ") + (usam.length > 5 ? ` e mais ${usam.length - 5}` : "");
+      setErroLinha(`"${i.nome}" está em ${usam.length} ${usam.length === 1 ? "prato" : "pratos"}: ${lista}. Tire das fichas antes de excluir.`);
+      return;
+    }
+    setGravandoLinha(true); setErroLinha("");
+    const { data, error } = await supabase.rpc("excluir_insumos", { p_ids: [i.id] });
+    setGravandoLinha(false);
+    if (error) { setErroLinha(error.message); return; }
+    const r = (data || [])[0];
+    if (!r?.excluido) { setErroLinha(r?.motivo || "O banco não confirmou a exclusão. O insumo continua cadastrado."); return; }
+    setExcluindo(null);
+    onRecado(`${i.nome} excluído.`);
+    recarregar();
+  };
   const [abrindo, setAbrindo] = useState(null);   // id com o painel aberto sem ter mudado nada
   const [calc, setCalc] = useState({});           // id -> { pago, qtd, unidade }
   const [salvando, setSalvando] = useState(null);
@@ -2230,6 +2285,14 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onIns
                         background: alterado ? "#FBF7EC" : dv ? "#FDFBF4" : "transparent" }}>
                     <td style={{ ...td, color: "#22231F" }}>
                       {i.nome}
+                      <button onClick={() => abrirRenomear(i)} aria-label={`Editar o nome de ${i.nome}`} title="Editar nome"
+                        style={{ background: "none", border: "none", padding: "2px 4px", cursor: "pointer", color: "#8A8778", verticalAlign: "middle" }}>
+                        <Pencil size={13} />
+                      </button>
+                      <button onClick={() => abrirExcluir(i)} aria-label={`Excluir ${i.nome}`} title="Excluir insumo"
+                        style={{ background: "none", border: "none", padding: "2px 4px", cursor: "pointer", color: "#C4432B", verticalAlign: "middle" }}>
+                        <Trash2 size={13} />
+                      </button>
                       <div style={rotuloMini}>
                         {n === 0 ? "não está em nenhuma ficha" : `em ${n} ${n === 1 ? "prato" : "pratos"}`}
                       </div>
@@ -2331,6 +2394,42 @@ function AbaInsumos({ insumos, usados, pratos, fichas, compras, semFuncao, onIns
                       )}
                     </td>
                   </tr>
+
+                  {renomeando?.id === i.id && (
+                    <tr style={{ background: "#FBF7EC" }}>
+                      <td colSpan={5} style={{ padding: "10px 13px" }}>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                          <input value={renomeando.nome} autoFocus aria-label="Nome do insumo"
+                            onChange={(e) => { setRenomeando({ id: i.id, nome: e.target.value }); setErroLinha(""); }}
+                            onKeyDown={(e) => { if (e.key === "Enter") salvarNome(i); if (e.key === "Escape") setRenomeando(null); }}
+                            style={{ ...input, flex: 1, minWidth: 180 }} />
+                          <button onClick={() => setRenomeando(null)} style={btnSec}>Cancelar</button>
+                          <button onClick={() => salvarNome(i)} disabled={gravandoLinha} style={btnPri}>
+                            {gravandoLinha ? "Salvando…" : "Salvar nome"}
+                          </button>
+                        </div>
+                        {erroLinha && <div style={{ fontSize: 12, color: "#8E2420", marginTop: 6 }}>{erroLinha}</div>}
+                      </td>
+                    </tr>
+                  )}
+
+                  {excluindo === i.id && (
+                    <tr style={{ background: "#FBF7EC" }}>
+                      <td colSpan={5} style={{ padding: "10px 13px" }}>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
+                          <span style={{ fontSize: 13, color: "#22231F" }}>Excluir "{i.nome}"? Não dá para desfazer.</span>
+                          <span style={{ display: "flex", gap: 8 }}>
+                            <button onClick={() => setExcluindo(null)} style={btnSec}>Cancelar</button>
+                            <button onClick={() => confirmarExclusao(i)} disabled={gravandoLinha}
+                              style={{ ...btnSec, color: "#8E2420", borderColor: "#E3B4AB" }}>
+                              {gravandoLinha ? "Excluindo…" : "Excluir insumo"}
+                            </button>
+                          </span>
+                        </div>
+                        {erroLinha && <div style={{ fontSize: 12, color: "#8E2420", marginTop: 6 }}>{erroLinha}</div>}
+                      </td>
+                    </tr>
+                  )}
 
                   {painelAberto && (
                     <tr style={{ background: "#FBF7EC" }}>
