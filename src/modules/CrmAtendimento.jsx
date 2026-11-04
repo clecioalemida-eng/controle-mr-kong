@@ -107,6 +107,8 @@ export default function CrmAtendimento({ permissoes }) {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const [filtro, setFiltro] = useState("para_voce");
+  const [linhas, setLinhas] = useState([]);
+  const [filtroLinha, setFiltroLinha] = useState("todas");
   const [abertaId, setAbertaId] = useState(null);
   const [som, setSom] = useState(lerPreferenciaSom);
   const statusAnterior = useRef(new Map());
@@ -116,7 +118,7 @@ export default function CrmAtendimento({ permissoes }) {
   const carregar = useCallback(async () => {
     const { data, error } = await supabase
       .from("wa_conversas")
-      .select("id, telefone, nome, status, motivo, resumo_passagem, passada_em, ultima_msg_em, ultima_msg_cliente_em, ultima_previa, nao_lidas, cliente_id")
+      .select("id, telefone, nome, status, motivo, resumo_passagem, passada_em, ultima_msg_em, ultima_msg_cliente_em, ultima_previa, nao_lidas, cliente_id, linha_id")
       .order("ultima_msg_em", { ascending: false, nullsFirst: false })
       .limit(200);
     setCarregando(false);
@@ -150,6 +152,13 @@ export default function CrmAtendimento({ permissoes }) {
     return () => { supabase.removeChannel(canal); clearInterval(t); };
   }, [carregar]);
 
+  // Sem a migração 184 a consulta volta sem as colunas novas e a tela segue
+  // com um número só, como antes.
+  useEffect(() => {
+    supabase.from("wa_linhas").select("id, nome, tipo, estado").order("tipo", { ascending: false })
+      .then(({ data }) => setLinhas(data || []));
+  }, []);
+
   const alternarSom = () => {
     const v = !som;
     setSom(v);
@@ -162,9 +171,13 @@ export default function CrmAtendimento({ permissoes }) {
     return <Conversa conversaInicial={c} id={abertaId} editar={editar} onVoltar={() => { setAbertaId(null); carregar(); }} />;
   }
 
-  const paraVoce = conversas.filter((c) => c.status === "atendente");
-  const comAgente = conversas.filter((c) => c.status === "agente");
-  const lista = filtro === "para_voce" ? paraVoce : filtro === "agente" ? comAgente : conversas;
+  const daLinha = conversas.filter((c) => filtroLinha === "todas" || c.linha_id === filtroLinha);
+  const paraVoce = daLinha.filter((c) => c.status === "atendente");
+  const comAgente = daLinha.filter((c) => c.status === "agente");
+  const lista = filtro === "para_voce" ? paraVoce : filtro === "agente" ? comAgente : daLinha;
+  // Filtro e selo só aparecem com o segundo número ligado.
+  const conectadas = linhas.filter((l) => l.estado === "conectada");
+  const nomeLinha = (id) => (conectadas.length > 1 ? linhas.find((l) => l.id === id)?.nome || "" : "");
   const fechando = conversas.filter((c) => {
     const j = janelaInfo(c);
     return j && j.estado === "urgente";
@@ -175,6 +188,14 @@ export default function CrmAtendimento({ permissoes }) {
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
+      {conectadas.length > 1 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[{ id: "todas", nome: "Todas" }, ...conectadas].map((l) => (
+            <button key={l.id} onClick={() => setFiltroLinha(l.id)}
+              style={{ ...chipBtn, ...(filtroLinha === l.id ? chipAtivo : {}) }}>{l.nome}</button>
+          ))}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
         <button onClick={() => setFiltro("para_voce")} style={{ ...chipBtn, ...(filtro === "para_voce" ? chipAmarelo : {}) }}>
           Para você · {paraVoce.length}
@@ -219,14 +240,14 @@ export default function CrmAtendimento({ permissoes }) {
         </div>
       ) : (
         <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
-          {lista.map((c) => <LinhaConversa key={c.id} c={c} onAbrir={() => setAbertaId(c.id)} />)}
+          {lista.map((c) => <LinhaConversa key={c.id} c={c} nomeLinha={nomeLinha(c.linha_id)} onAbrir={() => setAbertaId(c.id)} />)}
         </div>
       )}
     </div>
   );
 }
 
-function LinhaConversa({ c, onAbrir }) {
+function LinhaConversa({ c, nomeLinha, onAbrir }) {
   const comVoce = c.status === "atendente";
   const espera = comVoce ? minutosDesde(c.passada_em || c.ultima_msg_em) : null;
   const janela = janelaInfo(c);
@@ -242,7 +263,13 @@ function LinhaConversa({ c, onAbrir }) {
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-          <span style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>{nome}</span>
+          <span style={{ fontWeight: 700, fontSize: 14, color: "#22231F" }}>
+            {nome}
+            {nomeLinha && (
+              <span style={{ fontSize: 11, fontWeight: 600, color: "#6B6558", background: "#F7F4EC", border: "1px solid #E8E2D2",
+                             borderRadius: 999, padding: "1px 7px", marginLeft: 6 }}>{nomeLinha}</span>
+            )}
+          </span>
           <span style={{ fontSize: 12, color: "#8A8778", flexShrink: 0 }}>{horaCurta(c.ultima_msg_em)}</span>
         </div>
         <div style={{ fontSize: 13, color: "#5E5C52", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 2 }}>

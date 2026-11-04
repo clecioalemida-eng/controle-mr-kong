@@ -79,8 +79,9 @@ export default function CrmAgente({ permissoes }) {
 }
 
 // ---------------------------------------------------------------------------
-// Conectar o WhatsApp do Kong (coexistência): o número continua no app do
-// celular e o agente passa a responder nele também. Migração 129.
+// As duas linhas de WhatsApp (migração 184). A oficial fica só na API. A do
+// balcão fica em coexistência: o número continua no app do celular, as ligações
+// também, e o agente responde nele sem tirar a oficial do ar.
 function carregarSdkFacebook() {
   if (window.FB) return Promise.resolve(window.FB);
   return new Promise((ok, falha) => {
@@ -94,23 +95,45 @@ function carregarSdkFacebook() {
   });
 }
 
+function telefoneBonito(n) {
+  return String(n || "").replace(/^55(\d{2})(\d{4,5})(\d{4})$/, "($1) $2-$3");
+}
+
+function AgenteNaLinha({ linha, editar, onMudou, onErro }) {
+  const [salvando, setSalvando] = useState(false);
+  const mudar = async (ligado) => {
+    setSalvando(true); onErro("");
+    const { error } = await supabase.functions.invoke("whatsapp-agente", {
+      body: { acao: "linha_agente", linha_id: linha.id, ligado },
+    });
+    setSalvando(false);
+    if (error) onErro(await lerErroDaFuncao(error)); else onMudou();
+  };
+  return (
+    <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "#55534A", cursor: editar ? "pointer" : "default" }}>
+      Agente responde
+      <input type="checkbox" checked={linha.agente_ligado !== false} disabled={!editar || salvando}
+        onChange={(e) => mudar(e.target.checked)} />
+    </label>
+  );
+}
+
 function ConexaoKong({ editar }) {
   const [st, setSt] = useState(null);
+  const [linhas, setLinhas] = useState([]);
   const [trabalhando, setTrabalhando] = useState(false);
   const [msg, setMsg] = useState("");
   const [erro, setErro] = useState("");
 
   const carregar = useCallback(async () => {
-    const { data, error } = await supabase.rpc("crm_conexao_status");
+    const [{ data, error }, { data: lista }] = await Promise.all([
+      supabase.rpc("crm_conexao_status"),
+      supabase.from("wa_linhas").select("id, nome, numero, tipo, estado, agente_ligado"),
+    ]);
     if (!error) setSt(data || null);
+    setLinhas(lista || []);
   }, []);
   useEffect(() => { carregar(); }, [carregar]);
-  // enquanto o histórico chega, confere a cada 10 s
-  useEffect(() => {
-    if (!st?.ativo || !["pedido", "recebendo"].includes(st?.historico_status)) return undefined;
-    const t = setInterval(carregar, 10000);
-    return () => clearInterval(t);
-  }, [st, carregar]);
 
   const conectar = async () => {
     setErro(""); setMsg(""); setTrabalhando(true);
@@ -154,7 +177,7 @@ function ConexaoKong({ editar }) {
         body: { acao: "coexistencia", code, app_id: info.app_id, waba_id: sessao.waba_id, phone_number_id: sessao.phone_number_id || "" },
       });
       if (e2) throw new Error(await lerErroDaFuncao(e2));
-      setMsg(`Conectado${r?.numero ? ` (${r.numero})` : ""}. O histórico está chegando; mande um “oi” de outro celular para testar.`
+      setMsg(`Conectado${r?.numero ? ` (${r.numero})` : ""}. As conversas antigas do celular não entram no painel. Mande um “oi” de outro celular para testar.`
         + (r?.aviso ? ` Aviso da Meta: ${r.aviso}` : ""));
       carregar();
     } catch (e) {
@@ -165,60 +188,67 @@ function ConexaoKong({ editar }) {
   };
 
   const desconectar = async () => {
-    // "Número oficial" = o da API da Meta, o que a Edge Function usa quando
-    // a coexistência não está ligada. Até 30/10/2026 estes textos diziam
-    // "número de teste", herança de antes de 22/09, quando era mesmo o de
-    // teste da Meta — e confundiam quem lia achando que o agente estava fora.
-    if (!window.confirm("Voltar o agente para o número oficial (API)? O WhatsApp do Kong continua funcionando normal no celular.")) return;
+    if (!window.confirm("Desconectar o número do balcão do painel? Ele continua funcionando normal no celular, e a linha oficial não muda.")) return;
     setTrabalhando(true); setErro("");
     const { error } = await supabase.functions.invoke("whatsapp-agente", { body: { acao: "desconectar" } });
     setTrabalhando(false);
     if (error) setErro(await lerErroDaFuncao(error));
-    else { setMsg("O agente voltou para o número oficial (API)."); carregar(); }
+    else { setMsg("O número do balcão saiu do painel. Ele continua funcionando no celular."); carregar(); }
   };
 
   if (st === null) return null; // migração 129 ainda não rodou
   const ativo = !!st.ativo;
-  const numeroFmt = st.numero ? st.numero.replace(/^55(\d{2})(\d{4,5})(\d{4})$/, "($1) $2-$3") : "(64) 99246-8524";
-  const hist = st.historico_status;
-  const textoHist = !ativo ? null
-    : hist === "concluido" ? `Histórico importado: ${st.historico_mensagens} mensagens`
-    : hist === "recusado" ? "O histórico não foi liberado no celular (só as conversas novas aparecem)."
-    : `Histórico: importando conversas dos últimos 6 meses${st.historico_progresso ? ` · ${st.historico_progresso}%` : ""}${st.historico_mensagens ? ` · ${st.historico_mensagens} mensagens` : ""}`;
+  const oficial = linhas.find((l) => l.tipo === "oficial");
+  const balcao = linhas.find((l) => l.tipo === "coexistencia");
+  if (!balcao) return null; // migração 184 ainda não rodou
+  const bolinha = (ligado) => (
+    <span style={{ width: 10, height: 10, borderRadius: 99, flexShrink: 0, background: ligado ? "#2F8F5B" : "#8A8778" }} />
+  );
 
   return (
     <section style={cardStyle}>
+      {oficial && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", paddingBottom: 12, borderBottom: "1px solid #EFE9DA", marginBottom: 12 }}>
+          {bolinha(true)}
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#22231F" }}>{oficial.nome} · {telefoneBonito(oficial.numero)}</div>
+            <div style={{ fontSize: 12, color: "#8A8778" }}>Só no painel. Campanhas saem por aqui.</div>
+          </div>
+          <AgenteNaLinha linha={oficial} editar={editar} onMudou={carregar} onErro={setErro} />
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ width: 10, height: 10, borderRadius: 99, background: ativo ? "#2F8F5B" : "#8A8778" }} />
+        {bolinha(ativo)}
         <div style={{ flex: 1, minWidth: 200 }}>
           <div style={{ fontWeight: 700, fontSize: 15, color: "#22231F" }}>
-            WhatsApp do Kong · {ativo ? "conectado" : "não conectado"}
+            {balcao.nome} · {telefoneBonito(balcao.numero)} · {ativo ? "conectado" : "não conectado"}
           </div>
           <div style={{ fontSize: 12, color: "#8A8778" }}>
-            {ativo
-              ? `${numeroFmt}${st.nome ? ` · ${st.nome}` : ""}. App do celular e agente no mesmo número; ligações continuam no app.`
-              : "Conecte o número que já está no app WhatsApp Business. Nada é apagado; enquanto isso, o agente continua respondendo pelo número oficial (API)."}
+            No celular e no painel. As ligações continuam no celular.
+            {ativo && " Quando alguém responde pelo celular, o agente fica quieto naquela conversa."}
+            {" "}Campanha nunca sai por esta linha.
           </div>
         </div>
+        {ativo && <AgenteNaLinha linha={balcao} editar={editar} onMudou={carregar} onErro={setErro} />}
         {editar && !ativo && (
           <button onClick={conectar} disabled={trabalhando} style={btnPrimary}>
-            {trabalhando ? <Loader2 size={14} /> : <PlugZap size={14} />} Conectar WhatsApp do Kong
+            {trabalhando ? <Loader2 size={14} /> : <PlugZap size={14} />} Conectar o número do balcão
           </button>
         )}
         {editar && ativo && (
-          <button onClick={desconectar} disabled={trabalhando} style={btnSecondary}>Voltar para o número oficial</button>
+          <button onClick={desconectar} disabled={trabalhando} style={btnSecondary}>Desconectar</button>
         )}
       </div>
       {!ativo && editar && (
         <div style={{ ...avisoStyle, marginTop: 12 }}>
           <AlertTriangle size={16} style={{ flexShrink: 0 }} />
           <div>
-            Na janela da Meta escolha <b>“Conectar app WhatsApp Business existente”</b>, digite o número do Kong e confirme no
-            celular do Kong (o app mostra o aviso/QR code). Deixe o celular por perto: a Meta dá 24 horas para terminar.
+            Na janela da Meta escolha <b>“Conectar app WhatsApp Business existente”</b>, digite {telefoneBonito(balcao.numero)} e
+            confirme no celular do balcão (o app mostra o aviso/QR code). Deixe o celular por perto: a Meta dá 24 horas para
+            terminar. Outro número é recusado, e a linha oficial não muda. As conversas antigas do celular não entram no painel.
           </div>
         </div>
       )}
-      {textoHist && <div style={{ marginTop: 10 }}><Linha ok={hist !== "recusado"} texto={textoHist} /></div>}
       {ativo && st.contatos > 0 && <Linha ok texto={`Contatos do app: ${st.contatos}`} />}
       {msg && <div style={{ marginTop: 10, background: "#E0EFE3", color: "#1F5134", borderRadius: 10, padding: 10, fontSize: 13 }}>{msg}</div>}
       {erro && <div style={{ marginTop: 10, color: "#C4432B", fontSize: 13 }}>{erro}</div>}
