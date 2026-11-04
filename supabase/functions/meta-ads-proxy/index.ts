@@ -19,6 +19,8 @@
 //   - patrocinio_dados        posts do Instagram + visualizações + quanto
 //                             cada um já gastou + teto do mês + configuração
 //   - patrocinar              aprova e publica um patrocínio (só aprovador)
+//   - analisar_anuncio        retenção e cliques de um anúncio de vídeo, e os
+//                             outros anúncios de vídeo para comparar. Só leitura.
 //   - buscar_interesses       (057) procura interesses na Meta pelo nome
 //   - subir_midia             (058/059) manda para a Meta um video ou foto
 //                             que esta no Storage, sem passar pelo feed.
@@ -143,6 +145,7 @@ Deno.serve(async (req) => {
     if (acao === "patrocinio_dados") return await patrocinioDados(admin, token, contaId, usuarioId, cors);
     if (acao === "patrocinar")     return await patrocinar(admin, token, contaId, usuarioId, body, cors);
     if (acao === "buscar_interesses") return await buscarInteresses(token, body, cors);
+    if (acao === "analisar_anuncio") return await analisarAnuncio(token, contaId, body, cors);
     if (acao === "subir_midia")    return await subirMidia(admin, token, contaId, usuarioId, body, cors);
     if (acao === "estado_midia")   return await estadoMidia(admin, token, body, cors);
     if (acao === "sorteio_previa") return await sorteioPrevia(admin, token, contaId, body, cors);
@@ -689,6 +692,52 @@ async function saudeDaConta(token: string, contaId: string) {
     saldo,
     sem_verba: prePaga && saldo != null && saldo <= 0,
   };
+}
+
+// Quanto um anúncio de vídeo prendeu. A Meta entrega cada etapa como uma lista
+// de ações: 3 segundos vem em `actions`, com o tipo video_view, e o resto em
+// campos próprios. A tela faz a conta do veredito.
+function valorDeVideo(lista: any) {
+  return Array.isArray(lista) ? lista.reduce((s: number, x: any) => s + (Number(x?.value) || 0), 0) : 0;
+}
+function metricasDoAnuncio(r: any) {
+  return {
+    anuncio_id: r.ad_id,
+    impressoes: int(r.impressions),
+    alcance: int(r.reach),
+    frequencia: num(r.frequency),
+    gasto: num(r.spend),
+    cliques: int(r.inline_link_clicks),
+    v3s: valorDeVideo((r.actions ?? []).filter((a: any) => a?.action_type === "video_view")),
+    p25: valorDeVideo(r.video_p25_watched_actions),
+    p50: valorDeVideo(r.video_p50_watched_actions),
+    p75: valorDeVideo(r.video_p75_watched_actions),
+    p100: valorDeVideo(r.video_p100_watched_actions),
+  };
+}
+
+async function analisarAnuncio(token: string, contaId: string, body: any, cors: any) {
+  const id = String(body.anuncio_id ?? "");
+  if (!/^\d{5,30}$/.test(id)) return json({ error: "Anúncio inválido." }, 400, cors);
+  const url = new URL(`${API}/${contaId}/insights`);
+  url.searchParams.set("level", "ad");
+  url.searchParams.set("date_preset", "maximum");
+  url.searchParams.set("fields",
+    "ad_id,impressions,reach,frequency,spend,inline_link_clicks,actions," +
+    "video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions,video_p100_watched_actions");
+  url.searchParams.set("limit", "500");
+  try {
+    const todos = (await metaGetPaginado(url, token)).map(metricasDoAnuncio);
+    return json({
+      ok: true,
+      anuncio: todos.find((a: any) => a.anuncio_id === id) ?? null,
+      // Só compara com vídeo que rodou de verdade: anúncio com poucas
+      // exibições tem porcentagem de sorte.
+      outros: todos.filter((a: any) => a.anuncio_id !== id && a.v3s > 0 && a.impressoes >= 1000),
+    }, 200, cors);
+  } catch (e) {
+    return json({ error: String(e instanceof Error ? e.message : e) }, 502, cors);
+  }
 }
 
 // (057) Procura interesses na Meta pelo nome. Só leitura.

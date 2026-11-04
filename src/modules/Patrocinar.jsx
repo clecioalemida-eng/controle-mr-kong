@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Loader2, AlertTriangle, CheckCircle2, Info, ExternalLink, Rocket, MapPin, RefreshCw, Download, X,
-  Maximize2, Minimize2,
+  Maximize2, Minimize2, BarChart3,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
@@ -110,7 +110,7 @@ export default function Patrocinar() {
       {resultado && <Aviso tipo={resultado.tipo} texto={resultado.texto} />}
       {(avisos || []).map((a, i) => <Aviso key={i} tipo="info" texto={a} />)}
 
-      <NoAr lista={noAr} podeEncerrar={podeAprovar} aoRecarregar={carregar} />
+      <NoAr lista={noAr} posts={posts} podeEncerrar={podeAprovar} aoRecarregar={carregar} />
 
       <div style={cardStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1161,7 +1161,7 @@ async function baixar(p) {
 }
 
 // Tudo o que está rodando na conta agora — do painel, da agência, do Gerenciador.
-function NoAr({ lista, podeEncerrar, aoRecarregar }) {
+function NoAr({ lista, posts, podeEncerrar, aoRecarregar }) {
   const [encerrando, setEncerrando] = useState(null);
   const [msg, setMsg] = useState(null);
 
@@ -1212,6 +1212,7 @@ function NoAr({ lista, podeEncerrar, aoRecarregar }) {
         <div style={dica}>Nenhum anúncio rodando na conta agora — nem pelo painel, nem pelo Gerenciador.</div>
       ) : lista.map((a) => (
         <AnuncioNoAr key={a.anuncio_id} a={a}
+                     tipoPost={(posts || []).find((p) => p.id === a.midia_id)?.tipo}
                      podeEncerrar={podeEncerrar}
                      encerrando={encerrando === a.anuncio_id}
                      aoEncerrar={encerrar} />
@@ -1244,7 +1245,157 @@ const OTIMIZA = {
   PROFILE_VISIT: "visitas ao perfil", VALUE: "valor de venda",
 };
 
-function AnuncioNoAr({ a, podeEncerrar, aoEncerrar, encerrando }) {
+// ---------------------------------------------------------------------------
+// Analisar vídeo
+//
+// O veredito é conta, não opinião: sai dos números da Meta, por regras fixas,
+// sem IA. Mede atenção e clique, não venda: o painel não liga anúncio a pedido.
+//
+// Prender = quem assistiu 3 segundos entre quem viu na tela.
+// Segurar = quem chegou à metade entre quem passou dos 3 segundos.
+// Com 3 ou mais vídeos da conta para comparar, o limite é a mediana deles,
+// porque a referência certa é o próprio Mr Kong. Antes disso, valem estes
+// pontos de partida, que são referência de mercado, não regra da Meta.
+const MINIMO_EXIBICOES = 1000;
+const REFERENCIA = { prender: 0.25, segurar: 0.25, clique: 0.01 };
+const FREQUENCIA_CANSADA = 3;
+
+function medianaDe(lista) {
+  const v = lista.filter((x) => Number.isFinite(x)).sort((x, y) => x - y);
+  if (!v.length) return null;
+  const m = Math.floor(v.length / 2);
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+const taxasDo = (m) => ({
+  prender: m.impressoes > 0 ? m.v3s / m.impressoes : 0,
+  segurar: m.v3s > 0 ? m.p50 / m.v3s : 0,
+  clique: m.impressoes > 0 ? m.cliques / m.impressoes : 0,
+  custoClique: m.cliques > 0 ? m.gasto / m.cliques : null,
+});
+
+export function analisarVideo(m, outros = []) {
+  const t = taxasDo(m);
+  const dos = outros.map(taxasDo);
+  const base = dos.length >= 3
+    ? {
+        prender: medianaDe(dos.map((x) => x.prender)),
+        segurar: medianaDe(dos.map((x) => x.segurar)),
+        clique: medianaDe(dos.map((x) => x.clique)),
+      }
+    : REFERENCIA;
+  const melhorQue = (f, menorEMelhor = false) => {
+    const lista = dos.map(f).filter((x) => x != null);
+    const v = f(t);
+    if (v == null || lista.length === 0) return null;
+    return { de: lista.filter((x) => (menorEMelhor ? v < x : v > x)).length, total: lista.length };
+  };
+  const comp = { clique: melhorQue((x) => x.clique), custo: melhorQue((x) => x.custoClique, true) };
+
+  if (m.v3s <= 0 && m.impressoes >= MINIMO_EXIBICOES) {
+    return { tipo: "sem_video", titulo: "A Meta não trouxe dados de vídeo deste anúncio.",
+             dica: "Ele pode ser de foto. Se for vídeo, tente de novo mais tarde.", tom: "neutro", t, comp };
+  }
+  if (m.impressoes < MINIMO_EXIBICOES) {
+    return { tipo: "cedo", titulo: `Ainda é cedo: ${m.impressoes.toLocaleString("pt-BR")} exibições.`,
+             dica: `Com menos de ${MINIMO_EXIBICOES.toLocaleString("pt-BR")}, a porcentagem muda muito de um dia para o outro.`, tom: "neutro", t, comp };
+  }
+  if (t.prender < base.prender) {
+    return { tipo: "comeco", titulo: "O começo não está prendendo.",
+             dica: "A maioria passa antes de 3 segundos. Teste abrir com o prato ou a oferta logo na primeira imagem.", tom: "ruim", t, comp };
+  }
+  if (t.segurar < base.segurar) {
+    return { tipo: "meio", titulo: "O começo prende, mas o vídeo perde gente antes de vender.",
+             dica: "Teste uma versão mais curta, com o prato e o preço nos primeiros segundos.", tom: "atencao", t, comp };
+  }
+  if (t.clique < base.clique) {
+    return { tipo: "clique", titulo: "As pessoas assistem, mas poucas clicam.",
+             dica: "Teste deixar mais claro o que fazer: a oferta e o preço no fim do vídeo e na legenda.", tom: "atencao", t, comp };
+  }
+  if (m.frequencia >= FREQUENCIA_CANSADA) {
+    return { tipo: "cansado", titulo: "O vídeo funciona, mas o público já está cansando.",
+             dica: `Cada pessoa viu ${m.frequencia.toFixed(1).replace(".", ",")} vezes em média. Vale trocar o vídeo ou ampliar o público.`, tom: "atencao", t, comp };
+  }
+  return { tipo: "bom", titulo: "O vídeo está indo bem.",
+           dica: "Prende, segura e leva a clique. Enquanto o público não cansar, vale manter.", tom: "bom", t, comp };
+}
+
+const TONS = {
+  bom: { fundo: "#E0EFE3", cor: "#1F5134" },
+  atencao: { fundo: "#FBF3D9", cor: "#7A6A1E" },
+  ruim: { fundo: "#FBE3DC", cor: "#8A2E1F" },
+  neutro: { fundo: "#F1EEE2", cor: "#55534A" },
+};
+const pctVideo = (v) => `${(v * 100).toFixed(v < 0.1 && v > 0 ? 1 : 0).replace(".", ",")}%`;
+
+function AnaliseVideo({ dados, onFechar }) {
+  const m = dados.anuncio;
+  const r = analisarVideo(m, dados.outros);
+  const tom = TONS[r.tom];
+  const etapas = [
+    ["Apareceu na tela", m.impressoes], ["Assistiu 3 segundos", m.v3s], ["Assistiu 25%", m.p25],
+    ["Assistiu 50%", m.p50], ["Assistiu até o fim", m.p100],
+  ];
+  const comparar = (c) => (c ? `melhor que ${c.de} de ${c.total} ${c.total === 1 ? "anúncio" : "anúncios"}` : "sem outro vídeo para comparar");
+  const caixa = { background: "#F7F4EC", borderRadius: 9, padding: "9px 11px" };
+  const valor = { fontSize: 17, fontWeight: 800, color: "#22231F", fontVariantNumeric: "tabular-nums" };
+  const nota = { fontSize: 11, color: "#8A8778" };
+  return (
+    <div style={{ marginTop: 10, border: "1px solid #E8E2D2", borderRadius: 11, padding: 12 }}>
+      <div style={{ background: tom.fundo, color: tom.cor, borderRadius: 9, padding: "9px 12px", fontSize: 13.5, fontWeight: 700 }}>
+        {r.titulo}
+        <div style={{ fontSize: 12, fontWeight: 400, marginTop: 2 }}>{r.dica}</div>
+      </div>
+      {r.tipo !== "sem_video" && (
+        <>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#22231F", margin: "11px 0 5px" }}>Até onde as pessoas assistem</div>
+          {etapas.map(([nome, v], i) => {
+            const parte = m.impressoes > 0 ? v / m.impressoes : 0;
+            return (
+              <div key={nome} style={{ display: "grid", gridTemplateColumns: "125px minmax(0, 1fr) 62px", gap: 9, alignItems: "center", fontSize: 12.5, margin: "5px 0" }}>
+                <span style={{ color: "#55534A" }}>{nome}</span>
+                <div><div style={{ width: `${Math.max(parte * 100, v > 0 ? 1 : 0)}%`, height: 13, background: "#2F6FA3", borderRadius: "0 4px 4px 0" }} /></div>
+                <span style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{i === 0 ? numero(v) : pctVideo(parte)}</span>
+              </div>
+            );
+          })}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))", gap: 7, marginTop: 10 }}>
+            <div style={caixa}>
+              <div style={nota}>Clicaram no link</div><div style={valor}>{pctVideo(r.t.clique)}</div><div style={nota}>{comparar(r.comp.clique)}</div>
+            </div>
+            <div style={caixa}>
+              <div style={nota}>Custo por clique</div><div style={valor}>{r.t.custoClique != null ? dinheiro(r.t.custoClique) : "—"}</div><div style={nota}>{comparar(r.comp.custo)}</div>
+            </div>
+            <div style={caixa}>
+              <div style={nota}>Viu quantas vezes</div><div style={valor}>{m.frequencia ? m.frequencia.toFixed(1).replace(".", ",") : "—"}</div>
+              <div style={nota}>{m.frequencia >= FREQUENCIA_CANSADA ? "público cansando" : "ainda não cansou o público"}</div>
+            </div>
+          </div>
+        </>
+      )}
+      <div style={{ ...nota, marginTop: 9, lineHeight: 1.5 }}>
+        Comparado com os anúncios de vídeo desta conta com pelo menos {MINIMO_EXIBICOES.toLocaleString("pt-BR")} exibições.
+        {" "}Mede atenção e clique: o clique no cardápio não prova venda, porque o painel não liga anúncio a pedido.
+      </div>
+      <button onClick={onFechar} style={{ ...btnGhost, marginTop: 8 }}>Fechar análise</button>
+    </div>
+  );
+}
+
+function AnuncioNoAr({ a, tipoPost, podeEncerrar, aoEncerrar, encerrando }) {
+  const [analise, setAnalise] = useState(null);
+  const [analisando, setAnalisando] = useState(false);
+  const [erroAnalise, setErroAnalise] = useState("");
+  const analisar = async () => {
+    setAnalisando(true); setErroAnalise("");
+    const r = await chamarProxy("analisar_anuncio", { anuncio_id: a.anuncio_id });
+    setAnalisando(false);
+    if (r.erro) { setErroAnalise(r.erro); return; }
+    if (!r.data?.anuncio) { setErroAnalise("A Meta ainda não tem números deste anúncio. Tente mais tarde."); return; }
+    setAnalise(r.data);
+  };
+  // Post de foto ou carrossel não tem retenção. Arquivo subido não diz o tipo
+  // aqui: o botão aparece, e a análise avisa se não houver dados de vídeo.
+  const podeAnalisar = !["IMAGE", "CAROUSEL_ALBUM"].includes(tipoPost);
   const emAnalise = a.situacao !== "no ar";
   // Conversa só é resultado quando o anúncio foi feito para isso. Num anúncio
   // de alcance ou engajamento, "0 conversas" não é fracasso — é outra meta.
@@ -1354,9 +1505,15 @@ function AnuncioNoAr({ a, podeEncerrar, aoEncerrar, encerrando }) {
           </>
         )}
 
-        {(podeEncerrar || aviso) && (
+        {(podeEncerrar || aviso || podeAnalisar) && (
           <div style={{ display: "flex", gap: 9, alignItems: "center",
                         flexWrap: "wrap", marginTop: 10 }}>
+            {podeAnalisar && (
+              <button style={{ ...btnGhost, opacity: analisando ? 0.6 : 1, cursor: analisando ? "default" : "pointer" }}
+                disabled={analisando} onClick={analisar}>
+                {analisando ? <Loader2 size={12} /> : <BarChart3 size={12} />} Analisar vídeo
+              </button>
+            )}
             {podeEncerrar && (
               <button
                 style={{ ...btnGhost, borderColor: "#E7BDB2", color: "#C4432B",
@@ -1376,6 +1533,8 @@ function AnuncioNoAr({ a, podeEncerrar, aoEncerrar, encerrando }) {
             )}
           </div>
         )}
+        {erroAnalise && <div style={{ fontSize: 12, color: "#C4432B", marginTop: 8 }}>{erroAnalise}</div>}
+        {analise && <AnaliseVideo dados={analise} onFechar={() => setAnalise(null)} />}
       </div>
     </div>
   );
