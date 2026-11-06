@@ -3194,6 +3194,7 @@ function FechamentoMensal() {
   const [linhas, setLinhas] = useState([]);
   const [gerentes, setGerentes] = useState([]);
   const [diaristas, setDiaristas] = useState([]);
+  const [taxaMes, setTaxaMes] = useState(null);
   const [faturamentoMes, setFaturamentoMes] = useState(null); // { faturamento_bruto, atualizado_em } | null
   const [buscandoFaturamento, setBuscandoFaturamento] = useState(false);
   const [erro, setErro] = useState("");
@@ -3218,13 +3219,48 @@ function FechamentoMensal() {
     setCarregando(true);
     setErro("");
     const { inicio, fim } = limitesDoMes();
-    const [{ data: premiacoes }, { data: pessoasData }, { data: faturamentoData }, { data: pagamentosDias }, { data: baixasEscala }] = await Promise.all([
-      supabase.from("premiacoes_diarias").select("pessoa_id, dia, total_dia, comissao, metodo_usado, faturamento_dia, papel_no_dia, pessoa:pessoas(nome, papel, tipo_contrato)").gte("dia", inicio).lte("dia", fim),
+    const [{ data: premiacoes }, { data: pessoasData }, { data: faturamentoData }, { data: pagamentosDias }, { data: baixasEscala }, { data: taxasDias }] = await Promise.all([
+      supabase.from("premiacoes_diarias").select("pessoa_id, dia, total_dia, comissao, metodo_usado, faturamento_dia, papel_no_dia, taxa_servico_dia, pessoa:pessoas(nome, papel, tipo_contrato)").gte("dia", inicio).lte("dia", fim),
       supabase.from("pessoas").select("*").eq("ativo", true),
       supabase.from("faturamento_mensal").select("*").eq("mes_referencia", mesRef).maybeSingle(),
       supabase.from("pagamentos_diaria").select("dia").gte("dia", inicio).lte("dia", fim),
       supabase.from("fiado_baixas").select("pessoa_id, valor").eq("origem", "escala").gte("referencia", inicio).lte("referencia", fim),
+      supabase.from("taxas_do_dia").select("dia, taxa_servico").gte("dia", inicio).lte("dia", fim),
     ]);
+    // Taxa de serviço do mês: a de cada noite com escala salva (a mesma
+    // que foi rateada), e onde ela foi parar — metade dos garçons e metade
+    // da equipe interna, cada uma separada em mensalista e diarista.
+    // Gerente não entra: o que ela ganha é o percentual do faturamento.
+    const taxaDaNoite = {};
+    const rateio = {
+      garcom: { mensalista: 0, diarista: 0 },
+      interno: { mensalista: 0, diarista: 0 },
+    };
+    (premiacoes || []).forEach((pr) => {
+      const t = Number(pr.taxa_servico_dia) || 0;
+      if (t > (taxaDaNoite[pr.dia] || 0)) taxaDaNoite[pr.dia] = t;
+      const bolo = categoriaComissao(pr.papel_no_dia || pr.pessoa?.papel);
+      if (!bolo) return;
+      const contrato = pr.pessoa?.tipo_contrato === "diarista" ? "diarista" : "mensalista";
+      rateio[bolo][contrato] += Number(pr.comissao) || 0;
+    });
+    const totalTaxa = Object.values(taxaDaNoite).reduce((s, t) => s + t, 0);
+    const distribuido = rateio.garcom.mensalista + rateio.garcom.diarista + rateio.interno.mensalista + rateio.interno.diarista;
+    // Noite com a taxa buscada (Escala do dia ou Conferência de Caixa) mas
+    // sem escala salva: ninguém recebeu essa taxa.
+    const semEscala = (taxasDias || [])
+      .filter((t) => (Number(t.taxa_servico) || 0) > 0 && !(t.dia in taxaDaNoite))
+      .sort((a, b) => a.dia.localeCompare(b.dia));
+    setTaxaMes({
+      total: round2(totalTaxa),
+      noites: Object.keys(taxaDaNoite).length,
+      garcom: { mensalista: round2(rateio.garcom.mensalista), diarista: round2(rateio.garcom.diarista) },
+      interno: { mensalista: round2(rateio.interno.mensalista), diarista: round2(rateio.interno.diarista) },
+      // Sobra de centavos do rateio não é aviso; noite sem garçom escalado é.
+      naoDistribuido: round2(totalTaxa - distribuido) > 1 ? round2(totalTaxa - distribuido) : 0,
+      semEscala: semEscala.map((t) => t.dia),
+      semEscalaValor: round2(semEscala.reduce((s, t) => s + (Number(t.taxa_servico) || 0), 0)),
+    });
     // Diaristas entram só pra conferência: já receberam na saída de cada
     // noite (Pagamento das diárias, conta 4.2). Somar no "a pagar" pagaria
     // duas vezes. A noite sem pagamento lançado aparece como aviso.
@@ -3494,6 +3530,38 @@ function FechamentoMensal() {
                 <div style={{ fontSize: 17, fontWeight: 700, color: "#22231F" }}>{brl(total + diaristasBruto)}</div>
                 <div style={{ fontSize: 10, color: "#8A8778" }}>mensalistas, gerência e diaristas</div>
               </div>
+            </div>
+          )}
+          {taxaMes && (taxaMes.noites > 0 || taxaMes.semEscala.length > 0) && (
+            <div style={{ ...cardStyle, padding: "12px 14px", marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#22231F" }}>Taxa de serviço do mês</div>
+                <div style={{ fontSize: 10, color: "#8A8778" }}>{taxaMes.noites} noites com escala salva · janela 17h–03h</div>
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#22231F", margin: "4px 0 10px" }}>{brl(taxaMes.total)}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 8 }}>
+                {[["garcom", "Metade dos garçons"], ["interno", "Metade da equipe interna"]].map(([bolo, rotulo]) => (
+                  <div key={bolo} style={{ background: "#F6F1E7", borderRadius: 8, padding: "8px 10px" }}>
+                    <div style={{ fontSize: 11, color: "#8A8778" }}>{rotulo}</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#22231F" }}>{brl(taxaMes[bolo].mensalista + taxaMes[bolo].diarista)}</div>
+                    <div style={{ fontSize: 10, color: "#8A8778" }}>
+                      mensalistas {brl(taxaMes[bolo].mensalista)} · diaristas {brl(taxaMes[bolo].diarista)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 10, color: "#8A8778", marginTop: 8 }}>Gerente não entra: ganha só o percentual do faturamento.</div>
+              {taxaMes.naoDistribuido > 0 && (
+                <div style={{ fontSize: 11, color: "#854F0B", background: "#FAEEDA", borderRadius: 6, padding: "6px 10px", marginTop: 8 }}>
+                  {brl(taxaMes.naoDistribuido)} da taxa não foi para ninguém — noite sem garçom ou sem equipe interna escalada.
+                </div>
+              )}
+              {taxaMes.semEscala.length > 0 && (
+                <div style={{ fontSize: 11, color: "#854F0B", background: "#FAEEDA", borderRadius: 6, padding: "6px 10px", marginTop: 8 }}>
+                  {taxaMes.semEscala.length} {taxaMes.semEscala.length === 1 ? "noite" : "noites"} com taxa buscada mas escala não salva
+                  ({taxaMes.semEscala.map((d) => d.slice(8, 10) + "/" + d.slice(5, 7)).join(", ")}): {brl(taxaMes.semEscalaValor)} fora do rateio
+                </div>
+              )}
             </div>
           )}
           <div style={sectionLabel}>Mensalistas (registrados) · a pagar</div>
