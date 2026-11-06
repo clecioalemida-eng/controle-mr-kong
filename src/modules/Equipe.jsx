@@ -2843,7 +2843,7 @@ function PremiacaoDoDia({ isAdmin }) {
 // ---------------------------------------------------------------------------
 // Folha do fechamento mensal
 // ---------------------------------------------------------------------------
-function FolhaFechamento({ mesRef, linhas, gerentes, vales, fiado, emitidoPor }) {
+function FolhaFechamento({ mesRef, linhas, gerentes, diaristas = [], vales, fiado, emitidoPor }) {
   const tdCab = {
     borderBottom: "1.5px solid #231A18", padding: "6px 4px", fontSize: 9.5, fontWeight: 800,
     textTransform: "uppercase", letterSpacing: 0.5, color: "#8B8071", textAlign: "left",
@@ -2918,13 +2918,52 @@ function FolhaFechamento({ mesRef, linhas, gerentes, vales, fiado, emitidoPor })
         </tfoot>
       </table>
 
+      {diaristas.length > 0 && (
+        <table className="nao-quebrar" style={{ width: "100%", borderCollapse: "collapse", marginTop: 20 }}>
+          <thead>
+            <tr>
+              <td style={tdCab}>Diarista (já pago na saída)</td>
+              <td style={tdCab}>Cargo</td>
+              <td style={{ ...tdCab, textAlign: "right" }}>Noites</td>
+              <td style={{ ...tdCab, textAlign: "right" }}>Recebido</td>
+              <td style={{ ...tdCab, textAlign: "right" }}>Fiado</td>
+              <td style={tdCab}>Sem pagamento lançado</td>
+            </tr>
+          </thead>
+          <tbody>
+            {diaristas.map((d) => (
+              <tr key={d.pessoaId}>
+                <td style={td}>{d.nome}</td>
+                <td style={td}>{PAPEL_LABEL[d.papel]}</td>
+                <td style={n}>{d.noites}</td>
+                <td style={{ ...n, fontWeight: 700 }}>{brl(d.bruto)}</td>
+                <td style={n}>{d.fiado ? `− ${brl(d.fiado)}` : "—"}</td>
+                <td style={td}>{d.semPagamento.length ? d.semPagamento.map((x) => x.slice(8, 10) + "/" + x.slice(5, 7)).join(", ") : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 11.5 }} colSpan={3}>
+                Diaristas em {mesRef} (não entra no total a pagar)
+              </td>
+              <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 12.5, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                {brl(diaristas.reduce((s2, d) => s2 + d.bruto, 0))}
+              </td>
+              <td style={{ borderTop: "2px solid #231A18" }} colSpan={2} />
+            </tr>
+          </tfoot>
+        </table>
+      )}
+
       <div className="nao-quebrar" style={{ marginTop: 14, fontSize: 10.5, color: "#8B8071", lineHeight: 1.7 }}>
         Comissão é a soma das fatias diárias da taxa de serviço nos dias em que a
         pessoa trabalhou. <b>Vale</b> é o adiantamento pago no dia 20 — ele já saiu
         do caixa e por isso desce do líquido. <b>Fiado</b> é o consumo da própria
         pessoa, descontado no acerto. Gerente recebe salário mais o percentual do
-        faturamento bruto das noites em que esteve na escala; gerente diarista não
-        aparece aqui porque já recebeu em cada noite.
+        faturamento bruto das noites em que esteve na escala. <b>Diaristas</b>, inclusive
+        a gerente diarista, já receberam na saída de cada noite: aparecem só pra
+        conferência e não somam no total a pagar.
       </div>
 
       <div className="nao-quebrar" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 26, marginTop: 40 }}>
@@ -3148,6 +3187,7 @@ function FechamentoMensal() {
   const [mesRef, setMesRef] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; });
   const [linhas, setLinhas] = useState([]);
   const [gerentes, setGerentes] = useState([]);
+  const [diaristas, setDiaristas] = useState([]);
   const [faturamentoMes, setFaturamentoMes] = useState(null); // { faturamento_bruto, atualizado_em } | null
   const [buscandoFaturamento, setBuscandoFaturamento] = useState(false);
   const [erro, setErro] = useState("");
@@ -3172,11 +3212,37 @@ function FechamentoMensal() {
     setCarregando(true);
     setErro("");
     const { inicio, fim } = limitesDoMes();
-    const [{ data: premiacoes }, { data: pessoasData }, { data: faturamentoData }] = await Promise.all([
+    const [{ data: premiacoes }, { data: pessoasData }, { data: faturamentoData }, { data: pagamentosDias }, { data: baixasEscala }] = await Promise.all([
       supabase.from("premiacoes_diarias").select("pessoa_id, dia, total_dia, comissao, metodo_usado, faturamento_dia, papel_no_dia, pessoa:pessoas(nome, papel, tipo_contrato)").gte("dia", inicio).lte("dia", fim),
       supabase.from("pessoas").select("*").eq("ativo", true),
       supabase.from("faturamento_mensal").select("*").eq("mes_referencia", mesRef).maybeSingle(),
+      supabase.from("pagamentos_diaria").select("dia").gte("dia", inicio).lte("dia", fim),
+      supabase.from("fiado_baixas").select("pessoa_id, valor").eq("origem", "escala").gte("referencia", inicio).lte("referencia", fim),
     ]);
+    // Diaristas entram só pra conferência: já receberam na saída de cada
+    // noite (Pagamento das diárias, conta 4.2). Somar no "a pagar" pagaria
+    // duas vezes. A noite sem pagamento lançado aparece como aviso.
+    const diasPagos = new Set((pagamentosDias || []).map((p) => p.dia));
+    const fiadoNaEscala = {};
+    (baixasEscala || []).forEach((b) => {
+      fiadoNaEscala[b.pessoa_id] = (fiadoNaEscala[b.pessoa_id] || 0) + (Number(b.valor) || 0);
+    });
+    const porDiarista = {};
+    (premiacoes || []).forEach((pr) => {
+      if (pr.pessoa?.tipo_contrato !== "diarista") return;
+      if (!porDiarista[pr.pessoa_id]) {
+        porDiarista[pr.pessoa_id] = { pessoaId: pr.pessoa_id, nome: pr.pessoa.nome, papel: pr.pessoa.papel, noites: 0, bruto: 0, pago: 0, semPagamento: [] };
+      }
+      const d = porDiarista[pr.pessoa_id];
+      const valor = Number(pr.total_dia) || 0;
+      d.noites += 1;
+      d.bruto += valor;
+      if (diasPagos.has(pr.dia)) d.pago += valor;
+      else d.semPagamento.push(pr.dia);
+    });
+    setDiaristas(Object.values(porDiarista)
+      .map((d) => ({ ...d, fiado: round2(fiadoNaEscala[d.pessoaId] || 0), semPagamento: d.semPagamento.sort() }))
+      .sort((a, b) => a.nome.localeCompare(b.nome)));
     setFaturamentoMes(faturamentoData || null);
     const mapaSalario = Object.fromEntries((pessoasData || []).map((p) => [p.id, p]));
     const porPessoa = {};
@@ -3308,6 +3374,10 @@ function FechamentoMensal() {
   };
   const nomeMes = new Date(`${mesRef}-01T12:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
   const total = linhas.reduce((s, l) => s + l.total, 0) + gerentes.reduce((s, g) => s + g.total, 0);
+  const diaristasPago = diaristas.reduce((s, d) => s + d.pago, 0);
+  const diaristasBruto = diaristas.reduce((s, d) => s + d.bruto, 0);
+  const diaristasEmAberto = round2(diaristasBruto - diaristasPago);
+  const temAlguem = linhas.length > 0 || gerentes.length > 0 || diaristas.length > 0;
   if (pessoaAberta) {
     return (
       <div>
@@ -3355,7 +3425,7 @@ function FechamentoMensal() {
           style={{ ...inputStyle, flex: 1, textAlign: "center", textTransform: "capitalize" }} />
         <button onClick={() => mudarMes(1)} style={ghostIconBtn}><ChevronRight size={18} /></button>
       </div>
-      <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 10 }}>Só pessoas registradas — diaristas já recebem por dia.</div>
+      <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 10 }}>Mensalistas recebem aqui. Diaristas aparecem só pra conferência — já recebem na saída de cada noite.</div>
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
       {carregando ? (
         <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
@@ -3373,6 +3443,28 @@ function FechamentoMensal() {
             aoMudar={carregar}
             setErro={setErro}
           />
+          {temAlguem && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8, marginBottom: 14 }}>
+              <div style={{ ...cardStyle, padding: "10px 12px" }}>
+                <div style={{ fontSize: 11, color: "#8A8778" }}>A pagar no fechamento</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: "#22231F" }}>{brl(total)}</div>
+                <div style={{ fontSize: 10, color: "#8A8778" }}>mensalistas e gerência, antes de vale e fiado</div>
+              </div>
+              <div style={{ ...cardStyle, padding: "10px 12px" }}>
+                <div style={{ fontSize: 11, color: "#8A8778" }}>Já pago aos diaristas</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: "#22231F" }}>{brl(diaristasPago)}</div>
+                <div style={{ fontSize: 10, color: diaristasEmAberto > 0 ? "#854F0B" : "#8A8778" }}>
+                  {diaristasEmAberto > 0 ? `+ ${brl(diaristasEmAberto)} em noites sem pagamento lançado` : "pago na saída, noite a noite"}
+                </div>
+              </div>
+              <div style={{ ...cardStyle, padding: "10px 12px" }}>
+                <div style={{ fontSize: 11, color: "#8A8778" }}>Custo da equipe no mês</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: "#22231F" }}>{brl(total + diaristasBruto)}</div>
+                <div style={{ fontSize: 10, color: "#8A8778" }}>mensalistas, gerência e diaristas</div>
+              </div>
+            </div>
+          )}
+          <div style={sectionLabel}>Mensalistas (registrados) · a pagar</div>
           <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
               <span>Pessoa</span><span>Papel</span><span style={{ textAlign: "right" }}>Dias</span><span style={{ textAlign: "right" }}>Acumulado</span>
@@ -3426,6 +3518,30 @@ function FechamentoMensal() {
               );
             })}
             {linhas.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Nenhuma premiação registrada nesse mês ainda.</div>}
+          </div>
+          <div style={sectionLabel}>Diaristas · já pago na saída</div>
+          <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, padding: "8px 10px", background: "#F6F1E7", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#8A8778" }}>
+              <span>Pessoa</span><span>Papel</span><span style={{ textAlign: "right" }}>Noites</span><span style={{ textAlign: "right" }}>Recebido</span>
+            </div>
+            {diaristas.map((d, idx) => (
+              <button key={d.pessoaId} onClick={() => abrirExtrato(d.nome)}
+                style={{ display: "block", width: "100%", padding: "10px", background: "none", border: "none", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", cursor: "pointer", textAlign: "left" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.9fr 0.7fr 1fr", gap: 6, fontSize: 13 }}>
+                  <span style={{ color: "#22231F" }}>{d.nome}</span>
+                  <span style={{ color: "#8A8778", fontSize: 12 }}>{PAPEL_LABEL[d.papel]}</span>
+                  <span style={{ textAlign: "right", color: "#8A8778" }}>{d.noites}</span>
+                  <span style={{ textAlign: "right", fontWeight: 700, color: "#22231F" }}>{brl(d.bruto)}</span>
+                </div>
+                <div style={{ fontSize: 11, marginTop: 3, color: d.semPagamento.length ? "#854F0B" : "#2F8F5B" }}>
+                  {d.semPagamento.length
+                    ? `⚠ ${d.semPagamento.length} noite${d.semPagamento.length === 1 ? "" : "s"} sem pagamento lançado (${d.semPagamento.map((x) => x.slice(8, 10) + "/" + x.slice(5, 7)).join(", ")})`
+                    : "✓ todas as noites pagas"}
+                  {d.fiado > 0 && <span style={{ color: "#8A8778" }}> · fiado {brl(d.fiado)} descontado</span>}
+                </div>
+              </button>
+            ))}
+            {diaristas.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Nenhum diarista na escala nesse mês.</div>}
           </div>
           <div style={sectionLabel}>Gerência</div>
           <div style={{ ...cardStyle, marginBottom: 10 }}>
@@ -3489,17 +3605,18 @@ function FechamentoMensal() {
           )}
           {(linhas.length > 0 || gerentes.length > 0) && (
             <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px", fontSize: 13, color: "#8A8778" }}>
-              <span>Total geral do mês</span><span style={{ fontWeight: 700, color: "#22231F" }}>{brl(total)}</span>
+              <span>Total a pagar no fechamento</span><span style={{ fontWeight: 700, color: "#22231F" }}>{brl(total)}</span>
             </div>
           )}
 
-          {(linhas.length > 0 || gerentes.length > 0) && (
+          {temAlguem && (
             <>
               <BotaoPdf>Baixar fechamento em PDF</BotaoPdf>
               <FolhaFechamento
                 mesRef={mesRef}
                 linhas={linhas}
                 gerentes={gerentes}
+                diaristas={diaristas}
                 vales={vales}
                 fiado={fiado}
                 emitidoPor={nomeDeQuemImprime}
