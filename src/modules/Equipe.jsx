@@ -2854,8 +2854,10 @@ function FolhaFechamento({ mesRef, linhas, gerentes, diaristas = [], vales, fiad
   const liquidoDe = (l) => {
     const vale = Number(vales[l.pessoaId]?.valor || 0);
     const desc = fiado.buscou ? fiado.descontoDe(l.pessoaId) : 0;
-    return { vale, desc, liquido: l.total - vale - desc };
+    const saida = Number(l.recebidoSaida || 0);
+    return { vale, desc, saida, liquido: l.total - vale - desc - saida };
   };
+  const temSaida = linhas.some((l) => (l.recebidoSaida || 0) > 0);
   const totalLiquido =
     linhas.reduce((s2, l) => s2 + liquidoDe(l).liquido, 0) +
     gerentes.reduce((s2, g) => s2 + g.total, 0);
@@ -2874,12 +2876,13 @@ function FolhaFechamento({ mesRef, linhas, gerentes, diaristas = [], vales, fiad
             <td style={{ ...tdCab, textAlign: "right" }}>Comissão</td>
             <td style={{ ...tdCab, textAlign: "right" }}>Vale</td>
             <td style={{ ...tdCab, textAlign: "right" }}>Fiado</td>
+            {temSaida && <td style={{ ...tdCab, textAlign: "right" }}>Recebido na saída</td>}
             <td style={{ ...tdCab, textAlign: "right" }}>Líquido</td>
           </tr>
         </thead>
         <tbody>
           {linhas.map((l) => {
-            const { vale, desc, liquido } = liquidoDe(l);
+            const { vale, desc, saida, liquido } = liquidoDe(l);
             return (
               <tr key={l.pessoaId || l.nome}>
                 <td style={td}>{l.nome}</td>
@@ -2889,6 +2892,7 @@ function FolhaFechamento({ mesRef, linhas, gerentes, diaristas = [], vales, fiad
                 <td style={n}>{brl(l.comissao)}</td>
                 <td style={n}>{vale ? `− ${brl(vale)}` : "—"}</td>
                 <td style={n}>{desc ? `− ${brl(desc)}` : "—"}</td>
+                {temSaida && <td style={n}>{saida ? `− ${brl(saida)}` : "—"}</td>}
                 <td style={{ ...n, fontWeight: 700 }}>{brl(liquido)}</td>
               </tr>
             );
@@ -2902,13 +2906,14 @@ function FolhaFechamento({ mesRef, linhas, gerentes, diaristas = [], vales, fiad
               <td style={n}>{brl(g.doisPorcento)}</td>
               <td style={n}>—</td>
               <td style={n}>—</td>
+              {temSaida && <td style={n}>—</td>}
               <td style={{ ...n, fontWeight: 700 }}>{brl(g.total)}</td>
             </tr>
           ))}
         </tbody>
         <tfoot>
           <tr>
-            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 11.5 }} colSpan={7}>
+            <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 11.5 }} colSpan={temSaida ? 8 : 7}>
               Total a pagar em {mesRef}
             </td>
             <td style={{ padding: "8px 4px", borderTop: "2px solid #231A18", fontWeight: 800, fontSize: 12.5, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
@@ -2960,7 +2965,8 @@ function FolhaFechamento({ mesRef, linhas, gerentes, diaristas = [], vales, fiad
         Comissão é a soma das fatias diárias da taxa de serviço nos dias em que a
         pessoa trabalhou. <b>Vale</b> é o adiantamento pago no dia 20 — ele já saiu
         do caixa e por isso desce do líquido. <b>Fiado</b> é o consumo da própria
-        pessoa, descontado no acerto. Gerente recebe salário mais o percentual do
+        pessoa, descontado no acerto. <b>Recebido na saída</b> é o que o mensalista
+        levou em noites pagas quando ainda estava como diarista. Gerente recebe salário mais o percentual do
         faturamento bruto das noites em que esteve na escala. <b>Diaristas</b>, inclusive
         a gerente diarista, já receberam na saída de cada noite: aparecem só pra
         conferência e não somam no total a pagar.
@@ -3254,18 +3260,29 @@ function FechamentoMensal() {
       if (pr.pessoa?.papel === "gerente") {
         if (!porGerente[pr.pessoa_id]) porGerente[pr.pessoa_id] = { dias: 0, comissao: 0, faturamento: 0 };
         porGerente[pr.pessoa_id].dias += 1;
-        porGerente[pr.pessoa_id].comissao += Number(pr.total_dia) || 0;
+        // Só o percentual: a diária de gerente não existe mais (187).
+        porGerente[pr.pessoa_id].comissao += Number(pr.comissao) || 0;
         porGerente[pr.pessoa_id].faturamento += Number(pr.faturamento_dia) || 0;
         return;
       }
-      if (!porPessoa[pr.pessoa_id]) porPessoa[pr.pessoa_id] = { nome: pr.pessoa.nome, papel: pr.pessoa.papel, dias: 0, comissao: 0 };
-      porPessoa[pr.pessoa_id].dias += 1;
-      porPessoa[pr.pessoa_id].comissao += pr.total_dia;
+      if (!porPessoa[pr.pessoa_id]) porPessoa[pr.pessoa_id] = { nome: pr.pessoa.nome, papel: pr.pessoa.papel, dias: 0, comissao: 0, recebidoSaida: 0, noitesSaida: 0 };
+      const pp = porPessoa[pr.pessoa_id];
+      pp.dias += 1;
+      // Mensalista ganha só a fatia da taxa de serviço. Noite calculada
+      // quando a pessoa ainda era diarista tem diária ou valor por hora no
+      // total_dia — por isso soma a comissão, nunca o total. Se essa noite
+      // teve o Pagamento das diárias lançado, ela já levou o total na saída,
+      // e isso desce do que falta pagar (caso do Jesse em outubro/2026).
+      pp.comissao += Number(pr.comissao) || 0;
+      if ((pr.metodo_usado === "comissao" || pr.metodo_usado === "hora") && diasPagos.has(pr.dia)) {
+        pp.recebidoSaida += Number(pr.total_dia) || 0;
+        pp.noitesSaida += 1;
+      }
     });
     setPessoas([...(pessoasData || [])].sort(porNome));
     const listaRegistrados = Object.entries(porPessoa).map(([pessoaId, v]) => {
       const salarioBase = mapaSalario[pessoaId]?.salario_base || 0;
-      return { ...v, pessoaId, salarioBase, total: v.comissao + salarioBase };
+      return { ...v, pessoaId, salarioBase, comissao: round2(v.comissao), recebidoSaida: round2(v.recebidoSaida), total: round2(v.comissao + salarioBase) };
     });
     setLinhas(listaRegistrados.sort((a, b) => a.nome.localeCompare(b.nome)));
     // Gerente diarista NÃO aparece no mensal: recebeu noite a noite,
@@ -3313,19 +3330,22 @@ function FechamentoMensal() {
     // O vale do dia 20 ja foi lancado na conta 4.1 quando foi pago. Se o
     // fechamento lancasse o salario cheio, o DRE contaria duas vezes.
     const valeJaPago = pessoaId ? Number(vales[pessoaId]?.valor || 0) : 0;
-    const liquido = round2(valor - desconto - valeJaPago);
+    // Noites pagas na saída como diarista já estão na conta 4.2.
+    const recebidoSaida = pessoaId ? Number(linhas.find((l) => l.pessoaId === pessoaId)?.recebidoSaida || 0) : 0;
+    const liquido = round2(valor - desconto - valeJaPago - recebidoSaida);
     const { data: userData } = await supabase.auth.getUser();
     const [ano, mes] = mesRef.split("-").map(Number);
     const fimMes = new Date(ano, mes, 0).toISOString().slice(0, 10);
     const descricao = `${nome} — Fechamento ${mesRef}`;
     const { error } = await supabase.from("contas_pagar").insert({
-      descricao: [
-        descricao,
-        desconto > 0 ? `fiado ${brl(desconto)}` : null,
-        valeJaPago > 0 ? `vale ${brl(valeJaPago)}` : null,
-      ].filter(Boolean).length > 1
-        ? `${descricao} (${[desconto > 0 ? `fiado ${brl(desconto)}` : null, valeJaPago > 0 ? `vale ${brl(valeJaPago)}` : null].filter(Boolean).join(" e ")} descontado)`
-        : descricao,
+      descricao: (() => {
+        const partes = [
+          desconto > 0 ? `fiado ${brl(desconto)}` : null,
+          valeJaPago > 0 ? `vale ${brl(valeJaPago)}` : null,
+          recebidoSaida > 0 ? `recebido na saída ${brl(recebidoSaida)}` : null,
+        ].filter(Boolean);
+        return partes.length ? `${descricao} (${partes.join(" e ")} descontado)` : descricao;
+      })(),
       valor_total: liquido, categoria: "pessoas", centro_custo: "pessoas",
       status: "pendente", data_vencimento: fimMes, criado_por: userData?.user?.id,
     });
@@ -3374,6 +3394,9 @@ function FechamentoMensal() {
   };
   const nomeMes = new Date(`${mesRef}-01T12:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
   const total = linhas.reduce((s, l) => s + l.total, 0) + gerentes.reduce((s, g) => s + g.total, 0);
+  // O que mensalista já levou na saída, de noite paga como diarista.
+  const recebidoNaSaida = linhas.reduce((s, l) => s + (l.recebidoSaida || 0), 0);
+  const aPagar = round2(total - recebidoNaSaida);
   const diaristasPago = diaristas.reduce((s, d) => s + d.pago, 0);
   const diaristasBruto = diaristas.reduce((s, d) => s + d.bruto, 0);
   const diaristasEmAberto = round2(diaristasBruto - diaristasPago);
@@ -3447,8 +3470,11 @@ function FechamentoMensal() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8, marginBottom: 14 }}>
               <div style={{ ...cardStyle, padding: "10px 12px" }}>
                 <div style={{ fontSize: 11, color: "#8A8778" }}>A pagar no fechamento</div>
-                <div style={{ fontSize: 17, fontWeight: 700, color: "#22231F" }}>{brl(total)}</div>
-                <div style={{ fontSize: 10, color: "#8A8778" }}>mensalistas e gerência, antes de vale e fiado</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: "#22231F" }}>{brl(aPagar)}</div>
+                <div style={{ fontSize: 10, color: "#8A8778" }}>
+                  mensalistas e gerência, antes de vale e fiado
+                  {recebidoNaSaida > 0 && ` · já descontados ${brl(recebidoNaSaida)} recebidos na saída`}
+                </div>
               </div>
               <div style={{ ...cardStyle, padding: "10px 12px" }}>
                 <div style={{ fontSize: 11, color: "#8A8778" }}>Já pago aos diaristas</div>
@@ -3487,7 +3513,7 @@ function FechamentoMensal() {
                       <div style={{ fontSize: 10, color: "#8A8778", marginTop: 2 }}>salário {brl(l.salarioBase)} + comissão {brl(l.comissao)}</div>
                     )}
                   </button>
-                  {((fiado.buscou && fiado.saldoDe(l.pessoaId) > 0) || vales[l.pessoaId]) && (
+                  {((fiado.buscou && fiado.saldoDe(l.pessoaId) > 0) || vales[l.pessoaId] || l.recebidoSaida > 0) && (
                     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px 8px", flexWrap: "wrap" }}>
                       {fiado.buscou && fiado.saldoDe(l.pessoaId) > 0 && (
                         <ChipFiado fiado={fiado} pessoaId={l.pessoaId} />
@@ -3497,9 +3523,14 @@ function FechamentoMensal() {
                           vale {brl(vales[l.pessoaId].valor)} pago
                         </span>
                       )}
+                      {l.recebidoSaida > 0 && (
+                        <span style={{ ...pillFiado, background: "#FAC77555", border: "1px solid #FAC775", color: "#854F0B" }}>
+                          recebido na saída {brl(l.recebidoSaida)} · {l.noitesSaida} noite{l.noitesSaida === 1 ? "" : "s"} como diarista
+                        </span>
+                      )}
                       <span style={{ fontSize: 11, color: "#8A8778" }}>
                         a pagar <strong style={{ color: "#22231F" }}>
-                          {brl(l.total - (fiado.buscou ? fiado.descontoDe(l.pessoaId) : 0) - Number(vales[l.pessoaId]?.valor || 0))}
+                          {brl(l.total - (fiado.buscou ? fiado.descontoDe(l.pessoaId) : 0) - Number(vales[l.pessoaId]?.valor || 0) - l.recebidoSaida)}
                         </strong>
                       </span>
                     </div>
@@ -3605,7 +3636,7 @@ function FechamentoMensal() {
           )}
           {(linhas.length > 0 || gerentes.length > 0) && (
             <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px", fontSize: 13, color: "#8A8778" }}>
-              <span>Total a pagar no fechamento</span><span style={{ fontWeight: 700, color: "#22231F" }}>{brl(total)}</span>
+              <span>Total a pagar no fechamento</span><span style={{ fontWeight: 700, color: "#22231F" }}>{brl(aPagar)}</span>
             </div>
           )}
 
