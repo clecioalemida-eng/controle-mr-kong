@@ -3361,9 +3361,15 @@ function FechamentoMensal() {
   const buscarFaturamento = async () => {
     setBuscandoFaturamento(true);
     setErro("");
-    const { inicio, fim } = limitesDoMes();
+    const { inicio } = limitesDoMes();
+    // Dia operacional: das 17h do dia até as 3h do dia seguinte (sábado
+    // fecha às 3h). O mês começa às 17h do dia 1 e termina às 3h do dia 1
+    // do mês seguinte — a madrugada do dia 1 é da última noite do mês
+    // anterior, e a da última noite do mês entra neste.
+    const [ano, mes] = mesRef.split("-").map(Number);
+    const proximo = mes === 12 ? `${ano + 1}-01-01` : `${ano}-${String(mes + 1).padStart(2, "0")}-01`;
     const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
-      body: { acao: "faturamento_periodo", data_inicio: `${inicio}T00:00:00-03:00`, data_fim: `${fim}T23:59:59-03:00` },
+      body: { acao: "faturamento_periodo", data_inicio: `${inicio}T17:00:00-03:00`, data_fim: `${proximo}T03:00:00-03:00` },
     });
     setBuscandoFaturamento(false);
     if (error) { setErro(await extrairErroFuncao(error)); return; }
