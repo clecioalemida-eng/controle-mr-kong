@@ -1048,14 +1048,23 @@ async function patrocinar(admin: any, token: string, contaId: string, usuarioId:
     return json({ error: String(e instanceof Error ? e.message : e) }, 400, cors);
   }
 
-  // Início: agora, ou um dia escolhido (às 00h de Brasília), até 30 dias à frente.
+  // Início: agora, ou agendado para um dia e hora de Brasília (sem hora,
+  // 00h), até 30 dias à frente. Quem segura até a hora é a Meta, pelo
+  // start_time do conjunto.
   const agora = new Date();
   let inicio = new Date(agora.getTime() + 5 * 60 * 1000);
   if (body.inicio) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.inicio))) return json({ error: "Data de início inválida." }, 400, cors);
-    const escolhido = new Date(`${body.inicio}T00:00:00-03:00`);
+    const hora = body.inicio_hora ? String(body.inicio_hora) : "00:00";
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(hora)) return json({ error: "Hora de início inválida." }, 400, cors);
+    const escolhido = new Date(`${body.inicio}T${hora}:00-03:00`);
     if (escolhido.getTime() > agora.getTime() + 30 * 86400000) {
       return json({ error: "O início pode ser no máximo daqui a 30 dias." }, 400, cors);
+    }
+    // Hora que já passou (mais que uns minutos): recusa em vez de pôr no
+    // ar agora sem avisar. Sem hora, o dia de hoje continua valendo "agora".
+    if (body.inicio_hora && escolhido.getTime() < agora.getTime() - 10 * 60 * 1000) {
+      return json({ error: "Esse horário de início já passou." }, 400, cors);
     }
     if (escolhido > inicio) inicio = escolhido;
   }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Loader2, AlertTriangle, CheckCircle2, Info, ExternalLink, Rocket, MapPin, RefreshCw, Download, X,
-  Maximize2, Minimize2, BarChart3,
+  Maximize2, Minimize2, BarChart3, CalendarClock,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
@@ -317,6 +317,23 @@ function descreverHoras(horas) {
 
 function hojeISO() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+}
+// Dia de Brasília daqui a n dias, em AAAA-MM-DD.
+function diaISO(n) {
+  const d = new Date(`${hojeISO()}T12:00:00-03:00`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+// Quantos dias até a próxima sexta. Sendo sexta hoje, a da semana que vem.
+function diasAteSexta() {
+  const dow = new Date(`${hojeISO()}T12:00:00-03:00`).getUTCDay();
+  return ((5 - dow + 7) % 7) || 7;
+}
+// "sex, 14/11 às 16h" no fuso de Brasília.
+function quandoExtenso(data) {
+  const f = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const p = Object.fromEntries(f.formatToParts(data).map((x) => [x.type, x.value]));
+  return `${p.weekday.replace(".", "")}, ${p.day}/${p.month} às ${p.hour}h${p.minute === "00" ? "" : p.minute}`;
 }
 
 // ---------------------------------------------------------------------
@@ -832,7 +849,12 @@ function BarraAprovacao({ sel, cfg, sobra, curva, subida, pontosSalvos, aoSalvar
   const [objetivo, setObjetivo] = useState("whatsapp");
   const [posicionamento, setPosicionamento] = useState("auto");
   const [publico, setPublico] = useState("raio");
+  // Agendar: dia e hora de Brasília em que o anúncio começa. Dia vazio é
+  // "patrocinar agora". Quem segura até a hora é a própria Meta (start_time
+  // do conjunto), então o painel não precisa ficar aberto.
+  const [agendar, setAgendar] = useState(false);
   const [inicio, setInicio] = useState("");
+  const [horaInicio, setHoraInicio] = useState("16:00");
   const [horas, setHoras] = useState(null); // null = o dia todo
   // (057) O que não existia: pontos no mapa, interesses, número de WhatsApp
   // e idade por patrocínio. Tudo começa vazio — e vazio significa "usa a
@@ -860,6 +882,11 @@ function BarraAprovacao({ sel, cfg, sobra, curva, subida, pontosSalvos, aoSalvar
   const desligadas = horasDesligadas(horas);
   const semRefeicao = refeicoesDesligadas(horas);
   const semCardapio = objetivo === "cardapio" && !cfg.cardapio_url;
+  const agendaIncompleta = agendar && !inicio;
+  const comecaEm = agendar && inicio ? new Date(`${inicio}T${horaInicio || "00:00"}:00-03:00`) : null;
+  const agendaPassou = comecaEm != null && comecaEm.getTime() < Date.now();
+  const terminaEm = comecaEm && Number(dias) > 0 ? new Date(comecaEm.getTime() + Number(dias) * 86400000) : null;
+  const travaAgenda = agendaIncompleta || agendaPassou;
 
   const alternarHora = mexeu((h) => {
     const atual = new Set(horas ?? Array.from({ length: 24 }, (_, i) => i));
@@ -872,7 +899,8 @@ function BarraAprovacao({ sel, cfg, sobra, curva, subida, pontosSalvos, aoSalvar
     valor: valorNum,
     dias: Number(dias),
     objetivo, posicionamento, publico,
-    inicio: inicio || null,
+    inicio: agendar && inicio ? inicio : null,
+    inicio_hora: agendar && inicio ? horaInicio || "00:00" : null,
     horas,
     // (057) Só vai o que foi escolhido. Lista vazia vira null, e a proxy
     // cai na configuração — o mesmo pedido de antes desta tela.
@@ -891,7 +919,7 @@ function BarraAprovacao({ sel, cfg, sobra, curva, subida, pontosSalvos, aoSalvar
     `${sel.length} post${sel.length > 1 ? "s" : ""}`,
     POS.find((o) => o.v === posicionamento).n.toLowerCase(),
     PUB.find((o) => o.v === publico).n.toLowerCase(),
-    inicio ? `começa ${inicio.split("-").reverse().slice(0, 2).join("/")}` : "começa agora",
+    comecaEm ? `agendado · começa ${quandoExtenso(comecaEm)}` : "começa agora",
     descreverHoras(horas),
   ].join(" · ");
 
@@ -928,6 +956,37 @@ function BarraAprovacao({ sel, cfg, sobra, curva, subida, pontosSalvos, aoSalvar
           <span style={chip}>{cfg.idade_min}–{cfg.idade_max} anos</span>
           <button style={btnGhost} onClick={() => setMais(!mais)}>{mais ? "Menos opções" : "Mais opções"}</button>
         </div>
+
+        <Grupo titulo="Quando começa">
+          <Opcao ativo={!agendar} onClick={() => mexeu(setAgendar)(false)}
+                 nome="Patrocinar agora" desc="entra no ar depois da revisão da Meta" />
+          <Opcao ativo={agendar} onClick={() => { mexeu(setAgendar)(true); if (!inicio) setInicio(hojeISO()); }}
+                 nome="Agendar" desc="escolhe o dia e a hora" />
+        </Grupo>
+        {agendar && (
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center", fontSize: 12.5 }}>
+              <input type="date" style={{ ...inputStyle, height: 34 }} min={hojeISO()} max={diaISO(30)} value={inicio}
+                     onChange={(e) => mexeu(setInicio)(e.target.value)} />
+              <span>às</span>
+              <input type="time" step={900} style={{ ...inputStyle, height: 34 }} value={horaInicio}
+                     onChange={(e) => mexeu(setHoraInicio)(e.target.value)} />
+              <span style={dica}>atalhos:</span>
+              {[["hoje 16h", 0], ["amanhã 16h", 1], ["próxima sexta 16h", diasAteSexta()]].map(([rotulo, d]) => (
+                <button key={rotulo} style={{ ...btnGhost, padding: "3px 9px", borderRadius: 99 }}
+                        onClick={() => { mexeu(setInicio)(diaISO(d)); setHoraInicio("16:00"); }}>
+                  {rotulo}
+                </button>
+              ))}
+            </div>
+            <div style={{ ...dica, color: agendaPassou ? "#C4432B" : undefined, fontWeight: agendaPassou ? 700 : 400 }}>
+              {agendaIncompleta ? "Escolha o dia."
+                : agendaPassou ? "Esse horário já passou. Escolha um mais à frente ou use Patrocinar agora."
+                : <>A Meta já revisa agora e segura o anúncio até a hora marcada.
+                    {terminaEm && ` Roda até ${quandoExtenso(terminaEm)}.`} Até 30 dias à frente.</>}
+            </div>
+          </div>
+        )}
 
         {mais && (
           <div style={{ display: "grid", gap: 10, borderTop: "1px solid #E8E2D2", paddingTop: 9 }}>
@@ -1047,12 +1106,6 @@ function BarraAprovacao({ sel, cfg, sobra, curva, subida, pontosSalvos, aoSalvar
             </Grupo>
             <Interesses escolhidos={interesses} aoMudar={mexeu(setInteresses)} />
 
-            <Grupo titulo="Quando começa">
-              <Opcao ativo={!inicio} onClick={() => mexeu(setInicio)("")} nome="Agora" />
-              <input type="date" style={{ ...inputStyle, height: 34 }} min={hojeISO()} value={inicio}
-                     onChange={(e) => mexeu(setInicio)(e.target.value)} />
-            </Grupo>
-
             <div>
               <div style={{ ...dica, fontWeight: 700, color: "#22231F", marginBottom: 5 }}>
                 Horário do dia em que roda: {descreverHoras(horas)}
@@ -1110,9 +1163,10 @@ function BarraAprovacao({ sel, cfg, sobra, curva, subida, pontosSalvos, aoSalvar
         </label>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button style={btnSecondary} onClick={aoCancelar} disabled={enviando}>Cancelar</button>
-          <button style={{ ...btnPrimary, opacity: confirmo && !semCardapio ? 1 : 0.45 }} onClick={enviar}
-                  disabled={!confirmo || enviando || semCardapio}>
-            {enviando ? <Loader2 size={13} /> : <Rocket size={13} />} {enviando ? "Criando na Meta…" : sel.length > 1 ? "Aprovar e criar campanha" : "Aprovar e patrocinar"}
+          <button style={{ ...btnPrimary, opacity: confirmo && !semCardapio && !travaAgenda ? 1 : 0.45 }} onClick={enviar}
+                  disabled={!confirmo || enviando || semCardapio || travaAgenda}>
+            {enviando ? <Loader2 size={13} /> : agendar ? <CalendarClock size={13} /> : <Rocket size={13} />}{" "}
+            {enviando ? "Criando na Meta…" : agendar ? "Aprovar e agendar" : sel.length > 1 ? "Aprovar e criar campanha" : "Aprovar e patrocinar"}
           </button>
         </div>
       </div>
@@ -1177,9 +1231,14 @@ function NoAr({ lista, posts, podeEncerrar, aoRecarregar }) {
     // Dinheiro no ar: uma confirmação explícita antes, sempre. O texto diz o
     // que já foi gasto, porque pausar não devolve o que saiu.
     const gasto = Number(a.gasto) || 0;
-    const texto = `Encerrar este patrocínio na Meta?\n\n${a.texto || a.nome}\n\n` +
-      `Já gastou ${dinheiro(gasto)}; pausar não devolve esse valor. ` +
-      `O anúncio para de entregar na hora e não volta sozinho.`;
+    // Agendado ainda não começou: cancelar não custa nada.
+    const agendado = a.inicio && new Date(a.inicio).getTime() > Date.now();
+    const texto = agendado
+      ? `Cancelar este agendamento?\n\n${a.texto || a.nome}\n\n` +
+        `Ele começaria ${quandoExtenso(new Date(a.inicio))}. Ainda não gastou nada, e não vai mais entrar no ar.`
+      : `Encerrar este patrocínio na Meta?\n\n${a.texto || a.nome}\n\n` +
+        `Já gastou ${dinheiro(gasto)}; pausar não devolve esse valor. ` +
+        `O anúncio para de entregar na hora e não volta sozinho.`;
     if (!window.confirm(texto)) return;
 
     setEncerrando(a.anuncio_id);
@@ -1191,7 +1250,7 @@ function NoAr({ lista, posts, podeEncerrar, aoRecarregar }) {
     if (error || data?.ok !== true) {
       setMsg({ tipo: "erro", texto: data?.erro || error?.message || "Não consegui encerrar." });
     } else {
-      setMsg({ tipo: "ok", texto: "Patrocínio encerrado. A Meta leva alguns minutos para parar de entregar." });
+      setMsg({ tipo: "ok", texto: agendado ? "Agendamento cancelado." : "Patrocínio encerrado. A Meta leva alguns minutos para parar de entregar." });
       await aoRecarregar?.();
     }
   };
@@ -1199,7 +1258,10 @@ function NoAr({ lista, posts, podeEncerrar, aoRecarregar }) {
   return (
     <div style={cardStyle}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-        <div style={sectionLabel}>No ar agora · {lista.length} {lista.length === 1 ? "anúncio" : "anúncios"}</div>
+        <div style={sectionLabel}>
+          {lista.some((a) => a.inicio && new Date(a.inicio).getTime() > Date.now()) ? "No ar e agendados" : "No ar agora"}
+          {" · "}{lista.length} {lista.length === 1 ? "anúncio" : "anúncios"}
+        </div>
         {lista.length > 0 && (
           <div style={{ ...dica, fontWeight: 700 }}>
             gastaram {dinheiro(semana)} nos últimos 7 dias
@@ -1397,6 +1459,9 @@ function AnuncioNoAr({ a, tipoPost, podeEncerrar, aoEncerrar, encerrando }) {
   // aqui: o botão aparece, e a análise avisa se não houver dados de vídeo.
   const podeAnalisar = !["IMAGE", "CAROUSEL_ALBUM"].includes(tipoPost);
   const emAnalise = a.situacao !== "no ar";
+  // Conjunto com início no futuro: a Meta mostra como ativo, mas ele só
+  // começa a entregar na hora marcada.
+  const agendado = a.inicio && new Date(a.inicio).getTime() > Date.now();
   // Conversa só é resultado quando o anúncio foi feito para isso. Num anúncio
   // de alcance ou engajamento, "0 conversas" não é fracasso — é outra meta.
   const deMensagem = !a.otimiza || a.otimiza === "CONVERSATIONS";
@@ -1426,7 +1491,9 @@ function AnuncioNoAr({ a, tipoPost, podeEncerrar, aoEncerrar, encerrando }) {
   // O aviso ao lado do botão muda conforme o caso. Mostrar "gastou sem
   // conversa" num anúncio de alcance seria injusto: ele nunca buscou conversa.
   let aviso = null, avisoGrave = false;
-  if (deMensagem && gasto > 0 && !a.conversas) {
+  if (agendado) {
+    // Ainda não começou: nada a avisar sobre gasto.
+  } else if (deMensagem && gasto > 0 && !a.conversas) {
     aviso = `gastou ${dinheiro(gasto)} sem conversa`; avisoGrave = true;
   } else if (gasto === 0) {
     aviso = temVerba
@@ -1453,8 +1520,10 @@ function AnuncioNoAr({ a, tipoPost, podeEncerrar, aoEncerrar, encerrando }) {
                          textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
             {a.texto || a.nome}
           </span>
-          <span style={{ ...tagBase, ...(emAnalise ? tagAnalise : tagOk) }}>
-            {cap(a.situacao)}{!emAnalise ? (a.termina ? ` · termina ${dataExtenso(a.termina)}` : " · contínuo") : ""}
+          <span style={{ ...tagBase, ...(emAnalise || agendado ? tagAnalise : tagOk) }}>
+            {agendado
+              ? `Agendado · começa ${quandoExtenso(new Date(a.inicio))}${emAnalise ? ` · ${a.situacao}` : ""}`
+              : <>{cap(a.situacao)}{!emAnalise ? (a.termina ? ` · termina ${dataExtenso(a.termina)}` : " · contínuo") : ""}</>}
           </span>
         </div>
         <div style={{ ...dica, marginBottom: 8 }}>{origem}</div>
@@ -1466,7 +1535,8 @@ function AnuncioNoAr({ a, tipoPost, podeEncerrar, aoEncerrar, encerrando }) {
           <Grande v={temVerba ? dinheiro(verba) : "—"}
                   r={temVerba ? "valor previsto" : "verba na campanha, não no anúncio"} />
           <Grande v={a.inicio ? dataExtenso(a.inicio) : "—"}
-                  r={diasRodando == null ? "início"
+                  r={agendado ? "início · agendado"
+                     : diasRodando == null ? "início"
                      : diasRodando === 0 ? "início · hoje"
                      : `início · há ${diasRodando} ${diasRodando === 1 ? "dia" : "dias"}`} />
           <Grande v={a.termina ? dataExtenso(a.termina) : "contínuo"}
@@ -1521,7 +1591,7 @@ function AnuncioNoAr({ a, tipoPost, podeEncerrar, aoEncerrar, encerrando }) {
                          cursor: encerrando ? "default" : "pointer" }}
                 disabled={encerrando}
                 onClick={() => aoEncerrar(a, aviso)}>
-                {encerrando ? <Loader2 size={12} /> : <X size={12} />} Encerrar patrocínio
+                {encerrando ? <Loader2 size={12} /> : <X size={12} />} {agendado ? "Cancelar agendamento" : "Encerrar patrocínio"}
               </button>
             )}
             {aviso && (
