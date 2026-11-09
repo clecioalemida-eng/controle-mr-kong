@@ -208,7 +208,9 @@ export default function ConferenciaCaixa() {
     const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
       body: {
         data_inicio: `${dia}T17:00:00-03:00`,
-        data_fim: `${diaSeguinte.toISOString().slice(0, 10)}T03:00:00-03:00`,
+        // Fecha às 4h: sábado vai até as 3h, e a hora a mais pega o pedido
+        // fechado depois disso sem invadir a noite seguinte.
+        data_fim: `${diaSeguinte.toISOString().slice(0, 10)}T04:00:00-03:00`,
       },
     });
     setBuscando(false);

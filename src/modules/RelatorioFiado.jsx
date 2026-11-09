@@ -3,8 +3,18 @@ import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
-function hoje() { return new Date().toISOString().slice(0, 10); }
-function diasAtras(n) { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); }
+// Dia operacional, igual à Conferência de caixa: abre às 17h e fecha às
+// 4h do dia seguinte, e vale pelo dia em que ABRIU. Pedido da madrugada
+// de quinta é da noite de quarta.
+const ABRE = "17:00:00";
+const FECHA = "04:00:00";
+function diaISO(d) { return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d); }
+function somaDias(iso, n) { const d = new Date(`${iso}T12:00:00-03:00`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+// Antes das 5h ainda é a noite anterior (mesma regra do crm_dia_operacional).
+function diaOperacional(ts) { return diaISO(new Date(new Date(ts).getTime() - 5 * 3600000)); }
+function hoje() { return diaOperacional(Date.now()); }
+function diasAtras(n) { return somaDias(hoje(), -n); }
+function dataBR(iso) { return iso.split("-").reverse().join("/"); }
 
 // Lista pedidos pagos como fiado (payment_method "debt_book") num
 // período, pra saber quem ainda deve. Usa o mesmo resumo_financeiro que
@@ -21,7 +31,7 @@ export default function RelatorioFiado() {
     setBuscando(true);
     setErro("");
     const { data, error } = await supabase.functions.invoke("cardapioweb-proxy", {
-      body: { data_inicio: `${dataInicio}T00:00:00-03:00`, data_fim: `${dataFim}T23:59:59-03:00` },
+      body: { data_inicio: `${dataInicio}T${ABRE}-03:00`, data_fim: `${somaDias(dataFim, 1)}T${FECHA}-03:00` },
     });
     setBuscando(false);
     if (error) { setErro(await extrairErroFuncao(error)); return; }
@@ -63,7 +73,7 @@ export default function RelatorioFiado() {
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
 
       {lancamentos === null ? (
-        <div style={{ fontSize: 13, color: "#8A8778" }}>Escolha o período e clique em "Buscar" para consultar o CardápioWeb.</div>
+        <div style={{ fontSize: 13, color: "#8A8778" }}>Escolha o período e clique em "Buscar" para consultar o CardápioWeb. Cada dia vai das 17h às 4h do dia seguinte, como na Conferência de caixa.</div>
       ) : (
         <>
           {!nomeDisponivel && lancamentos.length > 0 && (
@@ -74,7 +84,7 @@ export default function RelatorioFiado() {
               <div key={l.id} style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none", fontSize: 13 }}>
                 <div>
                   <div style={{ color: "#22231F" }}>{l.nomeCliente || `Pedido #${l.displayId}`}</div>
-                  <div style={{ fontSize: 11, color: "#8A8778" }}>{new Date(l.data).toLocaleDateString("pt-BR")}</div>
+                  <div style={{ fontSize: 11, color: "#8A8778" }}>noite de {dataBR(diaOperacional(l.data))}</div>
                 </div>
                 <span style={{ fontWeight: 700, color: "#22231F" }}>{brl(l.valor)}</span>
               </div>
