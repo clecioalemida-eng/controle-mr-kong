@@ -66,6 +66,9 @@ function categoriaComissao(papel) {
 // percentual de cada noite trabalhada acumula e sai no fechamento do
 // mês, somado ao salário base, igual aos outros registrados.
 const PERCENTUAL_GERENTE_PADRAO = 2;
+// Jornada cheia do diarista. Abaixo disso vale sempre o método hora,
+// mesmo que taxa de serviço + diária base desse mais (regra de 13/11/2026).
+const JORNADA_CHEIA_HORAS = 8;
 // Peso não é mais digitado à parte — é calculado a partir das horas
 // trabalhadas, considerando um turno padrão de 8h (6h trabalhadas =
 // peso 0,75, por exemplo). Simplifica pra só uma pergunta em vez de duas
@@ -1699,7 +1702,7 @@ function FolhaEscala({ dia, linhas, participacao, taxa, emitidoPor }) {
         A comissão do dia é metade da taxa de serviço para os garçons e metade
         para a equipe interna, dividida por cabeça dentro de cada grupo, só entre
         quem trabalhou. Diarista recebe o maior entre <b>diária base + comissão</b> e
-        <b> horas × valor da hora</b>. Gerente não entra na divisão: recebe 2% do
+        <b> horas × valor da hora</b>; com menos de {JORNADA_CHEIA_HORAS}h trabalhadas, vale sempre a hora. Gerente não entra na divisão: recebe 2% do
         faturamento bruto, fechado no mês.
       </div>
 
@@ -2274,7 +2277,8 @@ function PremiacaoDoDia({ isAdmin }) {
   // comissão que os colegas do mesmo bolo.
   const comissaoPorGarcom = garcons.length > 0 ? poolGarcons / garcons.length : 0;
   const comissaoPorInterno = internos.length > 0 ? poolInternos / internos.length : 0;
-  // Diarista: dois métodos, vale o maior.
+  // Diarista: dois métodos, vale o maior — exceto abaixo de 8h
+  // trabalhadas, quando vale sempre a hora (JORNADA_CHEIA_HORAS).
   //   comissão = diária base CHEIA do cargo + a fatia da taxa
   //   hora     = horas trabalhadas × valor/hora do cargo
   // A base é cheia mesmo em jornada curta: trabalhou aquela noite, leva a
@@ -2308,9 +2312,12 @@ function PremiacaoDoDia({ isAdmin }) {
     if (p.tipo_contrato === "diarista") {
       const valorMetodoComissao = comissao + baseCategoriaValor;
       const valorMetodoHora = horas * (m.valor_hora || 0);
-      const metodoUsado = valorMetodoHora > valorMetodoComissao ? "hora" : "comissao";
-      const total = Math.max(valorMetodoComissao, valorMetodoHora);
-      return { pessoa: p, peso, horas, comissao, baseCategoriaValor, metodoUsado, valorMetodoComissao, valorMetodoHora, total };
+      // Menos de 8h: vale a hora. Com 8h ou mais: vale o maior dos dois.
+      // Sem ponto (0h) não aplica, para não zerar quem esqueceu de bater.
+      const jornadaCurta = horas > 0 && horas < JORNADA_CHEIA_HORAS;
+      const metodoUsado = jornadaCurta || valorMetodoHora > valorMetodoComissao ? "hora" : "comissao";
+      const total = metodoUsado === "hora" ? valorMetodoHora : valorMetodoComissao;
+      return { pessoa: p, peso, horas, comissao, baseCategoriaValor, metodoUsado, valorMetodoComissao, valorMetodoHora, total, jornadaCurta };
     }
     // registrado: só a taxa de serviço proporcional do dia — sem diária
     // base (isso é só pra diarista, já que registrado recebe salário fixo
@@ -2499,7 +2506,9 @@ function PremiacaoDoDia({ isAdmin }) {
               )}
               {isAdmin && l.metodo_usado && l.metodo_usado !== "gerente" && l.metodo_usado !== "gerente_previa" && (
                 <div style={{ fontSize: 10, color: "#0F6E56", marginTop: 4 }}>
-                  ✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}
+                  {l.metodo_usado === "hora" && Number(l.valor_metodo_hora) < Number(l.valor_metodo_comissao)
+                    ? <>✓ Menos de {JORNADA_CHEIA_HORAS}h, vale a hora: {brl(l.valor_metodo_hora)} · (taxa + diária base seria {brl(l.valor_metodo_comissao)})</>
+                    : <>✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}</>}
                 </div>
               )}
               {isAdmin && (
@@ -2809,6 +2818,11 @@ function PremiacaoDoDia({ isAdmin }) {
                         <span style={{ fontWeight: l.metodoUsado === "hora" ? 700 : 400, color: l.metodoUsado === "hora" ? "#0F6E56" : "#8A8778" }}>
                           Hora ({l.horas}h): {brl(l.valorMetodoHora)}
                         </span>
+                      </div>
+                    )}
+                    {l.jornadaCurta && l.valorMetodoHora < l.valorMetodoComissao && (
+                      <div style={{ fontSize: 10, color: "#854F0B", marginTop: 3 }}>
+                        Menos de {JORNADA_CHEIA_HORAS}h trabalhadas: vale a hora, mesmo sendo menor.
                       </div>
                     )}
                   </div>
@@ -3162,7 +3176,8 @@ function ComoDivideComissao() {
               cargo, mesmo em jornada curta.
             </div>
             <div style={{ marginTop: 6 }}>
-              <b style={{ color: "#22231F" }}>Diarista recebe o maior dos dois métodos.</b> Registrado leva
+              <b style={{ color: "#22231F" }}>Diarista recebe o maior dos dois métodos.</b> Com menos
+              de {JORNADA_CHEIA_HORAS}h trabalhadas, vale sempre o método hora, mesmo que a comissão dê mais. Registrado leva
               só a fatia da comissão — o salário dele fecha no mês. Gerente não
               entra na divisão: recebe 2% do faturamento bruto, também no mês.
             </div>
@@ -3467,6 +3482,7 @@ function FechamentoMensal() {
                     <span style={{ fontWeight: e.metodo_usado === "hora" ? 700 : 400, color: e.metodo_usado === "hora" ? "#0F6E56" : "#8A8778" }}>
                       Hora: {brl(e.valor_metodo_hora)}
                     </span>
+                    {e.metodo_usado === "hora" && Number(e.valor_metodo_hora) < Number(e.valor_metodo_comissao) && ` · menos de ${JORNADA_CHEIA_HORAS}h`}
                   </>
                 ) : (
                   <>
