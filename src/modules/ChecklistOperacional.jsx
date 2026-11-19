@@ -60,13 +60,13 @@ function formatDiaLabel(dateStr) {
   const dt = new Date(y, m - 1, d);
   return dt.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" });
 }
-// Abertura: das 17h às 02h. Fechamento (saída): das 23h30 às 05h.
+// Abertura (entrada): das 17h às 20h. Fechamento (saída): das 23h às 04h.
 function podePreencher(etapa) {
   const agora = new Date();
   const h = agora.getHours();
   const minutos = h * 60 + agora.getMinutes();
-  if (etapa === "abertura") return h >= 17 || h < 2;
-  if (etapa === "fechamento") return minutos >= 23 * 60 + 30 || minutos < 5 * 60;
+  if (etapa === "abertura") return minutos >= 17 * 60 && minutos < 20 * 60;
+  if (etapa === "fechamento") return minutos >= 23 * 60 || minutos < 4 * 60;
   return true;
 }
 function useIsAdmin() {
@@ -335,8 +335,8 @@ export default function ChecklistOperacional({ nomeUsuario, onVoltar }) {
           <div style={avisoBloqueio}>
             <Clock size={16} />
             {etapaAtual === "abertura"
-              ? "O preenchimento de abertura só é liberado a partir das 17h."
-              : "O preenchimento de fechamento só é liberado das 23h30 às 05h."}
+              ? "O preenchimento de abertura só é liberado das 17h às 20h."
+              : "O preenchimento de fechamento só é liberado das 23h às 04h."}
           </div>
         ) : (
           <>
