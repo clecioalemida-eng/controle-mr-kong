@@ -135,6 +135,15 @@ export default function ConferenciaCaixa() {
   // TODAS como "depois das 22h", o que inflava o repasse em 6 reais por
   // entrega feita cedo.
   const [horas, setHoras] = useState([]);
+  // Horas já acertadas e salvas (repasse_horas), para remontar a tabela
+  // sem perder o que foi digitado quando a contagem é relida.
+  const [horasSalvasDoDia, setHorasSalvasDoDia] = useState([]);
+  // Erro ao ler as entregas do cache. Antes a tela escondia o erro e
+  // mostrava "nenhuma entrega" (noite de 14/11/2026).
+  const [erroHoras, setErroHoras] = useState("");
+  // true = a contagem veio da busca ao vivo, porque o cache dessa noite
+  // ainda estava vazio. Provisória até o robô das 4h gravar o cache.
+  const [horasAoVivo, setHorasAoVivo] = useState(false);
   // Conta a pagar gerada pelo botão de enviar. Nulo = ainda não enviado.
   const [repasseContaId, setRepasseContaId] = useState(null);
   const [enviandoRepasse, setEnviandoRepasse] = useState(false);
@@ -172,7 +181,7 @@ export default function ConferenciaCaixa() {
     setCarregando(true);
     setMensagem("");
     const [{ data, error }, { data: repasseData }, { data: escalaData },
-            { data: horasBanco }, { data: horasSalvas }] = await Promise.all([
+            { data: horasBanco, error: errHoras }, { data: horasSalvas }] = await Promise.all([
       supabase.from("conferencias_caixa").select("*").eq("dia", dia).order("forma_pagamento"),
       supabase.from("repasses_delivery").select("*").eq("dia", dia).maybeSingle(),
       supabase.from("presencas_diarias").select("pessoa_id, peso, horas_trabalhadas, pessoa:pessoas(nome, papel)").eq("dia", dia),
@@ -180,6 +189,9 @@ export default function ConferenciaCaixa() {
       supabase.from("repasse_horas").select("*").eq("dia", dia),
     ]);
     montarHoras(horasBanco, horasSalvas);
+    setHorasSalvasDoDia(horasSalvas || []);
+    setHorasAoVivo(false);
+    setErroHoras(errHoras ? `Não consegui ler as entregas da noite: ${errHoras.message}` : "");
     setRepasseContaId(repasseData?.conta_pagar_id || null);
     if (repasseData) {
       setRepasse((prev) => ({ ...prev, valorAte22: String(repasseData.valor_ate_22h), valorApos22: String(repasseData.valor_apos_22h) }));
@@ -272,6 +284,32 @@ export default function ConferenciaCaixa() {
       }
     }
     setRepasse((prev) => ({ ...prev, qtdAte22, qtdApos22 }));
+
+    // Relê as entregas do cache: a tela pode ter sido aberta antes de o
+    // robô da madrugada gravar a noite. Se o cache ainda estiver vazio e
+    // a busca ao vivo trouxe Delivery, usa a contagem ao vivo por hora.
+    const { data: horasBanco, error: errHoras } = await supabase.rpc("entregas_do_turno_por_hora", { p_dia: dia });
+    if (errHoras) {
+      setErroHoras(`Não consegui ler as entregas da noite: ${errHoras.message}`);
+    } else if ((horasBanco || []).length > 0) {
+      setErroHoras("");
+      setHorasAoVivo(false);
+      montarHoras(horasBanco, horasSalvasDoDia);
+    } else {
+      setErroHoras("");
+      const horaSP = new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", hourCycle: "h23", timeZone: "America/Sao_Paulo" });
+      const porHora = {};
+      for (const p of pedidos) {
+        if (labelCategoria(p.order_type) !== "Delivery" || !p.created_at) continue;
+        const h = Number(horaSP.format(new Date(p.created_at)));
+        if (!porHora[h]) porHora[h] = { hora: h, entregas: 0, taxa_cobrada: 0 };
+        porHora[h].entregas += 1;
+        porHora[h].taxa_cobrada += Number(p.delivery_fee) || 0;
+      }
+      const aoVivo = Object.values(porHora);
+      setHorasAoVivo(aoVivo.length > 0);
+      if (aoVivo.length > 0) montarHoras(aoVivo, horasSalvasDoDia);
+    }
     setPorCategoria(Object.values(mapaCategoria).sort((a, b) => b.total - a.total));
     setPorCanal(Object.values(mapaCanal).sort((a, b) => b.total - a.total));
     setPorAtendente(Object.values(mapaAtendente).sort((a, b) => b.total - a.total));
@@ -573,10 +611,21 @@ export default function ConferenciaCaixa() {
                 mude à vontade, vale o que ficar digitado.
               </div>
 
-              {horas.length === 0 ? (
+              {erroHoras && (
+                <div style={{ ...cardStyleBox, marginBottom: 8, fontSize: 12.5, color: "#A32D2D" }}>
+                  {erroHoras}
+                </div>
+              )}
+              {horasAoVivo && (
+                <div style={{ ...cardStyleBox, marginBottom: 8, fontSize: 12.5, color: "#854F0B", background: "#FBF0D5" }}>
+                  Contagem provisória, da busca ao vivo: o cache de pedidos dessa noite ainda não
+                  foi gravado (o robô grava às 4h). Confira antes de enviar o repasse.
+                </div>
+              )}
+              {erroHoras ? null : horas.length === 0 ? (
                 <div style={{ ...cardStyleBox, marginBottom: 8, fontSize: 12.5, color: "#8A8778" }}>
-                  Nenhuma entrega encontrada nesse turno. Se houve entrega, o cache de pedidos
-                  dessa noite ainda não foi gravado — ele enche de madrugada.
+                  Nenhuma entrega encontrada nesse turno. Se o relatório de vendas abaixo mostra
+                  Delivery, clique em Buscar de novo para reler as entregas.
                 </div>
               ) : (
                 <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden",
