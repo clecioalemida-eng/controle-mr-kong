@@ -67,8 +67,11 @@ function categoriaComissao(papel) {
 // mês, somado ao salário base, igual aos outros registrados.
 const PERCENTUAL_GERENTE_PADRAO = 2;
 // Jornada cheia do diarista. Abaixo disso vale sempre o método hora,
-// mesmo que taxa de serviço + diária base desse mais (regra de 13/11/2026).
+// mesmo que taxa de serviço + diária base desse mais (regra a partir da noite de 18/11/2026).
 const JORNADA_CHEIA_HORAS = 8;
+// A regra das 8h vale a partir desta noite (dia operacional). Noites
+// anteriores, se reabertas, seguem a regra antiga: vale o maior dos dois.
+const INICIO_REGRA_8H = "2026-11-18";
 // Peso não é mais digitado à parte — é calculado a partir das horas
 // trabalhadas, considerando um turno padrão de 8h (6h trabalhadas =
 // peso 0,75, por exemplo). Simplifica pra só uma pergunta em vez de duas
@@ -2031,6 +2034,10 @@ function PremiacaoDoDia({ isAdmin }) {
   const [mensagem, setMensagem] = useState("");
   const [modoLeitura, setModoLeitura] = useState(false);
   const [premiacoesSalvas, setPremiacoesSalvas] = useState([]);
+  // Diarista com menos de 8h: o admin escolhe se paga pela hora (padrão)
+  // ou pela comissão. pessoa_id -> "hora" | "comissao". Vem do que foi
+  // salvo, para o dia reaberto voltar com a mesma escolha.
+  const [escolhaMetodo, setEscolhaMetodo] = useState({});
   // Quem tem alteração ainda não gravada. Sem isso a pessoa digita o
   // horário, rola a tela, e não tem como saber se aquilo foi salvo — a
   // queixa que originou o ícone por linha e a barra do rodapé.
@@ -2063,6 +2070,9 @@ function PremiacaoDoDia({ isAdmin }) {
       }
       setPessoas([...(pessoasData || [])].sort(porNome));
       setPremiacoesSalvas(premiacoesData || []);
+      setEscolhaMetodo(Object.fromEntries((premiacoesData || [])
+        .filter((pr) => pr.metodo_usado === "hora" || pr.metodo_usado === "comissao")
+        .map((pr) => [pr.pessoa_id, pr.metodo_usado])));
       // Trava só quando a premiação já foi calculada — aí sim o dia está
       // fechado e mexer sem querer estraga valor pago. Antes isso travava
       // com qualquer presença gravada, o que passou a atrapalhar depois
@@ -2314,8 +2324,12 @@ function PremiacaoDoDia({ isAdmin }) {
       const valorMetodoHora = horas * (m.valor_hora || 0);
       // Menos de 8h: vale a hora. Com 8h ou mais: vale o maior dos dois.
       // Sem ponto (0h) não aplica, para não zerar quem esqueceu de bater.
-      const jornadaCurta = horas > 0 && horas < JORNADA_CHEIA_HORAS;
-      const metodoUsado = jornadaCurta || valorMetodoHora > valorMetodoComissao ? "hora" : "comissao";
+      const jornadaCurta = dia >= INICIO_REGRA_8H && horas > 0 && horas < JORNADA_CHEIA_HORAS;
+      // Abaixo de 8h o padrão é a hora, mas o admin pode escolher a comissão.
+      const escolha = jornadaCurta ? (escolhaMetodo[p.id] || "hora") : null;
+      const metodoUsado = jornadaCurta
+        ? escolha
+        : (valorMetodoHora > valorMetodoComissao ? "hora" : "comissao");
       const total = metodoUsado === "hora" ? valorMetodoHora : valorMetodoComissao;
       return { pessoa: p, peso, horas, comissao, baseCategoriaValor, metodoUsado, valorMetodoComissao, valorMetodoHora, total, jornadaCurta };
     }
@@ -2508,6 +2522,8 @@ function PremiacaoDoDia({ isAdmin }) {
                 <div style={{ fontSize: 10, color: "#0F6E56", marginTop: 4 }}>
                   {l.metodo_usado === "hora" && Number(l.valor_metodo_hora) < Number(l.valor_metodo_comissao)
                     ? <>✓ Menos de {JORNADA_CHEIA_HORAS}h, vale a hora: {brl(l.valor_metodo_hora)} · (taxa + diária base seria {brl(l.valor_metodo_comissao)})</>
+                    : l.metodo_usado === "comissao" && dia >= INICIO_REGRA_8H && (participacao[l.pessoa_id]?.horas || 0) > 0 && (participacao[l.pessoa_id]?.horas || 0) < JORNADA_CHEIA_HORAS
+                    ? <>✓ Menos de {JORNADA_CHEIA_HORAS}h, paga pela comissão (escolha do admin): {brl(l.valor_metodo_comissao)} · Hora seria {brl(l.valor_metodo_hora)}</>
                     : <>✓ Taxa de serviço + diária base: {brl(l.valor_metodo_comissao)} · Hora: {brl(l.valor_metodo_hora)}</>}
                 </div>
               )}
@@ -2821,8 +2837,21 @@ function PremiacaoDoDia({ isAdmin }) {
                       </div>
                     )}
                     {l.jornadaCurta && l.valorMetodoHora < l.valorMetodoComissao && (
-                      <div style={{ fontSize: 10, color: "#854F0B", marginTop: 3 }}>
-                        Menos de {JORNADA_CHEIA_HORAS}h trabalhadas: vale a hora, mesmo sendo menor.
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 11, color: "#854F0B" }}>Menos de {JORNADA_CHEIA_HORAS}h. Pagar por:</span>
+                        <div style={{ display: "inline-flex", border: "1px solid #D8D1BF", borderRadius: 8, overflow: "hidden" }}>
+                          {[["hora", `Hora · ${brl(l.valorMetodoHora)}`], ["comissao", `Comissão · ${brl(l.valorMetodoComissao)}`]].map(([m, rotulo], i) => {
+                            const marcado = l.metodoUsado === m;
+                            return (
+                              <button key={m} type="button"
+                                onClick={() => setEscolhaMetodo((e) => ({ ...e, [l.pessoa.id]: m }))}
+                                style={{ border: "none", borderLeft: i > 0 ? "1px solid #D8D1BF" : "none", padding: "5px 11px", fontSize: 11.5, cursor: "pointer",
+                                  background: marcado ? "#E6F1FB" : "#FFFFFF", color: marcado ? "#185FA5" : "#55534A", fontWeight: marcado ? 700 : 400 }}>
+                                {rotulo}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                   </div>
