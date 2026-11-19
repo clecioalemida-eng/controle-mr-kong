@@ -1677,6 +1677,7 @@ function FolhaEscala({ dia, linhas, participacao, taxa, emitidoPor }) {
                   {l.metodo_usado === "gerente" ? "% do faturamento do dia"
                     : l.metodo_usado === "gerente_previa" ? "2% do mês (regra antiga)"
                     : l.metodo_usado === "hora" ? "por hora"
+                    : l.metodo_usado === "manual" ? "valor do admin"
                     : l.metodo_usado === "comissao" ? "taxa + diária"
                     : "comissão"}
                 </td>
@@ -2038,6 +2039,8 @@ function PremiacaoDoDia({ isAdmin }) {
   // ou pela comissão. pessoa_id -> "hora" | "comissao". Vem do que foi
   // salvo, para o dia reaberto voltar com a mesma escolha.
   const [escolhaMetodo, setEscolhaMetodo] = useState({});
+  // "Outro valor": quanto o admin digitou. pessoa_id -> texto do campo.
+  const [valorManual, setValorManual] = useState({});
   // Quem tem alteração ainda não gravada. Sem isso a pessoa digita o
   // horário, rola a tela, e não tem como saber se aquilo foi salvo — a
   // queixa que originou o ícone por linha e a barra do rodapé.
@@ -2071,8 +2074,11 @@ function PremiacaoDoDia({ isAdmin }) {
       setPessoas([...(pessoasData || [])].sort(porNome));
       setPremiacoesSalvas(premiacoesData || []);
       setEscolhaMetodo(Object.fromEntries((premiacoesData || [])
-        .filter((pr) => pr.metodo_usado === "hora" || pr.metodo_usado === "comissao")
+        .filter((pr) => ["hora", "comissao", "manual"].includes(pr.metodo_usado))
         .map((pr) => [pr.pessoa_id, pr.metodo_usado])));
+      setValorManual(Object.fromEntries((premiacoesData || [])
+        .filter((pr) => pr.metodo_usado === "manual")
+        .map((pr) => [pr.pessoa_id, String(pr.total_dia ?? "")])));
       // Trava só quando a premiação já foi calculada — aí sim o dia está
       // fechado e mexer sem querer estraga valor pago. Antes isso travava
       // com qualquer presença gravada, o que passou a atrapalhar depois
@@ -2325,12 +2331,15 @@ function PremiacaoDoDia({ isAdmin }) {
       // Menos de 8h: vale a hora. Com 8h ou mais: vale o maior dos dois.
       // Sem ponto (0h) não aplica, para não zerar quem esqueceu de bater.
       const jornadaCurta = dia >= INICIO_REGRA_8H && horas > 0 && horas < JORNADA_CHEIA_HORAS;
-      // Abaixo de 8h o padrão é a hora, mas o admin pode escolher a comissão.
+      // Abaixo de 8h o padrão é a hora, mas o admin pode escolher a
+      // comissão ou digitar outro valor ("manual").
       const escolha = jornadaCurta ? (escolhaMetodo[p.id] || "hora") : null;
       const metodoUsado = jornadaCurta
         ? escolha
         : (valorMetodoHora > valorMetodoComissao ? "hora" : "comissao");
-      const total = metodoUsado === "hora" ? valorMetodoHora : valorMetodoComissao;
+      const total = metodoUsado === "manual"
+        ? round2(parseFloat(String(valorManual[p.id] ?? "").replace(",", ".")) || 0)
+        : metodoUsado === "hora" ? valorMetodoHora : valorMetodoComissao;
       return { pessoa: p, peso, horas, comissao, baseCategoriaValor, metodoUsado, valorMetodoComissao, valorMetodoHora, total, jornadaCurta };
     }
     // registrado: só a taxa de serviço proporcional do dia — sem diária
@@ -2382,6 +2391,11 @@ function PremiacaoDoDia({ isAdmin }) {
     // faturamento nunca tinha sido buscado.
     if (isAdmin && gerentesDoDia.length > 0 && !(faturamentoBrutoDia > 0)) {
       setErro("A gerente está na escala mas o faturamento do dia ainda não foi buscado — clique em Buscar taxa de serviço antes de salvar, senão o percentual dela fecha em zero.");
+      return;
+    }
+    const semValor = linhas.filter((l) => l.metodoUsado === "manual" && !(l.total > 0));
+    if (semValor.length > 0) {
+      setErro(`Falta digitar o valor de: ${semValor.map((l) => l.pessoa.nome).join(", ")}.`);
       return;
     }
     setSalvando(true);
@@ -2520,7 +2534,9 @@ function PremiacaoDoDia({ isAdmin }) {
               )}
               {isAdmin && l.metodo_usado && l.metodo_usado !== "gerente" && l.metodo_usado !== "gerente_previa" && (
                 <div style={{ fontSize: 10, color: "#0F6E56", marginTop: 4 }}>
-                  {l.metodo_usado === "hora" && Number(l.valor_metodo_hora) < Number(l.valor_metodo_comissao)
+                  {l.metodo_usado === "manual"
+                    ? <>✓ Menos de {JORNADA_CHEIA_HORAS}h, valor definido pelo admin: {brl(l.total_dia)} · (hora {brl(l.valor_metodo_hora)} · comissão {brl(l.valor_metodo_comissao)})</>
+                    : l.metodo_usado === "hora" && Number(l.valor_metodo_hora) < Number(l.valor_metodo_comissao)
                     ? <>✓ Menos de {JORNADA_CHEIA_HORAS}h, vale a hora: {brl(l.valor_metodo_hora)} · (taxa + diária base seria {brl(l.valor_metodo_comissao)})</>
                     : l.metodo_usado === "comissao" && dia >= INICIO_REGRA_8H && (participacao[l.pessoa_id]?.horas || 0) > 0 && (participacao[l.pessoa_id]?.horas || 0) < JORNADA_CHEIA_HORAS
                     ? <>✓ Menos de {JORNADA_CHEIA_HORAS}h, paga pela comissão (escolha do admin): {brl(l.valor_metodo_comissao)} · Hora seria {brl(l.valor_metodo_hora)}</>
@@ -2796,6 +2812,7 @@ function PremiacaoDoDia({ isAdmin }) {
                       </span>
                       <span style={{ textAlign: "right", color: "#8A8778", fontSize: 11 }}>
                         {l.metodoUsado === "hora" ? "por hora"
+                          : l.metodoUsado === "manual" ? "valor do admin"
                           : l.metodoUsado === "comissao" ? "taxa de serviço"
                           : l.metodoUsado === "gerente" ? `${l.pctGerente}% do dia`
                           : "—"}
@@ -2826,7 +2843,7 @@ function PremiacaoDoDia({ isAdmin }) {
                         Faturamento do dia ainda não foi buscado — sem ele o percentual da gerente fica em zero.
                       </div>
                     )}
-                    {(l.metodoUsado === "hora" || l.metodoUsado === "comissao") && (
+                    {(l.metodoUsado === "hora" || l.metodoUsado === "comissao" || l.metodoUsado === "manual") && (
                       <div style={{ display: "flex", gap: 10, marginTop: 4, fontSize: 10, color: "#8A8778" }}>
                         <span style={{ fontWeight: l.metodoUsado === "comissao" ? 700 : 400, color: l.metodoUsado === "comissao" ? "#0F6E56" : "#8A8778" }}>
                           Taxa de serviço + diária base: {brl(l.valorMetodoComissao)}
@@ -2840,7 +2857,7 @@ function PremiacaoDoDia({ isAdmin }) {
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
                         <span style={{ fontSize: 11, color: "#854F0B" }}>Menos de {JORNADA_CHEIA_HORAS}h. Pagar por:</span>
                         <div style={{ display: "inline-flex", border: "1px solid #D8D1BF", borderRadius: 8, overflow: "hidden" }}>
-                          {[["hora", `Hora · ${brl(l.valorMetodoHora)}`], ["comissao", `Comissão · ${brl(l.valorMetodoComissao)}`]].map(([m, rotulo], i) => {
+                          {[["hora", `Hora · ${brl(l.valorMetodoHora)}`], ["comissao", `Comissão · ${brl(l.valorMetodoComissao)}`], ["manual", "Outro valor"]].map(([m, rotulo], i) => {
                             const marcado = l.metodoUsado === m;
                             return (
                               <button key={m} type="button"
@@ -2852,6 +2869,15 @@ function PremiacaoDoDia({ isAdmin }) {
                             );
                           })}
                         </div>
+                        {l.metodoUsado === "manual" && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: "#55534A" }}>
+                            R$
+                            <input type="number" step="0.01" min="0" inputMode="decimal" autoFocus
+                              value={valorManual[l.pessoa.id] ?? ""}
+                              onChange={(e) => setValorManual((v) => ({ ...v, [l.pessoa.id]: e.target.value }))}
+                              style={{ ...inputStyle, width: 100, padding: "5px 8px" }} />
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -3354,7 +3380,7 @@ function FechamentoMensal() {
       // teve o Pagamento das diárias lançado, ela já levou o total na saída,
       // e isso desce do que falta pagar (caso do Jesse em outubro/2026).
       pp.comissao += Number(pr.comissao) || 0;
-      if ((pr.metodo_usado === "comissao" || pr.metodo_usado === "hora") && diasPagos.has(pr.dia)) {
+      if (["comissao", "hora", "manual"].includes(pr.metodo_usado) && diasPagos.has(pr.dia)) {
         pp.recebidoSaida += Number(pr.total_dia) || 0;
         pp.noitesSaida += 1;
       }
@@ -3512,6 +3538,7 @@ function FechamentoMensal() {
                       Hora: {brl(e.valor_metodo_hora)}
                     </span>
                     {e.metodo_usado === "hora" && Number(e.valor_metodo_hora) < Number(e.valor_metodo_comissao) && ` · menos de ${JORNADA_CHEIA_HORAS}h`}
+                    {e.metodo_usado === "manual" && ` · valor definido pelo admin`}
                   </>
                 ) : (
                   <>
