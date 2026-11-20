@@ -3,6 +3,7 @@
 import React, { useState, useRef } from "react";
 import { AlertTriangle, Loader2, RefreshCw, TrendingUp, TrendingDown, Trophy, Layers } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+import PainelOperacao from "./PainelOperacao";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
@@ -169,6 +170,9 @@ export default function Dashboard() {
   const [progresso, setProgresso] = useState(null); // { fatia, totalFatias, diasFeitos, totalDias, de, ate }
   const cancelarRef = useRef(false);
   const [periodo, setPeriodo] = useState("mes");   // mes | 30 | 7
+  // Aba do Dashboard: "vendas" (a tela de sempre) ou "operacao"
+  // (faturamento, canais, cancelamentos e checklists — PainelOperacao).
+  const [aba, setAba] = useState("vendas");
   const [produtos, setProdutos] = useState(null);  // linhas de desempenho_produtos
   // Cadastro de pratos, só pra conseguir gravar a linha daqui. O
   // desempenho_produtos devolve o NOME do prato, não o id — então o
@@ -808,8 +812,24 @@ export default function Dashboard() {
     return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   }
 
+  const abas = (
+    <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+      {[["vendas", "Vendas"], ["operacao", "Operação"]].map(([k, rotulo]) => (
+        <button key={k} type="button" onClick={() => setAba(k)}
+          style={{ padding: "7px 16px", borderRadius: 99, fontSize: 13, cursor: "pointer",
+                   border: aba === k ? "1px solid #22231F" : "1px solid #E8E2D2",
+                   background: aba === k ? "#22231F" : "#FFFFFF", color: aba === k ? "#FFFFFF" : "#55534A",
+                   fontWeight: aba === k ? 700 : 400 }}>
+          {rotulo}
+        </button>
+      ))}
+    </div>
+  );
+  if (aba === "operacao") return <div>{abas}<PainelOperacao /></div>;
+
   return (
     <div>
+      {abas}
       {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
 
       {/* Carga inicial em andamento */}
