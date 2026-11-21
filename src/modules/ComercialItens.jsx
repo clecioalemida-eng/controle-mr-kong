@@ -180,7 +180,7 @@ function ListaItens({ lista, palavras, rotuloAn, quantos = 8 }) {
             <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
               <div style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: "#22231F", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={x.nome}>{x.nome}</div>
               <span style={{ fontSize: 15, fontWeight: 800, color: "#22231F", fontVariantNumeric: "tabular-nums" }}>{inteiro(x.atual)}</span>
-              <span title={`${rotuloAn}: ${inteiro(x.ant)}`} style={{ minWidth: 38, textAlign: "right" }}><Variacao atual={x.atual} ant={x.ant} /></span>
+              <span title={`De ${rotuloAn}: ${inteiro(x.ant)}`} style={{ minWidth: 38, textAlign: "right" }}><Variacao atual={x.atual} ant={x.ant} /></span>
             </div>
             <div style={{ display: "flex", height: 10, borderRadius: 3, overflow: "hidden", background: "#F3EEE2", margin: "5px 0 3px" }}>
               {partes.map((o) => <div key={o} style={{ width: `${(x[o] / max) * 100}%`, background: COR[o] }} />)}
@@ -246,7 +246,8 @@ function fraseBebidas(b) {
   return s;
 }
 
-export function VendaDosItens({ itens, rotuloAt, rotuloAn, faixa, erro }) {
+// etiqueta: o "Comparando X com Y" do Comercial; rotuloAn: os dias de antes ("1 a 20/10").
+export function VendaDosItens({ itens, rotuloAn, etiqueta, erro }) {
   if (erro) {
     return (
       <div style={card}>
@@ -258,13 +259,12 @@ export function VendaDosItens({ itens, rotuloAt, rotuloAn, faixa, erro }) {
   if (!itens) return null;
   const { lanches, batatas, bebidas, combos } = itens;
   const totalCombos = [combos.montado[0] + combos.fechado[0], combos.montado[1] + combos.fechado[1]];
-  const periodo = `${rotuloAt} · ${faixa} · variação contra ${rotuloAn}`;
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
       <div style={card}>
         <div style={rotulo}>Venda de cada item</div>
-        <div style={{ ...sub, marginTop: 2, marginBottom: 8 }}>{periodo}</div>
+        <div style={{ margin: "6px 0 8px" }}>{etiqueta}</div>
         <Legenda origens={["sozinho", "fechado", "montado"]} />
       </div>
 

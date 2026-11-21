@@ -9,7 +9,7 @@ import { podeVer } from "../lib/permissoes";
 // estão as vendas" — e quem abria uma nunca sabia que a outra existia.
 import Dashboard from "./DashboardModulo";
 import ComercialLinhaTempo, { ultimoDiaFechado } from "./ComercialLinhaTempo";
-import { MancheteMes, TresPerguntas, CurvaDoMes, LinhasQuePuxaram, Leitura, NoitesDaSemana, montarFrases } from "./ComercialMes";
+import { MancheteMes, TresPerguntas, CurvaDoMes, LinhasQuePuxaram, Leitura, NoitesDaSemana, montarFrases, Comparando, faixaDatas } from "./ComercialMes";
 import { VendaDosItens, desmontarItens } from "./ComercialItens";
 
 // ---------------------------------------------------------------------------
@@ -436,8 +436,6 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
   const [at, an, re] = meses;
   // O que compara produtos usa só dias fechados, e pode já ser o mês anterior.
   const rotuloC = (k) => nomeMesCurto(janelasComparacao[k].m0);
-  const faixaC = janelasComparacao[0].ate === janelasComparacao[0].diasMes
-    ? "mês inteiro" : `dias 1 a ${janelasComparacao[0].ate}`;
   const vs = (a, b) => (b ? ((a - b) / b) * 100 : null);
 
   // ---- altas e quedas (R$ vs mesmo período do mês passado)
@@ -490,26 +488,40 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
     linhas: linhasDelta,
     produtos: produtos.map((p) => ({ produto: p.produto, linha: String(p.linha || "").trim() || "Sem linha definida", atual: p.v[0], anterior: p.v[1] })),
     tresSeguidos, semana: dados.semana, previsao: prev.previsao, meta: META_MES, noitesAbertas: faltamAbertos.length,
+    contra: faixaDatas(janelasComparacao[1].ini, janelasComparacao[1].fim, true),
   });
+
+  // ---- o que cada bloco compara, com datas (etiqueta "Comparando X com Y")
+  // Topo: o mês até a noite do relatório, contra os mesmos dias dos anteriores.
+  const faixaAt = faixaDatas(at.ini, at.fim), faixaAn = faixaDatas(an.ini, an.fim), faixaRe = faixaDatas(re.ini, re.fim);
+  // Por item e por linha: só noites já fechadas.
+  const [jc0, jc1, jc2] = janelasComparacao;
+  const fechadasAt = faixaDatas(jc0.ini, jc0.fim, true), fechadasAn = faixaDatas(jc1.ini, jc1.fim, true);
+  const etqFechadas = <Comparando agora={fechadasAt} antes={fechadasAn} fim="· só noites já fechadas" />;
+  const fimSemanas = dia, iniSemanas = somarDiasStr(dia, -55);
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
       <MancheteMes nomeMes={nomeAt} diaAte={`${pad(at.ate)}/${pad(at.m0 + 1)}`} noitesFaltam={dados.diasQueFaltam.length}
         previsao={prev.previsao} jaVendido={jaVendido} resto={prev.resto} meta={META_MES}
-        porDiaAtual={porDiaAt} porDiaAnterior={porDiaAn} nomeAnterior={nomeAn} inteiroAnterior={an.inteiro} />
+        porDiaAtual={porDiaAt} porDiaAnterior={porDiaAn} nomeAnterior={nomeAn} inteiroAnterior={an.inteiro}
+        etiqueta={<Comparando agora={faixaAt} antes={faixaAn} />} />
 
-      <TresPerguntas jaVendido={jaVendido} anteriorMesmoDia={an.periodo} nomeAnterior={nomeAn}
-        porDia={porDiaAt} porDiaAnt={porDiaAn} porDiaRet={porDiaRe} nomeRetrasado={nomeRe}
+      <TresPerguntas jaVendido={jaVendido} anteriorMesmoDia={an.periodo}
+        porDia={porDiaAt} porDiaAnt={porDiaAn} porDiaRet={porDiaRe} faixaAnt={faixaAn} faixaRet={faixaRe}
+        ultimoDia={faixaDatas(at.fimMes, at.fimMes, true)}
         falta={META_MES - jaVendido} noitesAbertas={faltamAbertos.length} normalPorNoite={normalPorNoite} />
 
-      <CurvaDoMes series={seriesCurva} meta={META_MES} frase={fraseCurva} aviso={avisoCache} />
+      <CurvaDoMes series={seriesCurva} meta={META_MES} frase={fraseCurva} aviso={avisoCache}
+        etiqueta={<Comparando agora={nomeAt.toLowerCase()} antes={`${nomeAn} e ${nomeRe}`} fim="· dia a dia do mês" />} />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 10 }}>
-        {!dados.erroProd && <LinhasQuePuxaram linhas={linhasDelta} comparacao={`os mesmos dias de ${NOMES_MES[janelasComparacao[1].m0]} (${faixaC})`} />}
-        <Leitura frases={frases} />
+        {!dados.erroProd && <LinhasQuePuxaram linhas={linhasDelta} etiqueta={etqFechadas} />}
+        <Leitura frases={frases} etiqueta={!dados.erroProd ? etqFechadas : null} />
       </div>
 
-      <NoitesDaSemana semana={dados.semana} />
+      <NoitesDaSemana semana={dados.semana}
+        etiqueta={<Comparando calendario inicio="Média das últimas 8 semanas:" agora={faixaDatas(iniSemanas, fimSemanas, true)} />} />
       {dados.erroProd ? (
         <div style={avisoBloqueio}><AlertTriangle size={16} /> {dados.erroProd}</div>
       ) : (
@@ -520,7 +532,7 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
           {!oculto && <ComercialLinhaTempo />}
 
           {/* ---------------- Venda de cada item (ComercialItens.jsx) ---------------- */}
-          <VendaDosItens itens={dados.itens} erro={dados.erroItens} rotuloAt={rotuloC(0)} rotuloAn={rotuloC(1)} faixa={faixaC} />
+          <VendaDosItens itens={dados.itens} erro={dados.erroItens} rotuloAn={fechadasAn} etiqueta={etqFechadas} />
 
           {/* ---------------- Altas e quedas ---------------- */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
@@ -530,7 +542,8 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
             ].map((b) => (
               <div key={b.titulo} style={cardStyle}>
                 <div style={{ ...sectionLabel, marginBottom: 2 }}>{b.titulo}</div>
-                <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 6 }}>em R$, {rotuloC(0)} × {rotuloC(1)} ({faixaC})</div>
+                <div style={{ margin: "4px 0 6px" }}>{etqFechadas}</div>
+                <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 6 }}>Em R$, de quem mais ganhou ou perdeu.</div>
                 {b.lista.length === 0 ? <div style={{ fontSize: 12, color: "#8A8778" }}>{b.vazio}</div> : b.lista.map((p) => (
                   <div key={p.produto} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: "1px solid #EFE9DA" }}>
                     <div style={{ minWidth: 0 }}>
@@ -553,7 +566,10 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
 
           {tresSeguidos.length > 0 && (
             <div style={{ ...cardStyle, background: "#FBF3D9", borderColor: "#E8D48A" }}>
-              <div style={{ ...sectionLabel, color: "#7A6A1E", marginBottom: 6 }}>Caindo há 3 meses seguidos</div>
+              <div style={{ ...sectionLabel, color: "#7A6A1E", marginBottom: 4 }}>Caindo há 3 meses seguidos</div>
+              <div style={{ marginBottom: 6 }}>
+                <Comparando calendario inicio="Os mesmos dias de cada mês:" agora={`${faixaDatas(jc0.ini, jc0.fim).replace(/ de .*/, "")} de ${NOMES_MES[jc2.m0]}, ${NOMES_MES[jc1.m0]} e ${NOMES_MES[jc0.m0]}`} style={{ background: "#F5E8B8" }} />
+              </div>
               {tresSeguidos.map((p) => (
                 <div key={p.produto} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, padding: "4px 0" }}>
                   <span style={nome}>{p.produto}</span>

@@ -17,6 +17,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Loader2, AlertTriangle, CheckCircle2, PieChart } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import { Comparando, faixaDatas } from "./ComercialMes";
 
 const PERIODOS = [
   { chave: "atual", label: "Mês atual", meses: 0 },
@@ -213,7 +214,7 @@ function Legenda({ cor, tracejado, children }) {
 
 // Uma linha da lista "Quem fez a diferença". Toque abre o gráfico dela.
 const GRADE_LISTA = "minmax(0, 1.25fr) minmax(0, 0.95fr) minmax(0, 1.4fr) 54px";
-function ItemDiferenca({ item, maxDelta, rotulos, legendas, unidade, aberto, onAbrir, estreito }) {
+function ItemDiferenca({ item, maxDelta, rotulos, legendas, unidade, aberto, onAbrir, estreito, faixas }) {
   const [foco, setFoco] = useState(null);
   const sobe = item.delta >= 0;
   const pequeno = item.peso < 0.01;
@@ -282,7 +283,7 @@ function ItemDiferenca({ item, maxDelta, rotulos, legendas, unidade, aberto, onA
           <div style={{ fontSize: 11.5, color: "#55534A", minHeight: 16 }}>
             {foco != null
               ? `${unidade === "semana" ? "Semana de " : ""}${legendas[foco]}: ${brl(item.valores[foco])}`
-              : `Média por ${unidade}: ${mil(item.antes)} antes (cinza) e ${mil(item.depois)} agora (verde). Total no período: ${brl(item.total)}.`}
+              : `Média por ${unidade}: ${mil(item.antes)} de ${faixas ? faixas.antes : "antes"} (cinza) e ${mil(item.depois)} de ${faixas ? faixas.agora : "agora"} (verde). Total no período: ${brl(item.total)}.`}
           </div>
         </div>
       )}
@@ -437,6 +438,17 @@ export default function ComercialLinhaTempo() {
   // Ao apontar, a semana aparece inteira; o eixo marca só a segunda-feira.
   const legendas = (pontos || []).map((p) => (montado.unidade === "semana" ? `${diaMes(p.ini)} a ${diaMes(p.fim)}` : p.rotulo));
   const medTotal = medias(total);
+  // As duas faixas de datas que a média compara: os primeiros m pontos contra
+  // os últimos m (com número ímpar de pontos, o do meio fica de fora).
+  const curta = (d) => faixaDatas(d, d, true);
+  const faixas = medTotal && pontos && pontos.length >= medTotal.n ? {
+    antes: `${curta(pontos[0].ini)} a ${curta(pontos[medTotal.m - 1].fim)}`,
+    agora: `${curta(pontos[pontos.length - medTotal.m].ini)} a ${curta(pontos[pontos.length - 1].fim)}`,
+  } : null;
+  const etiquetaMedias = faixas ? (
+    <Comparando inicio="Comparando a média de" agora={faixas.agora} ligacao="com a de" antes={faixas.antes}
+      fim={`· ${medTotal.m} ${medTotal.m === 1 ? montado?.unidade : PLURAL[montado?.unidade]} cada`} />
+  ) : null;
   const somaTotal = total.reduce((s, v) => s + v, 0);
   const unidade = montado?.unidade;
   const mesFuturo = periodo === "atual" && pontos && pontos.length === 0;
@@ -517,13 +529,13 @@ export default function ComercialLinhaTempo() {
             <div style={{ fontSize: 12, color: "#8A8778", margin: "6px 0 8px", lineHeight: 1.5 }}>
               {diaMes(pontos[0].ini)} a {diaMes(pontos[pontos.length - 1].fim)}, por {unidade} · {brl(somaTotal)} no período
               {visao === "produtos" ? ` (só os ${QUANTOS_PRODUTOS} principais)` : ""}.
-              {medTotal && ` Como chegamos nisso: média ${medTotal.m === 1 ? `da primeira ${unidade}` : `das ${medTotal.m} primeiras ${PLURAL[unidade]}`} (cinza) contra ${medTotal.m === 1 ? `a última` : `a média das ${medTotal.m} últimas`} (verde).`}
             </div>
+            {etiquetaMedias && <div style={{ marginBottom: 8 }}>{etiquetaMedias}</div>}
             <Grafico valores={total} rotulos={rotulos} cor={AZUL} nome="Total do período" foco={focoTotal} onFoco={setFocoTotal} med={medTotal} />
             <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11.5, color: NEUTRO, marginTop: 4 }}>
               <Legenda cor={AZUL}>venda da {unidade}</Legenda>
-              {medTotal && <Legenda cor={NEUTRO} tracejado>média antes</Legenda>}
-              {medTotal && <Legenda cor={VERDE} tracejado>média agora</Legenda>}
+              {medTotal && <Legenda cor={NEUTRO} tracejado>média de {faixas ? faixas.antes : "antes"}</Legenda>}
+              {medTotal && <Legenda cor={VERDE} tracejado>média de {faixas ? faixas.agora : "agora"}</Legenda>}
             </div>
             <div style={{ fontSize: 12, color: "#55534A", minHeight: 18, marginTop: 4 }}>
               {focoTotal != null && `${unidade === "semana" ? "Semana de " : ""}${legendas[focoTotal]}: ${brl(total[focoTotal])}`}
@@ -532,6 +544,7 @@ export default function ComercialLinhaTempo() {
 
           {medTotal && (
             <div ref={caixaLista} style={cartao}>
+              {etiquetaMedias && <div style={{ marginBottom: 8 }}>{etiquetaMedias}</div>}
               <div style={{ fontSize: 15, fontWeight: 800, color: "#22231F" }}>Quem fez a diferença</div>
               <div style={{ fontSize: 12, color: "#8A8778", marginTop: 2, lineHeight: 1.45 }}>
                 Em reais por {unidade}, {visao === "linhas" ? "todas as linhas" : "todos os produtos"} na mesma régua. A ordem é de quanto cada um somou ou tirou, não da porcentagem. Toque para ver o gráfico.
@@ -539,12 +552,12 @@ export default function ComercialLinhaTempo() {
               {!estreito && <div style={{ display: "grid", gridTemplateColumns: GRADE_LISTA, gap: 8, fontSize: 10.5, color: NEUTRO, fontWeight: 700,
                 textTransform: "uppercase", letterSpacing: 0.3, padding: "12px 0 6px" }}>
                 <span>{visao === "linhas" ? "linha" : "produto"} · peso</span>
-                <span style={{ textAlign: "right" }}>por {unidade}</span>
+                <span style={{ textAlign: "right" }}>média por {unidade}{faixas && <span style={{ display: "block", textTransform: "none", fontWeight: 600 }}>{faixas.antes} → {faixas.agora}</span>}</span>
                 <span style={{ textAlign: "center" }}>diferença</span>
                 <span style={{ textAlign: "right" }}>variação</span>
               </div>}
               {itens.map((item) => (
-                <ItemDiferenca key={item.nome} item={item} maxDelta={maxDelta} rotulos={rotulos} legendas={legendas} unidade={unidade}
+                <ItemDiferenca key={item.nome} item={item} maxDelta={maxDelta} rotulos={rotulos} legendas={legendas} unidade={unidade} faixas={faixas}
                   estreito={estreito} aberto={aberto === item.nome} onAbrir={() => setAberto(aberto === item.nome ? null : item.nome)} />
               ))}
               {itens.some((x) => x.peso < 0.01) && (

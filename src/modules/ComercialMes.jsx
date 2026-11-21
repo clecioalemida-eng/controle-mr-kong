@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { CheckCircle2, AlertTriangle, TrendingDown, TrendingUp, CalendarDays, Target } from "lucide-react";
+import { CheckCircle2, AlertTriangle, TrendingDown, TrendingUp, CalendarDays, Target, ArrowLeftRight } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Comercial → aba Mês, parte de cima: a leitura didática do mês.
@@ -45,9 +45,45 @@ function pctAbs(p) {
 }
 
 // ============================================================================
+// 0. Etiqueta "Comparando X com Y"
+//
+// Todo bloco do Comercial diz, com datas, o que está comparando. Verde é o
+// período de agora; preto é o período com que ele é comparado. Também é
+// usada pela venda de cada item (ComercialItens) e pela linha do tempo.
+// ============================================================================
+const NOMES_MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+const dois = (n) => String(n).padStart(2, "0");
+
+// "2026-11-01", "2026-11-21" → "1 a 21 de novembro" (ou "1 a 21/11", curto)
+export function faixaDatas(ini, fim, curto = false) {
+  if (!ini || !fim) return "";
+  const [y1, m1, d1] = String(ini).slice(0, 10).split("-").map(Number);
+  const [y2, m2, d2] = String(fim).slice(0, 10).split("-").map(Number);
+  if (y1 === y2 && m1 === m2) {
+    if (d1 === d2) return curto ? `${dois(d1)}/${dois(m1)}` : `${d1} de ${NOMES_MESES[m1 - 1]}`;
+    return curto ? `${d1} a ${d2}/${dois(m1)}` : `${d1} a ${d2} de ${NOMES_MESES[m1 - 1]}`;
+  }
+  return `${dois(d1)}/${dois(m1)} a ${dois(d2)}/${dois(m2)}`;
+}
+
+export function Comparando({ agora, antes, inicio = "Comparando", ligacao = "com", fim, calendario, style }) {
+  const Icone = calendario ? CalendarDays : ArrowLeftRight;
+  return (
+    <div style={{ display: "inline-flex", flexWrap: "wrap", alignItems: "center", columnGap: 5, rowGap: 2, fontSize: 12, lineHeight: 1.4,
+      background: "#F3EEE2", color: CINZA_MEDIO, borderRadius: 10, padding: "4px 10px", ...style }}>
+      <Icone size={13} style={{ flexShrink: 0 }} />
+      <span>{inicio}</span>
+      <b style={{ color: antes ? VERDE : ESCURO }}>{agora}</b>
+      {antes && <><span>{ligacao}</span><b style={{ color: ESCURO }}>{antes}</b></>}
+      {fim && <span>{fim}</span>}
+    </div>
+  );
+}
+
+// ============================================================================
 // 1. Manchete + régua da meta
 // ============================================================================
-export function MancheteMes({ nomeMes, diaAte, noitesFaltam, previsao, jaVendido, resto, meta, porDiaAtual, porDiaAnterior, nomeAnterior, inteiroAnterior }) {
+export function MancheteMes({ nomeMes, diaAte, noitesFaltam, previsao, jaVendido, resto, meta, porDiaAtual, porDiaAnterior, nomeAnterior, inteiroAnterior, etiqueta }) {
   const vsMeta = pct(previsao, meta);
   const difDia = porDiaAtual - porDiaAnterior;
   const max = Math.max(previsao, meta, inteiroAnterior || 0) * 1.04 || 1;
@@ -58,11 +94,12 @@ export function MancheteMes({ nomeMes, diaAte, noitesFaltam, previsao, jaVendido
       <div style={{ fontSize: 12, color: CINZA }}>
         {nomeMes} · até a noite de {diaAte}{noitesFaltam > 0 ? ` · faltam ${noitesFaltam} ${noitesFaltam === 1 ? "dia" : "dias"}` : " · mês fechado"}
       </div>
+      {etiqueta && <div style={{ marginTop: 8 }}>{etiqueta}</div>}
       <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 22, lineHeight: 1.35, color: ESCURO, marginTop: 6 }}>
         {nomeMes} deve fechar em <b style={{ color: vsMeta >= 0 ? VERDE : VERMELHO }}>{mil(previsao)}</b>
         {vsMeta == null ? "." : Math.round(vsMeta) === 0 ? (vsMeta >= 0 ? ", em cima da meta." : ", quase na meta.") : vsMeta > 0 ? `, ${pctAbs(vsMeta)} acima da meta.` : `, ${pctAbs(vsMeta)} abaixo da meta.`}
         {porDiaAnterior > 0 && Math.abs(difDia) >= 1 && (
-          <> Cada dia está rendendo <b style={{ color: difDia >= 0 ? VERDE : VERMELHO }}>{brl(Math.abs(difDia))} {difDia >= 0 ? "a mais" : "a menos"}</b> que em {nomeAnterior}.</>
+          <> Cada dia está rendendo <b style={{ color: difDia >= 0 ? VERDE : VERMELHO }}>{brl(Math.abs(difDia))} {difDia >= 0 ? "a mais" : "a menos"}</b> que nos mesmos dias de {nomeAnterior}.</>
         )}
       </div>
 
@@ -80,7 +117,7 @@ export function MancheteMes({ nomeMes, diaAte, noitesFaltam, previsao, jaVendido
         <span style={{ color: VERDE, fontWeight: 700, ...num }}>vendido {mil(jaVendido)}</span>
         <span style={{ color: CINZA, ...num }}>
           <b style={{ color: ESCURO }}>▍meta {mil(meta)}</b>
-          {inteiroAnterior > 0 ? <> · <span style={{ color: CINZA_CLARO }}>▍</span>{nomeAnterior} {mil(inteiroAnterior)}</> : null}
+          {inteiroAnterior > 0 ? <> · <span style={{ color: CINZA_CLARO }}>▍</span>{nomeAnterior} inteiro {mil(inteiroAnterior)}</> : null}
         </span>
       </div>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11.5, color: CINZA, marginTop: 8 }}>
@@ -105,7 +142,9 @@ function Legenda({ cor, listrado, linha, tracejado, children }) {
 // ============================================================================
 // 2. Três perguntas
 // ============================================================================
-export function TresPerguntas({ jaVendido, anteriorMesmoDia, nomeAnterior, porDia, porDiaAnt, porDiaRet, nomeRetrasado, falta, noitesAbertas, normalPorNoite }) {
+// faixaAnt/faixaRet: os mesmos dias do mês anterior e do retrasado ("1 a 21 de outubro").
+// ultimoDia: último dia do mês ("30/11"), para dizer até quando vão as noites abertas.
+export function TresPerguntas({ jaVendido, anteriorMesmoDia, porDia, porDiaAnt, porDiaRet, faixaAnt, faixaRet, ultimoDia, falta, noitesAbertas, normalPorNoite }) {
   const dif = jaVendido - anteriorMesmoDia;
   const precisaPorNoite = noitesAbertas > 0 ? falta / noitesAbertas : 0;
   const caixa = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: "12px 14px" };
@@ -120,7 +159,7 @@ export function TresPerguntas({ jaVendido, anteriorMesmoDia, nomeAnterior, porDi
         <div style={grande}>{brl(jaVendido)}</div>
         {anteriorMesmoDia > 0 && (
           <div style={sub(dif >= 0 ? VERDE : VERMELHO)}>
-            {dif >= 0 ? "▲" : "▼"} {brl(Math.abs(dif))} {dif >= 0 ? "a mais" : "a menos"} que {nomeAnterior} no mesmo dia
+            {dif >= 0 ? "▲" : "▼"} {brl(Math.abs(dif))} {dif >= 0 ? "a mais" : "a menos"} que de {faixaAnt}
           </div>
         )}
       </div>
@@ -128,8 +167,9 @@ export function TresPerguntas({ jaVendido, anteriorMesmoDia, nomeAnterior, porDi
         <div style={pergunta}>Quanto vendo por dia, em média?</div>
         <div style={grande}>{brl(porDia)}</div>
         <div style={sub(porDia >= porDiaAnt ? VERDE : VERMELHO)}>
-          {porDia >= porDiaAnt ? "▲" : "▼"} {nomeAnterior} {brl(porDiaAnt)}{porDiaRet > 0 ? ` · ${nomeRetrasado} ${brl(porDiaRet)}` : ""}
+          {porDia >= porDiaAnt ? "▲" : "▼"} era {brl(porDiaAnt)} de {faixaAnt}
         </div>
+        {porDiaRet > 0 && <div style={sub(CINZA)}>e {brl(porDiaRet)} de {faixaRet}</div>}
       </div>
       <div style={caixa}>
         <div style={pergunta}>Quanto falta para a meta?</div>
@@ -143,7 +183,7 @@ export function TresPerguntas({ jaVendido, anteriorMesmoDia, nomeAnterior, porDi
             <div style={grande}>{brl(falta)}</div>
             {noitesAbertas > 0 ? (
               <div style={sub(precisaPorNoite <= normalPorNoite ? VERDE : VERMELHO)}>
-                {brl(precisaPorNoite)} por noite aberta · o normal é {brl(normalPorNoite)}
+                {brl(precisaPorNoite)} por noite nas {noitesAbertas} {noitesAbertas === 1 ? "noite aberta" : "noites abertas"} até {ultimoDia} · o normal das últimas 8 semanas é {brl(normalPorNoite)}
               </div>
             ) : (
               <div style={sub(VERMELHO)}>O mês acabou sem bater a meta</div>
@@ -159,7 +199,7 @@ export function TresPerguntas({ jaVendido, anteriorMesmoDia, nomeAnterior, porDi
 // 3. Curva do mês (acumulado noite a noite)
 // ============================================================================
 // series: [{ nome, cor, pontos: [valor acumulado no dia 1, 2, ...], inicio (dia do 1º ponto), tracejado, grossa, area }]
-export function CurvaDoMes({ series, meta, frase, aviso }) {
+export function CurvaDoMes({ series, meta, frase, aviso, etiqueta }) {
   const [hover, setHover] = useState(null);
   const ref = useRef(null);
   const caixa = useRef(null);
@@ -202,9 +242,10 @@ export function CurvaDoMes({ series, meta, frase, aviso }) {
 
   return (
     <div style={card}>
+      {etiqueta && <div style={{ marginBottom: 8 }}>{etiqueta}</div>}
       <div style={titulo}>{frase}</div>
       <div style={explica}>
-        Soma do mês noite a noite. Quanto mais alta a linha no mesmo dia, melhor está o mês. Onde a linha fica reta, a casa não abriu.
+        Soma do mês noite a noite. Cada linha é um mês; no mesmo dia do mês, a mais alta vendeu mais. Onde a linha fica reta, a casa não abriu.
       </div>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11.5, color: CINZA, margin: "10px 0 4px" }}>
         {series.map((s) => (
@@ -273,7 +314,7 @@ export function CurvaDoMes({ series, meta, frase, aviso }) {
 // ============================================================================
 // 4. O que puxou para cima e para baixo (linhas de produto)
 // ============================================================================
-export function LinhasQuePuxaram({ linhas, comparacao }) {
+export function LinhasQuePuxaram({ linhas, etiqueta }) {
   // linhas: [{ linha, atual, anterior }]
   const comDelta = linhas.map((l) => ({ ...l, delta: l.atual - l.anterior }))
     .filter((l) => Math.abs(l.delta) >= 1)
@@ -284,8 +325,9 @@ export function LinhasQuePuxaram({ linhas, comparacao }) {
 
   return (
     <div style={card}>
+      {etiqueta && <div style={{ marginBottom: 8 }}>{etiqueta}</div>}
       <div style={titulo}>O que puxou para cima e para baixo</div>
-      <div style={explica}>Por linha de produto, em R$, contra {comparacao}. Barra para a direita ganhou, para a esquerda perdeu.</div>
+      <div style={explica}>Por linha de produto, em R$. Barra para a direita ganhou, para a esquerda perdeu.</div>
       {comDelta.length === 0 ? (
         <div style={{ fontSize: 12, color: CINZA, marginTop: 10 }}>Sem diferença por linha ainda.</div>
       ) : (
@@ -325,9 +367,10 @@ const ICONES = {
   meta: { Icone: Target, cor: CINZA_MEDIO },
 };
 
-export function Leitura({ frases }) {
+export function Leitura({ frases, etiqueta }) {
   return (
     <div style={card}>
+      {etiqueta && <div style={{ marginBottom: 8 }}>{etiqueta}</div>}
       <div style={titulo}>O que isso quer dizer</div>
       <div style={explica}>Leitura em frases, montada com os números da tela.</div>
       <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
@@ -353,7 +396,7 @@ const NOMES_SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 // Ordem da semana do Mr Kong: abre na terça.
 const ORDEM_SEMANA = [2, 3, 4, 5, 6, 0, 1];
 
-export function NoitesDaSemana({ semana }) {
+export function NoitesDaSemana({ semana, etiqueta }) {
   // semana: [{ media, noites }] indexado por getDay()
   const abertas = semana.map((s, i) => ({ ...s, i })).filter((s) => s.noites > 0 && s.media >= 50);
   const max = Math.max(...abertas.map((s) => s.media), 1);
@@ -362,6 +405,7 @@ export function NoitesDaSemana({ semana }) {
 
   return (
     <div style={card}>
+      {etiqueta && <div style={{ marginBottom: 8 }}>{etiqueta}</div>}
       <div style={titulo}>Qual noite da semana vende mais</div>
       <div style={explica}>Média de cada dia da semana nas últimas 8 semanas. É essa média que faz a previsão dos dias que faltam.</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 8, alignItems: "end", height: 150, marginTop: 14 }}>
@@ -397,7 +441,9 @@ export function NoitesDaSemana({ semana }) {
 // ============================================================================
 // Frases automáticas
 // ============================================================================
-export function montarFrases({ linhas, produtos, tresSeguidos, semana, previsao, meta, noitesAbertas }) {
+// contra: os dias com que a venda por linha é comparada ("1 a 20/10").
+export function montarFrases({ linhas, produtos, tresSeguidos, semana, previsao, meta, noitesAbertas, contra }) {
+  const vsTxt = contra ? ` contra ${contra}` : "";
   const frases = [];
   const comDelta = linhas.map((l) => ({ ...l, delta: l.atual - l.anterior }));
   const subiu = [...comDelta].sort((a, b) => b.delta - a.delta)[0];
@@ -406,11 +452,11 @@ export function montarFrases({ linhas, produtos, tresSeguidos, semana, previsao,
 
   if (subiu && subiu.delta >= 100) {
     const p = prodDelta.filter((x) => x.linha === subiu.linha && x.delta > 0).sort((a, b) => b.delta - a.delta)[0];
-    frases.push({ tipo: "bom", texto: `A linha ${subiu.linha} é quem mais segura o mês: +${mil(subiu.delta)}${p ? `. Só ${p.produto} fez +${mil(p.delta)}` : ""}.` });
+    frases.push({ tipo: "bom", texto: `A linha ${subiu.linha} é quem mais segura o mês: +${mil(subiu.delta)}${vsTxt}${p ? `. Só ${p.produto} fez +${mil(p.delta)}` : ""}.` });
   }
   if (caiu && caiu.delta <= -100) {
     const p = prodDelta.filter((x) => x.linha === caiu.linha && x.delta < 0).sort((a, b) => a.delta - b.delta)[0];
-    frases.push({ tipo: "atencao", texto: `A linha ${caiu.linha} caiu ${mil(-caiu.delta)}${p ? `, puxada por ${p.produto} (−${mil(-p.delta)})` : ""}. Vale oferecer mais no atendimento.` });
+    frases.push({ tipo: "atencao", texto: `A linha ${caiu.linha} caiu ${mil(-caiu.delta)}${vsTxt}${p ? `, puxada por ${p.produto} (−${mil(-p.delta)})` : ""}. Vale oferecer mais no atendimento.` });
   }
   if (tresSeguidos[0]) {
     const t = tresSeguidos[0];
@@ -421,7 +467,7 @@ export function montarFrases({ linhas, produtos, tresSeguidos, semana, previsao,
     const ord = [...abertas].sort((a, b) => b.media - a.media);
     const nome = (i) => ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"][i];
     const m = nome(ord[0].i), p = nome(ord[ord.length - 1].i);
-    frases.push({ tipo: "semana", texto: `${m[0].toUpperCase() + m.slice(1)} é a melhor noite (${brl(ord[0].media)} em média). ${p[0].toUpperCase() + p.slice(1)} é a mais fraca (${brl(ord[ord.length - 1].media)}).` });
+    frases.push({ tipo: "semana", texto: `${m[0].toUpperCase() + m.slice(1)} é a melhor noite (${brl(ord[0].media)} em média nas últimas 8 semanas). ${p[0].toUpperCase() + p.slice(1)} é a mais fraca (${brl(ord[ord.length - 1].media)}).` });
   }
   if (previsao < meta && noitesAbertas > 0) {
     const falta = meta - previsao;
