@@ -9,6 +9,7 @@ import { podeVer } from "../lib/permissoes";
 // estão as vendas" — e quem abria uma nunca sabia que a outra existia.
 import Dashboard from "./DashboardModulo";
 import ComercialLinhaTempo, { ultimoDiaFechado } from "./ComercialLinhaTempo";
+import { MancheteMes, TresPerguntas, CurvaDoMes, LinhasQuePuxaram, Leitura, NoitesDaSemana, montarFrases } from "./ComercialMes";
 
 // ---------------------------------------------------------------------------
 // Módulo Comercial — Relatório do dia
@@ -379,7 +380,12 @@ async function carregarPainel(dia) {
     anterior: ateFechado ? somaEntre(an.ini, ymdDe(an.y, an.m0, Math.min(ateFechado, an.diasMes))).s : 0,
   };
 
-  return { meses, janelasComparacao: JC, fechados, diasQueFaltam, produtos, linhas, detalhado, erroDias, erroProd: fProd ? erroProd : "" };
+  // Média de cada dia da semana (para o gráfico das noites) e venda dia a dia
+  // (para a curva do mês).
+  const semana = porSemana.map((l) => ({ noites: l.filter((v) => v > 0).length, media: l.length ? l.reduce((a, b) => a + b, 0) / l.length : 0 }));
+  const vendaPorDia = Object.fromEntries(porDia);
+
+  return { meses, janelasComparacao: JC, fechados, diasQueFaltam, produtos, linhas, detalhado, semana, vendaPorDia, erroDias, erroProd: fProd ? erroProd : "" };
 }
 
 // Previsão = já vendido (número do topo, conferido ao vivo) + média por dia da semana dos dias que faltam
@@ -430,17 +436,12 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
   if (erro) return <div style={avisoBloqueio}><AlertTriangle size={16} /> {erro}</div>;
   if (!dados) return null;
 
-  const { meses, janelasComparacao, fechados, produtos, detalhado } = dados;
+  const { meses, janelasComparacao, produtos, detalhado } = dados;
   const [at, an, re] = meses;
-  const rotulo = (k) => nomeMesCurto(meses[k].m0);
-  const faixa = `dias 1 a ${at.ate}`;
   // O que compara produtos usa só dias fechados, e pode já ser o mês anterior.
   const rotuloC = (k) => nomeMesCurto(janelasComparacao[k].m0);
   const faixaC = janelasComparacao[0].ate === janelasComparacao[0].diasMes
     ? "mês inteiro" : `dias 1 a ${janelasComparacao[0].ate}`;
-  const periodoAtual = mesTotal != null ? Number(mesTotal) : at.periodo;
-  const valoresPeriodo = [periodoAtual, an.periodo, re.periodo];
-  const maxMes = Math.max(prev ? prev.previsao : 0, an.inteiro || 0, re.inteiro || 0, 1);
   const vs = (a, b) => (b ? ((a - b) / b) * 100 : null);
 
   // ---- hambúrgueres (linha com "hamb"; se ninguém tiver linha, usa os mais vendidos)
@@ -462,73 +463,68 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
   const nome = { fontSize: 12.5, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 };
   const grade = "repeat(3, minmax(0,1fr)) 56px";
 
+  // ---- leitura didática do mês (desenho em ComercialMes.jsx)
+  const nomeAt = nomeMesLongo(at.m0);
+  const nomeAn = NOMES_MES[an.m0], nomeRe = NOMES_MES[re.m0];
+  const jaVendido = prev.jaVendido;
+  const faltamAbertos = dados.diasQueFaltam.filter((d) => d.dow !== 1);
+  const normalPorNoite = faltamAbertos.length ? faltamAbertos.reduce((s, d) => s + d.media, 0) / faltamAbertos.length : 0;
+  const porDiaAt = jaVendido / Math.max(at.ate, 1);
+  const porDiaAn = an.periodo / Math.max(an.ate, 1);
+  const porDiaRe = re.periodo / Math.max(re.ate, 1);
+
+  const acumula = (j, ate) => {
+    const out = [];
+    let soma = 0;
+    for (let d = 1; d <= ate; d++) { soma += dados.vendaPorDia[ymdDe(j.y, j.m0, d)] || 0; out.push(Math.round(soma)); }
+    return out;
+  };
+  const curvaAt = acumula(at, at.ate);
+  if (curvaAt.length) curvaAt[curvaAt.length - 1] = Math.round(jaVendido); // último dia conferido ao vivo
+  const curvaPrev = [Math.round(jaVendido)];
+  dados.diasQueFaltam.reduce((soma, d) => { const v = soma + d.media; curvaPrev.push(Math.round(v)); return v; }, jaVendido);
+  const curvaAn = acumula(an, an.diasMes);
+  const curvaRe = acumula(re, re.diasMes);
+  const noMesmoDia = (c) => c[Math.min(at.ate, c.length) - 1] || 0;
+  const frenteAn = jaVendido >= noMesmoDia(curvaAn), frenteRe = jaVendido >= noMesmoDia(curvaRe);
+  const fraseCurva = frenteAn && frenteRe ? `${nomeAt} está à frente de ${nomeAn} e ${nomeRe}`
+    : !frenteAn && !frenteRe ? `${nomeAt} está atrás de ${nomeAn} e ${nomeRe}`
+      : frenteAn ? `${nomeAt} está à frente de ${nomeAn}, mas atrás de ${nomeRe}`
+        : `${nomeAt} está atrás de ${nomeAn}, mas à frente de ${nomeRe}`;
+  const seriesCurva = [
+    { nome: nomeMesCurto(at.m0), cor: "#2F8F5B", pontos: curvaAt, grossa: true, area: true },
+    dados.diasQueFaltam.length ? { nome: `${nomeMesCurto(at.m0)} previsto`, cor: "#2F8F5B", pontos: curvaPrev, inicio: at.ate, tracejado: true } : null,
+    { nome: nomeMesCurto(an.m0), cor: "#5C5A4E", pontos: curvaAn },
+    { nome: nomeMesCurto(re.m0), cor: "#B9B4A2", pontos: curvaRe, tracejado: true },
+  ].filter(Boolean);
+  const avisoCache = an.diasInteiroCache < an.diasMes || re.diasInteiroCache < re.diasMes
+    ? "Alguns dias antigos ainda não estão no cache de vendas: a linha desses meses pode estar mais baixa do que foi." : "";
+
+  const linhasDelta = dados.linhas.map((l) => ({ linha: l.linha, atual: l.v[0], anterior: l.v[1] }));
+  const frases = montarFrases({
+    linhas: linhasDelta,
+    produtos: produtos.map((p) => ({ produto: p.produto, linha: String(p.linha || "").trim() || "Sem linha definida", atual: p.v[0], anterior: p.v[1] })),
+    tresSeguidos, semana: dados.semana, previsao: prev.previsao, meta: META_MES, noitesAbertas: faltamAbertos.length,
+  });
+
   return (
     <div style={{ display: "grid", gap: 10 }}>
-      {/* ---------------- Previsão ---------------- */}
-      {prev && (
-        <div style={{ ...cardStyle, background: "#22231F", border: "none", color: "#F3EFE3" }}>
-          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.4, textTransform: "uppercase", color: "#B9B4A2" }}>
-            Previsão de {NOMES_MES[at.m0]}
-          </div>
-          <div style={{ fontSize: 30, fontWeight: 800, marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{brlInt(prev.previsao)}</div>
-          <div style={{ fontSize: 12, color: "#D6D1BF", marginTop: 2 }}>
-            {brlInt(prev.jaVendido)} vendidos + {brlInt(prev.resto)} esperados nos {prev.diasRestantes} dias que faltam
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 8, marginTop: 12 }}>
-            {[
-              { r: "vs meta", p: vs(prev.previsao, META_MES), sub: brlK(META_MES) },
-              { r: `vs ${rotulo(1)} inteiro`, p: vs(prev.previsao, an.inteiro), sub: brlK(an.inteiro) },
-              { r: `vs ${rotulo(2)} inteiro`, p: vs(prev.previsao, re.inteiro), sub: brlK(re.inteiro) },
-            ].map((c) => (
-              <div key={c.r} style={{ background: "#2E2F2A", borderRadius: 10, padding: "8px 10px" }}>
-                <div style={{ fontSize: 10.5, color: "#B9B4A2" }}>{c.r}</div>
-                <div style={{ fontSize: 15, fontWeight: 800, color: c.p == null ? "#F3EFE3" : c.p >= 0 ? "#7FD19E" : "#F08A73", fontVariantNumeric: "tabular-nums" }}>
-                  {c.p == null ? "—" : pctTxt(c.p)}
-                </div>
-                <div style={{ fontSize: 10.5, color: "#B9B4A2" }}>{c.sub}</div>
-              </div>
-            ))}
-          </div>
-          <div style={{ fontSize: 11, color: "#B9B4A2", marginTop: 10, lineHeight: 1.45 }}>
-            Cada dia que falta vale a média do mesmo dia da semana nas últimas 8 semanas.
-            No ritmo simples (média do mês × {at.diasMes} dias) daria {brlInt(prev.ritmo)}.
-            {prev.previsao < META_MES ? ` Para bater a meta faltam ${brlInt(META_MES - prev.previsao)} além do previsto.` : " No ritmo previsto, a meta sai."}
-          </div>
-        </div>
-      )}
+      <MancheteMes nomeMes={nomeAt} diaAte={`${pad(at.ate)}/${pad(at.m0 + 1)}`} noitesFaltam={dados.diasQueFaltam.length}
+        previsao={prev.previsao} jaVendido={jaVendido} resto={prev.resto} meta={META_MES}
+        porDiaAtual={porDiaAt} porDiaAnterior={porDiaAn} nomeAnterior={nomeAn} inteiroAnterior={an.inteiro} />
 
-      {/* ---------------- 3 meses ---------------- */}
-      <div style={cardStyle}>
-        <div style={{ ...sectionLabel, marginBottom: 10 }}>Últimos 3 meses</div>
-        <div style={{ display: "grid", gap: 12 }}>
-          {[0, 1, 2].map((k) => {
-            const m = meses[k];
-            const inteiro = k === 0 ? (prev ? prev.previsao : null) : m.inteiro;
-            return (
-              <div key={k}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, marginBottom: 5 }}>
-                  <span style={{ fontWeight: 700, color: "#22231F" }}>{nomeMesLongo(m.m0)}{k === 0 ? " (previsto)" : ""}</span>
-                  <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{inteiro != null ? brlInt(inteiro) : "—"}</span>
-                </div>
-                <div style={{ position: "relative", height: 14, borderRadius: 6, background: "#EFE9DA", overflow: "hidden" }}>
-                  <div style={{ position: "absolute", inset: 0, width: `${Math.round(((inteiro || 0) / maxMes) * 100)}%`, background: k === 0 ? "#CFC7B1" : "#D9D2BE" }} />
-                  <div style={{ position: "absolute", inset: 0, width: `${Math.round((valoresPeriodo[k] / maxMes) * 100)}%`, background: k === 0 ? "#2F8F5B" : "#5C5A4E" }} />
-                </div>
-                <div style={{ fontSize: 11, color: "#8A8778", marginTop: 4, display: "flex", justifyContent: "space-between", gap: 8 }}>
-                  <span>{faixa}: <b style={{ color: "#22231F", fontVariantNumeric: "tabular-nums" }}>{brlInt(valoresPeriodo[k])}</b> · {brlInt(valoresPeriodo[k] / Math.max(m.ate, 1))}/dia</span>
-                  {k === 0 && fechados.ate > 0 && <Chip p={vs(fechados.atual, fechados.anterior)} sufixo={`vs ${rotulo(1)}, dias fechados`} />}
-                  {k === 1 && <Chip p={vs(an.inteiro, re.inteiro)} sufixo={`vs ${rotulo(2)} inteiro`} />}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ fontSize: 11, color: "#8A8778", marginTop: 10 }}>
-          Barra escura = {faixa} de cada mês. Barra clara = mês inteiro. A porcentagem usa só dias fechados.
-          {an.diasInteiroCache < an.diasMes || re.diasInteiroCache < re.diasMes ? " Alguns dias antigos ainda não estão no cache de vendas — o total do mês pode estar menor." : ""}
-        </div>
+      <TresPerguntas jaVendido={jaVendido} anteriorMesmoDia={an.periodo} nomeAnterior={nomeAn}
+        porDia={porDiaAt} porDiaAnt={porDiaAn} porDiaRet={porDiaRe} nomeRetrasado={nomeRe}
+        falta={META_MES - jaVendido} noitesAbertas={faltamAbertos.length} normalPorNoite={normalPorNoite} />
+
+      <CurvaDoMes series={seriesCurva} meta={META_MES} frase={fraseCurva} aviso={avisoCache} />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 10 }}>
+        {!dados.erroProd && <LinhasQuePuxaram linhas={linhasDelta} comparacao={`os mesmos dias de ${NOMES_MES[janelasComparacao[1].m0]} (${faixaC})`} />}
+        <Leitura frases={frases} />
       </div>
 
+      <NoitesDaSemana semana={dados.semana} />
       {dados.erroProd ? (
         <div style={avisoBloqueio}><AlertTriangle size={16} /> {dados.erroProd}</div>
       ) : (
