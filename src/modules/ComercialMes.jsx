@@ -83,7 +83,11 @@ export function Comparando({ agora, antes, inicio = "Comparando", ligacao = "com
 // ============================================================================
 // 1. Manchete + régua da meta
 // ============================================================================
-export function MancheteMes({ nomeMes, diaAte, noitesFaltam, previsao, jaVendido, resto, meta, porDiaAtual, porDiaAnterior, nomeAnterior, inteiroAnterior, etiqueta }) {
+export function MancheteMes({ nomeMes, diaAte, noitesFaltam, previsao, jaVendido, resto, meta, porDiaAtual, porDiaAnterior, nomeAnterior, inteiroAnterior, etiqueta, textoContra, rotuloInteiro }) {
+  // textoContra: "nos mesmos dias de outubro" ou "a média de 6 meses"
+  // rotuloInteiro: "outubro inteiro" ou "média de um mês inteiro (6 meses)"
+  const contra = textoContra || `nos mesmos dias de ${nomeAnterior}`;
+  const inteiroTxt = rotuloInteiro || `${nomeAnterior} inteiro`;
   const vsMeta = pct(previsao, meta);
   const difDia = porDiaAtual - porDiaAnterior;
   const max = Math.max(previsao, meta, inteiroAnterior || 0) * 1.04 || 1;
@@ -99,7 +103,7 @@ export function MancheteMes({ nomeMes, diaAte, noitesFaltam, previsao, jaVendido
         {nomeMes} deve fechar em <b style={{ color: vsMeta >= 0 ? VERDE : VERMELHO }}>{mil(previsao)}</b>
         {vsMeta == null ? "." : Math.round(vsMeta) === 0 ? (vsMeta >= 0 ? ", em cima da meta." : ", quase na meta.") : vsMeta > 0 ? `, ${pctAbs(vsMeta)} acima da meta.` : `, ${pctAbs(vsMeta)} abaixo da meta.`}
         {porDiaAnterior > 0 && Math.abs(difDia) >= 1 && (
-          <> Cada dia está rendendo <b style={{ color: difDia >= 0 ? VERDE : VERMELHO }}>{brl(Math.abs(difDia))} {difDia >= 0 ? "a mais" : "a menos"}</b> que nos mesmos dias de {nomeAnterior}.</>
+          <> Cada dia está rendendo <b style={{ color: difDia >= 0 ? VERDE : VERMELHO }}>{brl(Math.abs(difDia))} {difDia >= 0 ? "a mais" : "a menos"}</b> que {contra}.</>
         )}
       </div>
 
@@ -109,7 +113,7 @@ export function MancheteMes({ nomeMes, diaAte, noitesFaltam, previsao, jaVendido
         <div style={{ position: "absolute", left: pos(jaVendido), top: 0, bottom: 0, width: `calc(${pos(previsao)} - ${pos(jaVendido)})`,
           background: `repeating-linear-gradient(45deg, ${VERDE_CLARO} 0 6px, #E4F2E9 6px 12px)` }} />
         {inteiroAnterior > 0 && (
-          <div title={`${nomeAnterior} inteiro`} style={{ position: "absolute", left: pos(inteiroAnterior), top: -5, bottom: -5, width: 2, background: CINZA_CLARO }} />
+          <div title={inteiroTxt} style={{ position: "absolute", left: pos(inteiroAnterior), top: -5, bottom: -5, width: 2, background: CINZA_CLARO }} />
         )}
         <div title="meta" style={{ position: "absolute", left: pos(meta), top: -7, bottom: -7, width: 3, background: ESCURO, borderRadius: 2 }} />
       </div>
@@ -117,7 +121,7 @@ export function MancheteMes({ nomeMes, diaAte, noitesFaltam, previsao, jaVendido
         <span style={{ color: VERDE, fontWeight: 700, ...num }}>vendido {mil(jaVendido)}</span>
         <span style={{ color: CINZA, ...num }}>
           <b style={{ color: ESCURO }}>▍meta {mil(meta)}</b>
-          {inteiroAnterior > 0 ? <> · <span style={{ color: CINZA_CLARO }}>▍</span>{nomeAnterior} inteiro {mil(inteiroAnterior)}</> : null}
+          {inteiroAnterior > 0 ? <> · <span style={{ color: CINZA_CLARO }}>▍</span>{inteiroTxt} {mil(inteiroAnterior)}</> : null}
         </span>
       </div>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11.5, color: CINZA, marginTop: 8 }}>
@@ -142,9 +146,12 @@ function Legenda({ cor, listrado, linha, tracejado, children }) {
 // ============================================================================
 // 2. Três perguntas
 // ============================================================================
-// faixaAnt/faixaRet: os mesmos dias do mês anterior e do retrasado ("1 a 21 de outubro").
+// Os textos de comparação chegam prontos, porque mudam com o "Comparar com":
+//   textoJaVendido: "de 1 a 21 de outubro" ou "a média de 1 a 21 dos últimos 6 meses"
+//   textoPorDia:    "era R$ 4.441 de 1 a 21 de outubro" ou "a média de 6 meses é R$ 4.112"
+//   extraPorDia:    segunda linha (o retrasado, ou o melhor e o pior mês)
 // ultimoDia: último dia do mês ("30/11"), para dizer até quando vão as noites abertas.
-export function TresPerguntas({ jaVendido, anteriorMesmoDia, porDia, porDiaAnt, porDiaRet, faixaAnt, faixaRet, ultimoDia, falta, noitesAbertas, normalPorNoite }) {
+export function TresPerguntas({ jaVendido, anteriorMesmoDia, textoJaVendido, porDia, porDiaAnt, textoPorDia, extraPorDia, ultimoDia, falta, noitesAbertas, normalPorNoite }) {
   const dif = jaVendido - anteriorMesmoDia;
   const precisaPorNoite = noitesAbertas > 0 ? falta / noitesAbertas : 0;
   const caixa = { background: "#FFFFFF", border: "1px solid #E8E2D2", borderRadius: 12, padding: "12px 14px" };
@@ -159,7 +166,7 @@ export function TresPerguntas({ jaVendido, anteriorMesmoDia, porDia, porDiaAnt, 
         <div style={grande}>{brl(jaVendido)}</div>
         {anteriorMesmoDia > 0 && (
           <div style={sub(dif >= 0 ? VERDE : VERMELHO)}>
-            {dif >= 0 ? "▲" : "▼"} {brl(Math.abs(dif))} {dif >= 0 ? "a mais" : "a menos"} que de {faixaAnt}
+            {dif >= 0 ? "▲" : "▼"} {brl(Math.abs(dif))} {dif >= 0 ? "a mais" : "a menos"} que {textoJaVendido}
           </div>
         )}
       </div>
@@ -167,9 +174,9 @@ export function TresPerguntas({ jaVendido, anteriorMesmoDia, porDia, porDiaAnt, 
         <div style={pergunta}>Quanto vendo por dia, em média?</div>
         <div style={grande}>{brl(porDia)}</div>
         <div style={sub(porDia >= porDiaAnt ? VERDE : VERMELHO)}>
-          {porDia >= porDiaAnt ? "▲" : "▼"} era {brl(porDiaAnt)} de {faixaAnt}
+          {porDia >= porDiaAnt ? "▲" : "▼"} {textoPorDia}
         </div>
-        {porDiaRet > 0 && <div style={sub(CINZA)}>e {brl(porDiaRet)} de {faixaRet}</div>}
+        {extraPorDia && <div style={sub(CINZA)}>{extraPorDia}</div>}
       </div>
       <div style={caixa}>
         <div style={pergunta}>Quanto falta para a meta?</div>

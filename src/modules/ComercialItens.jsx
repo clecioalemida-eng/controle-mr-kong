@@ -180,7 +180,7 @@ function ListaItens({ lista, palavras, rotuloAn, quantos = 8 }) {
             <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
               <div style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: "#22231F", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={x.nome}>{x.nome}</div>
               <span style={{ fontSize: 15, fontWeight: 800, color: "#22231F", fontVariantNumeric: "tabular-nums" }}>{inteiro(x.atual)}</span>
-              <span title={`De ${rotuloAn}: ${inteiro(x.ant)}`} style={{ minWidth: 38, textAlign: "right" }}><Variacao atual={x.atual} ant={x.ant} /></span>
+              <span title={`Comparação (${rotuloAn}): ${inteiro(x.ant)}`} style={{ minWidth: 38, textAlign: "right" }}><Variacao atual={x.atual} ant={x.ant} /></span>
             </div>
             <div style={{ display: "flex", height: 10, borderRadius: 3, overflow: "hidden", background: "#F3EEE2", margin: "5px 0 3px" }}>
               {partes.map((o) => <div key={o} style={{ width: `${(x[o] / max) * 100}%`, background: COR[o] }} />)}

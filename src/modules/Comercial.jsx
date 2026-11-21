@@ -257,20 +257,23 @@ function brlK(v) {
   return brlInt(n);
 }
 
-// três janelas "dias 1..d": m0 = mês do relatório, m1 = anterior, m2 = retrasado
-function janelas3(dia) {
+// janelas "dias 1..d": [0] = mês do relatório, [1] = anterior, [2] = retrasado…
+function janelas(dia, quantas) {
   const [y, m, d] = dia.split("-").map(Number);
-  const out = [0, 1, 2].map((k) => {
+  return Array.from({ length: quantas }, (_, k) => {
     const base = new Date(y, m - 1 - k, 1);
     const yy = base.getFullYear(), mm = base.getMonth();
     const dd = Math.min(d, diasDoMes(yy, mm));
     return { y: yy, m0: mm, ini: ymdDe(yy, mm, 1), fim: ymdDe(yy, mm, dd), fimMes: ymdDe(yy, mm, diasDoMes(yy, mm)), ate: dd, diasMes: diasDoMes(yy, mm) };
   });
-  return out; // [atual, anterior, retrasado]
 }
+const mediaDe = (l) => (l.length ? l.reduce((a, b) => a + b, 0) / l.length : 0);
 
-async function carregarPainel(dia) {
-  const J = janelas3(dia);
+// nMeses: com quem o mês é comparado. 1 = mês passado; 3, 6 ou 12 = média
+// dos mesmos dias nesses meses. Mês sem venda no cache fica fora da média.
+async function carregarPainel(dia, nMeses = 1) {
+  const M = Math.max(2, nMeses);          // sempre até o retrasado ("caindo há 3 meses")
+  const J = janelas(dia, M + 1);
   const [at, an] = J;
   // A previsão olha o mês do relatório, mas tudo que COMPARA usa só dias já
   // fechados. Noite em andamento contra dia inteiro dava −89%, e o detalhe
@@ -278,21 +281,21 @@ async function carregarPainel(dia) {
   // fechado, a comparação passa a ser o último mês inteiro.
   const fechado = ultimoDiaFechado();
   const diaComparacao = dia < fechado ? dia : fechado;
-  const JC = janelas3(diaComparacao);
-  const [atC, anC, reC] = JC;
-  const inicioHist = [somarDiasStr(dia, -63), J[2].ini, reC.ini].sort()[0];
-  const a1 = { p_inicio: atC.ini, p_fim: atC.fim, p_inicio_ant: anC.ini, p_fim_ant: anC.fim };
-  const a2 = { p_inicio: anC.ini, p_fim: anC.fim, p_inicio_ant: reC.ini, p_fim_ant: reC.fim };
-  const [rDias, rP1, rP2, rL1, rL2, rItens] = await Promise.all([
+  const JC = janelas(diaComparacao, M + 1);
+  const inicioHist = [somarDiasStr(dia, -63), J[M].ini, JC[M].ini].sort()[0];
+  // Cada chamada devolve duas janelas (atual e anterior): pares 0-1, 2-3, …
+  const pares = [];
+  for (let k = 0; k <= M; k += 2) pares.push([k, Math.min(k + 1, M)]);
+  const args = ([a, b]) => ({ p_inicio: JC[a].ini, p_fim: JC[a].fim, p_inicio_ant: JC[b].ini, p_fim_ant: JC[b].fim });
+  const [rDias, ...resto] = await Promise.all([
     supabase.from("vendas_diarias").select("dia, faturamento_bruto").gte("dia", inicioHist).lte("dia", at.fimMes).order("dia"),
-    supabase.rpc("desempenho_produtos", a1),
-    supabase.rpc("desempenho_produtos", a2),
-    supabase.rpc("desempenho_linhas", a1),
-    supabase.rpc("desempenho_linhas", a2),
-    supabase.rpc("venda_por_item", a1),
+    ...pares.map((pr) => supabase.rpc("desempenho_produtos", args(pr))),
+    ...pares.map((pr) => supabase.rpc("desempenho_linhas", args(pr))),
+    ...pares.map((pr) => supabase.rpc("venda_por_item", args(pr))),
   ]);
+  const rP = resto.slice(0, pares.length), rL = resto.slice(pares.length, 2 * pares.length), rI = resto.slice(2 * pares.length);
   const erroDias = rDias.error ? rDias.error.message : "";
-  const fProd = rP1.error || rP2.error || rL1.error || rL2.error;
+  const fProd = [...rP, ...rL].map((r) => r.error).find(Boolean);
   let erroProd = "";
   if (fProd) {
     erroProd = /sem_acesso|permission|denied/i.test(fProd.message || "")
@@ -334,35 +337,47 @@ async function carregarPainel(dia) {
     diasQueFaltam.push({ dia: toDateStr(dt), dow: dt.getDay(), media: mediaSemana[dt.getDay()] });
   }
 
-  // ---- produtos: junta as duas respostas
+  // ---- produtos e linhas: junta as respostas, uma posição por mês (0 = atual)
+  const vazio = () => Array(M + 1).fill(0);
   const prod = new Map();
   const pega = (nome) => {
-    if (!prod.has(nome)) prod.set(nome, { produto: nome, linha: "", v: [0, 0, 0], q: [0, 0, 0] });
+    if (!prod.has(nome)) prod.set(nome, { produto: nome, linha: "", v: vazio(), q: vazio() });
     return prod.get(nome);
   };
-  (rP1.data || []).forEach((l) => {
+  pares.forEach(([a, b], i) => (rP[i].data || []).forEach((l) => {
     const p = pega(l.produto);
     p.linha = p.linha || l.linha || "";
-    p.v[0] = Number(l.valor_atual) || 0; p.q[0] = Number(l.qtd_atual) || 0;
-    p.v[1] = Number(l.valor_ant) || 0; p.q[1] = Number(l.qtd_ant) || 0;
-  });
-  (rP2.data || []).forEach((l) => {
-    const p = pega(l.produto);
-    p.linha = p.linha || l.linha || "";
-    if (!p.v[1]) { p.v[1] = Number(l.valor_atual) || 0; p.q[1] = Number(l.qtd_atual) || 0; }
-    p.v[2] = Number(l.valor_ant) || 0; p.q[2] = Number(l.qtd_ant) || 0;
-  });
-  const produtos = [...prod.values()].filter((p) => p.produto);
-
+    p.v[a] = Number(l.valor_atual) || 0; p.q[a] = Number(l.qtd_atual) || 0;
+    if (b !== a) { p.v[b] = Number(l.valor_ant) || 0; p.q[b] = Number(l.qtd_ant) || 0; }
+  }));
   const lin = new Map();
   const pegaL = (nome) => {
     const k = String(nome || "").trim() || "Sem linha definida";
-    if (!lin.has(k)) lin.set(k, { linha: k, v: [0, 0, 0] });
+    if (!lin.has(k)) lin.set(k, { linha: k, v: vazio() });
     return lin.get(k);
   };
-  (rL1.data || []).forEach((l) => { const x = pegaL(l.linha); x.v[0] = Number(l.valor_atual) || 0; x.v[1] = Number(l.valor_ant) || 0; });
-  (rL2.data || []).forEach((l) => { const x = pegaL(l.linha); if (!x.v[1]) x.v[1] = Number(l.valor_atual) || 0; x.v[2] = Number(l.valor_ant) || 0; });
+  pares.forEach(([a, b], i) => (rL[i].data || []).forEach((l) => {
+    const x = pegaL(l.linha);
+    x.v[a] = Number(l.valor_atual) || 0;
+    if (b !== a) x.v[b] = Number(l.valor_ant) || 0;
+  }));
   const linhas = [...lin.values()].filter((l) => l.v.some((x) => x > 0));
+
+  // ---- com quem comparar
+  // Topo (vendas_diarias): mês com pelo menos 80% dos dias no cache.
+  // Itens e linhas (pedidos_cache): mês que tem alguma venda detalhada.
+  const ks = Array.from({ length: nMeses }, (_, i) => i + 1);
+  const kTopo = nMeses === 1 ? ks : ks.filter((k) => meses[k].diasNoCache >= Math.ceil(meses[k].ate * 0.8));
+  const kItens = nMeses === 1 ? ks : ks.filter((k) => linhas.reduce((s, l) => s + l.v[k], 0) > 0);
+  const naBase = (arr, lista) => mediaDe(lista.map((k) => arr[k]));
+  const produtos = [...prod.values()].filter((p) => p.produto).map((p) => ({ ...p, vb: naBase(p.v, kItens), qb: naBase(p.q, kItens) }));
+  linhas.forEach((l) => { l.vb = naBase(l.v, kItens); });
+  const base = {
+    nMeses, kTopo, kItens,
+    periodo: mediaDe(kTopo.map((k) => meses[k].periodo)),
+    inteiro: mediaDe(kTopo.map((k) => meses[k].inteiro || 0)),
+    porDia: mediaDe(kTopo.map((k) => meses[k].periodo / Math.max(meses[k].ate, 1))),
+  };
 
   // quanto do faturamento de cada mês está detalhado item a item
   const detalhado = JC.map((j, k) => {
@@ -388,18 +403,29 @@ async function carregarPainel(dia) {
 
   // Venda de cada item: soma o que saiu sozinho com o que saiu em combo
   // (migração 193). Se a função ainda não existir, só esse bloco avisa.
+  // A coluna "antes" é o mês passado ou a média dos meses escolhidos.
   let itens = null, erroItens = "";
-  if (rItens.error) {
-    erroItens = /does not exist|schema cache|Could not find/i.test(rItens.error.message || "")
+  const fItens = rI.map((r) => r.error).find(Boolean);
+  if (fItens) {
+    erroItens = /does not exist|schema cache|Could not find/i.test(fItens.message || "")
       ? "Falta rodar a migração 193 (venda por item) no Supabase."
-      : /sem_acesso|permission|denied/i.test(rItens.error.message || "")
+      : /sem_acesso|permission|denied/i.test(fItens.message || "")
         ? "Seu cargo não vê a venda por item."
-        : rItens.error.message;
+        : fItens.message;
   } else {
-    itens = desmontarItens(rItens.data || [], produtos);
+    const porItem = new Map();
+    pares.forEach(([a, b], i) => (rI[i].data || []).forEach((l) => {
+      const chave = `${l.nome}\u0000${l.opcao || ""}`;
+      if (!porItem.has(chave)) porItem.set(chave, { nome: l.nome, opcao: l.opcao, q: vazio() });
+      const x = porItem.get(chave);
+      x.q[a] = Number(l.qtd_atual) || 0;
+      if (b !== a) x.q[b] = Number(l.qtd_ant) || 0;
+    }));
+    const linhasItens = [...porItem.values()].map((x) => ({ nome: x.nome, opcao: x.opcao, qtd_atual: x.q[0], qtd_ant: naBase(x.q, kItens) }));
+    itens = desmontarItens(linhasItens, produtos);
   }
 
-  return { meses, janelasComparacao: JC, fechados, diasQueFaltam, produtos, linhas, detalhado, semana, vendaPorDia, itens, erroItens, erroDias, erroProd: fProd ? erroProd : "" };
+  return { meses, janelasComparacao: JC, base, fechados, diasQueFaltam, produtos, linhas, detalhado, semana, vendaPorDia, itens, erroItens, erroDias, erroProd: fProd ? erroProd : "" };
 }
 
 // Previsão = já vendido (número do topo, conferido ao vivo) + média por dia da semana dos dias que faltam
@@ -412,34 +438,50 @@ function calcularPrevisao(dados, mesTotal) {
   return { jaVendido, resto, previsao: jaVendido + resto, ritmo, diasRestantes: dados.diasQueFaltam.length };
 }
 
+// "Comparar com": mês passado ou a média dos mesmos dias de 3, 6 ou 12 meses.
+const OPCOES_COMPARAR = [
+  { n: 1, label: "Mês passado" },
+  { n: 3, label: "Média de 3 meses" },
+  { n: 6, label: "Média de 6 meses" },
+  { n: 12, label: "Média de 1 ano" },
+];
+const CHAVE_COMPARAR = "comercial_comparar_com";
+function lerComparar() {
+  try { const n = Number(localStorage.getItem(CHAVE_COMPARAR)); return OPCOES_COMPARAR.some((o) => o.n === n) ? n : 1; } catch { return 1; }
+}
+
 function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
   const [dados, setDados] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
+  // O painel escondido (só para a previsão do relatório) sempre usa o mês passado.
+  const [nMeses, setNMeses] = useState(() => (oculto ? 1 : lerComparar()));
+  const escolher = (n) => { setNMeses(n); try { localStorage.setItem(CHAVE_COMPARAR, String(n)); } catch { /* sem armazenamento */ } };
 
   useEffect(() => {
     let vivo = true;
     setCarregando(true); setErro("");
-    carregarPainel(dia).then((r) => { if (vivo) { setDados(r); setCarregando(false); } })
+    carregarPainel(dia, nMeses).then((r) => { if (vivo) { setDados(r); setCarregando(false); } })
       .catch((e) => { if (vivo) { setErro(e.message || String(e)); setCarregando(false); } });
     return () => { vivo = false; };
-  }, [dia]);
+  }, [dia, nMeses]);
 
   const prev = calcularPrevisao(dados, mesTotal);
   useEffect(() => { if (onPrevisao) onPrevisao(prev ? prev.previsao : null); }, [prev && Math.round(prev.previsao)]); // eslint-disable-line
 
-  if (carregando) return <div style={{ fontSize: 13, color: "#8A8778" }}>Montando o painel dos últimos 3 meses…</div>;
+  if (carregando && !dados) return <div style={{ fontSize: 13, color: "#8A8778" }}>Montando o painel do mês…</div>;
   if (erro) return <div style={avisoBloqueio}><AlertTriangle size={16} /> {erro}</div>;
   if (!dados) return null;
 
-  const { meses, janelasComparacao, produtos, detalhado } = dados;
+  const { meses, janelasComparacao, produtos, detalhado, base } = dados;
   const [at, an, re] = meses;
+  const media = base.nMeses > 1;              // comparando com a média, não com o mês passado
   // O que compara produtos usa só dias fechados, e pode já ser o mês anterior.
   const rotuloC = (k) => nomeMesCurto(janelasComparacao[k].m0);
   const vs = (a, b) => (b ? ((a - b) / b) * 100 : null);
 
-  // ---- altas e quedas (R$ vs mesmo período do mês passado)
-  const comDelta = produtos.map((p) => ({ ...p, delta: p.v[0] - p.v[1], pct: vs(p.v[0], p.v[1]) }));
+  // ---- altas e quedas (R$ contra o mês passado ou a média escolhida: vb)
+  const comDelta = produtos.map((p) => ({ ...p, delta: p.v[0] - p.vb, pct: vs(p.v[0], p.vb) }));
   const altas = comDelta.filter((p) => p.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, QUANTOS);
   const quedas = comDelta.filter((p) => p.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, QUANTOS);
   const tresSeguidos = comDelta.filter((p) => p.v[2] > p.v[1] && p.v[1] > p.v[0] && p.v[2] > 0).sort((a, b) => (a.v[0] - a.v[2]) - (b.v[0] - b.v[2])).slice(0, 5);
@@ -469,51 +511,118 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
   const curvaAn = acumula(an, an.diasMes);
   const curvaRe = acumula(re, re.diasMes);
   const noMesmoDia = (c) => c[Math.min(at.ate, c.length) - 1] || 0;
-  const frenteAn = jaVendido >= noMesmoDia(curvaAn), frenteRe = jaVendido >= noMesmoDia(curvaRe);
-  const fraseCurva = frenteAn && frenteRe ? `${nomeAt} está à frente de ${nomeAn} e ${nomeRe}`
-    : !frenteAn && !frenteRe ? `${nomeAt} está atrás de ${nomeAn} e ${nomeRe}`
-      : frenteAn ? `${nomeAt} está à frente de ${nomeAn}, mas atrás de ${nomeRe}`
-        : `${nomeAt} está atrás de ${nomeAn}, mas à frente de ${nomeRe}`;
+  // Curva da média: em cada dia do mês, a média do acumulado dos meses da base.
+  const curvasBase = base.kTopo.map((k) => acumula(meses[k], meses[k].diasMes));
+  const curvaMedia = [];
+  for (let d = 1; d <= 31; d++) {
+    const vals = curvasBase.filter((c) => c.length >= d).map((c) => c[d - 1]);
+    if (!vals.length) break;
+    curvaMedia.push(Math.round(mediaDe(vals)));
+  }
+  const nomeMedia = `média de ${base.nMeses === 12 ? "1 ano" : `${base.nMeses} meses`}`;
+  let fraseCurva;
+  if (media) {
+    fraseCurva = `${nomeAt} está ${jaVendido >= noMesmoDia(curvaMedia) ? "à frente" : "atrás"} da ${nomeMedia}`;
+  } else {
+    const frenteAn = jaVendido >= noMesmoDia(curvaAn), frenteRe = jaVendido >= noMesmoDia(curvaRe);
+    fraseCurva = frenteAn && frenteRe ? `${nomeAt} está à frente de ${nomeAn} e ${nomeRe}`
+      : !frenteAn && !frenteRe ? `${nomeAt} está atrás de ${nomeAn} e ${nomeRe}`
+        : frenteAn ? `${nomeAt} está à frente de ${nomeAn}, mas atrás de ${nomeRe}`
+          : `${nomeAt} está atrás de ${nomeAn}, mas à frente de ${nomeRe}`;
+  }
   const seriesCurva = [
     { nome: nomeMesCurto(at.m0), cor: "#2F8F5B", pontos: curvaAt, grossa: true, area: true },
     dados.diasQueFaltam.length ? { nome: `${nomeMesCurto(at.m0)} previsto`, cor: "#2F8F5B", pontos: curvaPrev, inicio: at.ate, tracejado: true } : null,
-    { nome: nomeMesCurto(an.m0), cor: "#5C5A4E", pontos: curvaAn },
-    { nome: nomeMesCurto(re.m0), cor: "#B9B4A2", pontos: curvaRe, tracejado: true },
+    ...(media
+      ? [{ nome: nomeMedia, cor: "#5C5A4E", pontos: curvaMedia }]
+      : [{ nome: nomeMesCurto(an.m0), cor: "#5C5A4E", pontos: curvaAn }, { nome: nomeMesCurto(re.m0), cor: "#B9B4A2", pontos: curvaRe, tracejado: true }]),
   ].filter(Boolean);
-  const avisoCache = an.diasInteiroCache < an.diasMes || re.diasInteiroCache < re.diasMes
+  const avisoCache = !media && (an.diasInteiroCache < an.diasMes || re.diasInteiroCache < re.diasMes)
     ? "Alguns dias antigos ainda não estão no cache de vendas: a linha desses meses pode estar mais baixa do que foi." : "";
 
-  const linhasDelta = dados.linhas.map((l) => ({ linha: l.linha, atual: l.v[0], anterior: l.v[1] }));
-  const frases = montarFrases({
-    linhas: linhasDelta,
-    produtos: produtos.map((p) => ({ produto: p.produto, linha: String(p.linha || "").trim() || "Sem linha definida", atual: p.v[0], anterior: p.v[1] })),
-    tresSeguidos, semana: dados.semana, previsao: prev.previsao, meta: META_MES, noitesAbertas: faltamAbertos.length,
-    contra: faixaDatas(janelasComparacao[1].ini, janelasComparacao[1].fim, true),
-  });
-
   // ---- o que cada bloco compara, com datas (etiqueta "Comparando X com Y")
-  // Topo: o mês até a noite do relatório, contra os mesmos dias dos anteriores.
+  // Topo: o mês até a noite do relatório, contra os mesmos dias dos anteriores
+  // (ou a média deles). Por item e por linha: só noites já fechadas.
   const faixaAt = faixaDatas(at.ini, at.fim), faixaAn = faixaDatas(an.ini, an.fim), faixaRe = faixaDatas(re.ini, re.fim);
-  // Por item e por linha: só noites já fechadas.
   const [jc0, jc1, jc2] = janelasComparacao;
   const fechadasAt = faixaDatas(jc0.ini, jc0.fim, true), fechadasAn = faixaDatas(jc1.ini, jc1.fim, true);
-  const etqFechadas = <Comparando agora={fechadasAt} antes={fechadasAn} fim="· só noites já fechadas" />;
+  // "média de 1 a 21 de maio a outubro" + "· 6 meses" (avisa os que ficaram de fora)
+  const textoMedia = (lista, ate, curto) => {
+    if (!lista.length) return "média (nenhum mês com venda no cache)";
+    const mais = Math.max(...lista), menos = Math.min(...lista);
+    // Quando a média atravessa a virada do ano, o ano aparece: "nov/25 a out/26".
+    const viraAno = janelasComparacao[mais].y !== janelasComparacao[menos].y;
+    const nomeM = (k) => (curto ? nomeMesCurto : (x) => NOMES_MES[x])(janelasComparacao[k].m0) + (viraAno ? `/${String(janelasComparacao[k].y).slice(2)}` : "");
+    return `média de 1 a ${ate} de ${mais === menos ? nomeM(mais) : `${nomeM(mais)} a ${nomeM(menos)}`}`;
+  };
+  const fimMedia = (lista) => {
+    const n = lista.length, faltam = base.nMeses - n;
+    return `· ${n} ${n === 1 ? "mês" : "meses"}${faltam > 0 ? ` de ${base.nMeses} (${faltam} sem venda no cache)` : ""}`;
+  };
+  const etqTopo = media
+    ? <Comparando agora={faixaAt} ligacao="com a" antes={textoMedia(base.kTopo, at.ate, false)} fim={fimMedia(base.kTopo)} />
+    : <Comparando agora={faixaAt} antes={faixaAn} />;
+  const etqFechadas = media
+    ? <Comparando agora={fechadasAt} ligacao="com a" antes={textoMedia(base.kItens, jc0.ate, true)} fim={`${fimMedia(base.kItens)} · só noites já fechadas`} />
+    : <Comparando agora={fechadasAt} antes={fechadasAn} fim="· só noites já fechadas" />;
   const fimSemanas = dia, iniSemanas = somarDiasStr(dia, -55);
 
+  // Números do topo contra a base escolhida
+  const anteriorTopo = media ? base.periodo : an.periodo;
+  const porDiaBase = media ? base.porDia : porDiaAn;
+  const textoJaVendido = media ? `a ${textoMedia(base.kTopo, at.ate, false)}` : `de ${faixaAn}`;
+  let textoPorDia, extraPorDia = "";
+  if (media) {
+    textoPorDia = `a ${nomeMedia} é ${brlInt(porDiaBase)}`;
+    const porMes = base.kTopo.map((k) => ({ nome: NOMES_MES[meses[k].m0], v: meses[k].periodo / Math.max(meses[k].ate, 1) })).sort((a, b) => b.v - a.v);
+    if (porMes.length > 1) extraPorDia = `melhor mês: ${porMes[0].nome} ${brlInt(porMes[0].v)} · pior: ${porMes[porMes.length - 1].nome} ${brlInt(porMes[porMes.length - 1].v)}`;
+  } else {
+    textoPorDia = `era ${brlInt(porDiaAn)} de ${faixaAn}`;
+    if (porDiaRe > 0) extraPorDia = `e ${brlInt(porDiaRe)} de ${faixaRe}`;
+  }
+
+  const linhasDelta = dados.linhas.map((l) => ({ linha: l.linha, atual: l.v[0], anterior: l.vb }));
+  const frases = montarFrases({
+    linhas: linhasDelta,
+    produtos: produtos.map((p) => ({ produto: p.produto, linha: String(p.linha || "").trim() || "Sem linha definida", atual: p.v[0], anterior: p.vb })),
+    tresSeguidos, semana: dados.semana, previsao: prev.previsao, meta: META_MES, noitesAbertas: faltamAbertos.length,
+    contra: media ? `a ${nomeMedia}` : fechadasAn,
+  });
+
+  const chipComparar = (ativo) => ({
+    padding: "6px 12px", borderRadius: 999, fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+    border: ativo ? "1px solid #22231F" : "1px solid #E8E2D2",
+    background: ativo ? "#22231F" : "#FFFFFF", color: ativo ? "#F3EFE3" : "#55534A",
+  });
+
   return (
-    <div style={{ display: "grid", gap: 10 }}>
+    <div style={{ display: "grid", gap: 10, opacity: carregando ? 0.55 : 1, transition: "opacity .2s" }}>
+      {!oculto && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 12.5, color: "#5C5A4E", marginRight: 2 }}>Comparar com</span>
+          {OPCOES_COMPARAR.map((o) => (
+            <button key={o.n} onClick={() => escolher(o.n)} style={chipComparar(nMeses === o.n)}>{o.label}</button>
+          ))}
+          {carregando && <span style={{ fontSize: 12, color: "#8A8778" }}>Atualizando…</span>}
+        </div>
+      )}
+
       <MancheteMes nomeMes={nomeAt} diaAte={`${pad(at.ate)}/${pad(at.m0 + 1)}`} noitesFaltam={dados.diasQueFaltam.length}
         previsao={prev.previsao} jaVendido={jaVendido} resto={prev.resto} meta={META_MES}
-        porDiaAtual={porDiaAt} porDiaAnterior={porDiaAn} nomeAnterior={nomeAn} inteiroAnterior={an.inteiro}
-        etiqueta={<Comparando agora={faixaAt} antes={faixaAn} />} />
+        porDiaAtual={porDiaAt} porDiaAnterior={porDiaBase} nomeAnterior={nomeAn} inteiroAnterior={media ? base.inteiro : an.inteiro}
+        textoContra={media ? `a ${nomeMedia}` : `nos mesmos dias de ${nomeAn}`}
+        rotuloInteiro={media ? `média de um mês inteiro (${base.nMeses === 12 ? "1 ano" : `${base.nMeses} meses`})` : `${nomeAn} inteiro`}
+        etiqueta={etqTopo} />
 
-      <TresPerguntas jaVendido={jaVendido} anteriorMesmoDia={an.periodo}
-        porDia={porDiaAt} porDiaAnt={porDiaAn} porDiaRet={porDiaRe} faixaAnt={faixaAn} faixaRet={faixaRe}
+      <TresPerguntas jaVendido={jaVendido} anteriorMesmoDia={anteriorTopo} textoJaVendido={textoJaVendido}
+        porDia={porDiaAt} porDiaAnt={porDiaBase} textoPorDia={textoPorDia} extraPorDia={extraPorDia}
         ultimoDia={faixaDatas(at.fimMes, at.fimMes, true)}
         falta={META_MES - jaVendido} noitesAbertas={faltamAbertos.length} normalPorNoite={normalPorNoite} />
 
       <CurvaDoMes series={seriesCurva} meta={META_MES} frase={fraseCurva} aviso={avisoCache}
-        etiqueta={<Comparando agora={nomeAt.toLowerCase()} antes={`${nomeAn} e ${nomeRe}`} fim="· dia a dia do mês" />} />
+        etiqueta={media
+          ? <Comparando agora={nomeAt.toLowerCase()} ligacao="com a" antes={textoMedia(base.kTopo, 31, false).replace("de 1 a 31 ", "")} fim={`${fimMedia(base.kTopo)} · dia a dia do mês`} />
+          : <Comparando agora={nomeAt.toLowerCase()} antes={`${nomeAn} e ${nomeRe}`} fim="· dia a dia do mês" />} />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 10 }}>
         {!dados.erroProd && <LinhasQuePuxaram linhas={linhasDelta} etiqueta={etqFechadas} />}
@@ -532,7 +641,7 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
           {!oculto && <ComercialLinhaTempo />}
 
           {/* ---------------- Venda de cada item (ComercialItens.jsx) ---------------- */}
-          <VendaDosItens itens={dados.itens} erro={dados.erroItens} rotuloAn={fechadasAn} etiqueta={etqFechadas} />
+          <VendaDosItens itens={dados.itens} erro={dados.erroItens} rotuloAn={media ? nomeMedia : fechadasAn} etiqueta={etqFechadas} />
 
           {/* ---------------- Altas e quedas ---------------- */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
