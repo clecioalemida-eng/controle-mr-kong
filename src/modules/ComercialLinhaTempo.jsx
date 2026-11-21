@@ -15,7 +15,7 @@
 // metade faria a linha cair sem ter caído. Pelo mesmo motivo, mês que o
 // histórico não cobre inteiro (maio de 2026) só aparece na visão por semana.
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Loader2, AlertTriangle } from "lucide-react";
+import { Loader2, AlertTriangle, CheckCircle2, PieChart } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 const PERIODOS = [
@@ -101,36 +101,56 @@ export function tendencia(valores) {
   if (!(antes > 0)) return null;
   return ((depois - antes) / antes) * 100;
 }
-function corDe(p) { return p == null ? NEUTRO : p >= 0 ? AZUL : VERMELHO; }
-function palavraDe(p) {
-  if (p == null) return "sem base";
-  if (Math.abs(p) < 0.5) return "estável";
-  return p > 0 ? "subindo" : "caindo";
+// Média da primeira metade e da segunda metade (mesma conta da tendência).
+// Com número ímpar de pontos, o do meio fica de fora das duas.
+export function medias(valores) {
+  const n = valores.length;
+  if (n < 2) return null;
+  const m = Math.floor(n / 2);
+  const media = (l) => l.reduce((s, x) => s + x, 0) / l.length;
+  return { antes: media(valores.slice(0, m)), depois: media(valores.slice(-m)), m, n };
 }
 function pctDe(p) {
   if (p == null) return "—";
   const r = Math.round(p);
   return r === 0 ? "0%" : `${r > 0 ? "+" : "−"}${Math.abs(r)}%`;
 }
+function mil(v) {
+  const n = Math.abs(Number(v) || 0);
+  if (n < 1000) return `R$ ${Math.round(n).toLocaleString("pt-BR")}`;
+  return `R$ ${(n / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} mil`;
+}
+function listaNomes(l) {
+  return l.length <= 1 ? (l[0] || "") : `${l.slice(0, -1).join(", ")} e ${l[l.length - 1]}`;
+}
+const VERDE = "#2F8F5B";
+const VERMELHO_BARRA = "#C4432B";
+const PLURAL = { semana: "semanas", "mês": "meses", dia: "dias" };
 
-function Grafico({ valores, rotulos, cor, grande, nome, foco, onFoco }) {
-  // Com muitas semanas, as datas do gráfico grande ficam inclinadas: assim
-  // cabe a data de todo ponto. As linhas pequenas marcam todo ponto, mas
-  // escrevem só algumas datas, para os textos não se sobreporem.
-  const inclinadas = grande && rotulos.length > 10;
-  const W = grande ? 640 : 320;
-  const H = grande ? (inclinadas ? 200 : 176) : 70;
-  const pl = grande ? 52 : 4, pr = grande ? 12 : 10, pt = grande ? 10 : 8;
-  const pb = grande ? (inclinadas ? 46 : 22) : 22;
-  const max = Math.max(...valores, 1);
-  // O total parte do zero, para o tamanho da subida ser honesto. As linhas
-  // pequenas usam a própria escala: senão quem vende pouco vira um traço reto.
-  const min = grande ? 0 : Math.min(...valores);
-  const faixa = max - min || 1;
+// Gráfico com régua começando no zero e as duas médias tracejadas:
+// cinza = média da primeira metade, verde = média da segunda metade.
+function Grafico({ valores, rotulos, cor, nome, foco, onFoco, med, compacto }) {
+  // O desenho acompanha a largura real, para a letra não encolher no celular.
+  const caixa = useRef(null);
+  const [largura, setLargura] = useState(640);
+  useEffect(() => {
+    const el = caixa.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(([e]) => setLargura(Math.round(e.contentRect.width) || 640));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const W = Math.max(280, largura);
+  // Data inclinada em todo ponto só cabe na tela larga; no celular, algumas datas retas.
+  const inclinadas = !compacto && rotulos.length > 10 && W >= 560;
+  const H = compacto ? 130 : (inclinadas ? 210 : 186);
+  const pl = 52, pr = 12, pt = 10;
+  const pb = inclinadas ? 46 : 22;
+  const max = Math.max(...valores, med ? med.antes : 0, med ? med.depois : 0, 1);
   const X = (i) => pl + (valores.length > 1 ? i / (valores.length - 1) : 0.5) * (W - pl - pr);
-  const Y = (v) => pt + (1 - (v - min) / faixa) * (H - pt - pb);
+  const Y = (v) => pt + (1 - v / max) * (H - pt - pb);
   const caminho = valores.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(" ");
-  const passo = grande ? 1 : Math.max(1, Math.ceil(rotulos.length / 8));
+  const passo = inclinadas ? 1 : Math.max(1, Math.ceil(rotulos.length / (W < 560 ? 4 : compacto ? 6 : 8)));
   const baseY = H - pb;
   const mover = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -139,12 +159,13 @@ function Grafico({ valores, rotulos, cor, grande, nome, foco, onFoco }) {
     const i = Math.round(((px - pl) / (W - pl - pr)) * (valores.length - 1));
     onFoco(Math.max(0, Math.min(valores.length - 1, i)));
   };
-  const comPontos = grande && valores.length <= 6;
+  const comPontos = valores.length <= 6;
   return (
+    <div ref={caixa}>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={nome}
       style={{ display: "block", touchAction: "pan-y" }}
       onPointerMove={mover} onPointerDown={mover} onPointerLeave={() => onFoco(null)}>
-      {grande && [0, 0.5, 1].map((f) => (
+      {[0, 0.5, 1].map((f) => (
         <g key={f}>
           <line x1={pl} x2={W - pr} y1={Y(max * f)} y2={Y(max * f)} stroke="#EFE9DA" />
           <text x={pl - 6} y={Y(max * f) + 4} textAnchor="end" fontSize="11" fill={NEUTRO}>
@@ -158,12 +179,19 @@ function Grafico({ valores, rotulos, cor, grande, nome, foco, onFoco }) {
           {inclinadas ? (
             <text transform={`translate(${X(i) + 3},${baseY + 10}) rotate(-55)`} textAnchor="end" fontSize="11" fill="#55534A">{t}</text>
           ) : i % passo === 0 ? (
-            <text x={X(i)} y={baseY + 15} textAnchor={i === 0 && valores.length > 1 ? "start" : "middle"} fontSize="11" fill={grande ? "#55534A" : NEUTRO}>{t}</text>
+            <text x={X(i)} y={baseY + 15} textAnchor={i === 0 && valores.length > 1 ? "start" : "middle"} fontSize="11" fill="#55534A">{t}</text>
           ) : null}
         </g>
       ))}
+      <path d={`${caminho} L${X(valores.length - 1).toFixed(1)} ${baseY} L${X(0).toFixed(1)} ${baseY} Z`} fill={cor} opacity="0.07" />
+      {med && (
+        <>
+          <line x1={X(0)} x2={X(med.m - 1)} y1={Y(med.antes)} y2={Y(med.antes)} stroke={NEUTRO} strokeWidth="2" strokeDasharray="6 4" />
+          <line x1={X(med.n - med.m)} x2={X(med.n - 1)} y1={Y(med.depois)} y2={Y(med.depois)} stroke={VERDE} strokeWidth="2" strokeDasharray="6 4" />
+        </>
+      )}
       <path d={caminho} fill="none" stroke={cor} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-      {valores.map((v, i) => <circle key={i} cx={X(i)} cy={Y(v)} r={comPontos ? 4 : grande ? 3 : 2.5} fill={cor} stroke="#FFFFFF" strokeWidth="1" />)}
+      {valores.map((v, i) => <circle key={i} cx={X(i)} cy={Y(v)} r={comPontos ? 4 : 2.5} fill={cor} stroke="#FFFFFF" strokeWidth="1" />)}
       {foco != null && (
         <>
           <line x1={X(foco)} x2={X(foco)} y1={pt} y2={H - pb} stroke="#C9BFA6" />
@@ -171,27 +199,124 @@ function Grafico({ valores, rotulos, cor, grande, nome, foco, onFoco }) {
         </>
       )}
     </svg>
+    </div>
   );
 }
 
-function LinhaItem({ item, rotulos, legendas, primeira }) {
-  const [foco, setFoco] = useState(null);
+function Legenda({ cor, tracejado, children }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 32%) minmax(0, 1fr) 72px", gap: 10, alignItems: "center",
-                  padding: "6px 0", borderTop: primeira ? "none" : "1px solid #EFE9DA" }}>
-      <div style={{ minWidth: 0 }}>
-        <div title={item.nome} style={{ fontSize: 12.5, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.nome}</div>
-        <div style={{ fontSize: 11, color: "#8A8778", fontVariantNumeric: "tabular-nums" }}>
-          {foco != null ? `${legendas[foco]}: ${brl(item.valores[foco])}` : brl(item.total)}
-        </div>
-      </div>
-      <Grafico valores={item.valores} rotulos={rotulos} cor={corDe(item.tendencia)} nome={item.nome} foco={foco} onFoco={setFoco} />
-      <div style={{ textAlign: "right" }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: "#22231F", fontVariantNumeric: "tabular-nums" }}>{pctDe(item.tendencia)}</div>
-        <div style={{ fontSize: 11, color: "#8A8778" }}>{palavraDe(item.tendencia)}</div>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <span style={{ width: 16, height: 0, borderTop: `2px ${tracejado ? "dashed" : "solid"} ${cor}` }} />{children}
+    </span>
+  );
+}
+
+// Uma linha da lista "Quem fez a diferença". Toque abre o gráfico dela.
+const GRADE_LISTA = "minmax(0, 1.25fr) minmax(0, 0.95fr) minmax(0, 1.4fr) 54px";
+function ItemDiferenca({ item, maxDelta, rotulos, legendas, unidade, aberto, onAbrir, estreito }) {
+  const [foco, setFoco] = useState(null);
+  const sobe = item.delta >= 0;
+  const pequeno = item.peso < 0.01;
+  const corTexto = sobe ? VERDE : VERMELHO_BARRA;
+  const largura = `${Math.max(1, (Math.abs(item.delta) / (maxDelta || 1)) * 50)}%`;
+  const nome = (
+    <div title={item.nome} style={{ fontSize: 12.5, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: estreito ? "normal" : "nowrap" }}>
+      <span style={{ color: NEUTRO, marginRight: 4 }}>{aberto ? "▾" : "▸"}</span>{item.nome}
+    </div>
+  );
+  const peso = (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: NEUTRO }}>
+      <span style={{ width: Math.max(2, Math.round(item.peso * 60)), height: 5, borderRadius: 2, background: "#C9BFA6" }} />
+      {pequeno ? "menos de 1%" : `${Math.round(item.peso * 100)}% da venda`}
+    </span>
+  );
+  const barra = (
+    <div style={{ position: "relative", height: 16 }}>
+      <div style={{ position: "absolute", left: "50%", top: -3, bottom: -3, width: 1, background: "#D9D2BE" }} />
+      <div style={{ position: "absolute", top: 2, bottom: 2, [sobe ? "left" : "right"]: "50%", width: largura,
+        background: sobe ? VERDE : VERMELHO_BARRA, borderRadius: sobe ? "0 3px 3px 0" : "3px 0 0 3px" }} />
+      {/* O valor fica do lado vazio: a barra que ganha cresce para a direita, o texto vai à esquerda. */}
+      <div style={{ position: "absolute", [sobe ? "right" : "left"]: "calc(50% + 5px)", top: 0, fontSize: 11, fontWeight: 700, color: corTexto,
+        fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+        {sobe ? "+" : "−"}{mil(item.delta)}
       </div>
     </div>
   );
+  const variacao = (
+    <div style={{ textAlign: "right", fontSize: 12, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: pequeno ? NEUTRO : corTexto }}>
+      {item.antes > 0 ? pctDe(item.pct) : "nova"}
+    </div>
+  );
+  return (
+    <div style={{ borderTop: "1px solid #EFE9DA" }}>
+      {estreito ? (
+        // Celular: nome inteiro em cima; valores e barra embaixo.
+        <div onClick={onAbrir} style={{ padding: "9px 0", cursor: "pointer", opacity: pequeno ? 0.5 : 1 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+            <div style={{ minWidth: 0 }}>{nome}</div>{variacao}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 10, alignItems: "center", marginTop: 4 }}>
+            <div style={{ lineHeight: 1.35 }}>
+              {peso}
+              <div style={{ fontSize: 11.5, color: NEUTRO, fontVariantNumeric: "tabular-nums" }}>
+                {mil(item.antes)} → <b style={{ color: "#22231F" }}>{mil(item.depois)}</b>
+              </div>
+            </div>
+            {barra}
+          </div>
+        </div>
+      ) : (
+        <div onClick={onAbrir} style={{ display: "grid", gridTemplateColumns: GRADE_LISTA, gap: 8, alignItems: "center",
+          padding: "9px 0", cursor: "pointer", opacity: pequeno ? 0.5 : 1 }}>
+          <div style={{ minWidth: 0 }}>{nome}{peso}</div>
+          <div style={{ textAlign: "right", fontSize: 11.5, color: NEUTRO, fontVariantNumeric: "tabular-nums", lineHeight: 1.35 }}>
+            {mil(item.antes)} →<br /><b style={{ color: "#22231F" }}>{mil(item.depois)}</b>
+          </div>
+          {barra}
+          {variacao}
+        </div>
+      )}
+      {aberto && (
+        <div style={{ padding: "0 0 10px" }}>
+          <Grafico valores={item.valores} rotulos={rotulos} cor={AZUL} nome={item.nome} foco={foco} onFoco={setFoco} med={item.med} compacto />
+          <div style={{ fontSize: 11.5, color: "#55534A", minHeight: 16 }}>
+            {foco != null
+              ? `${unidade === "semana" ? "Semana de " : ""}${legendas[foco]}: ${brl(item.valores[foco])}`
+              : `Média por ${unidade}: ${mil(item.antes)} antes (cinza) e ${mil(item.depois)} agora (verde). Total no período: ${brl(item.total)}.`}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Frases da leitura, montadas com os números da lista.
+function montarFrases(lista, unidade, nomeItens) {
+  const frases = [];
+  const positivos = lista.filter((x) => x.delta > 0).sort((a, b) => b.delta - a.delta);
+  const negativos = lista.filter((x) => x.delta < 0).sort((a, b) => a.delta - b.delta);
+  const somaPos = positivos.reduce((s, x) => s + x.delta, 0);
+  if (positivos.length && positivos[0].delta >= 50) {
+    const escolhidos = [];
+    let acc = 0;
+    for (const x of positivos) { if (escolhidos.length >= 3 || acc >= somaPos * 0.7) break; escolhidos.push(x); acc += x.delta; }
+    frases.push({ tipo: "bom", texto: escolhidos.length === 1
+      ? `${escolhidos[0].nome} é quem mais somou: +${mil(acc)} por ${unidade}.`
+      : `${listaNomes(escolhidos.map((x) => x.nome))} explicam a maior parte do que cresceu: juntos, +${mil(acc)} por ${unidade}.` });
+  }
+  if (negativos.length && negativos[0].delta <= -50) {
+    const x = negativos[0];
+    const peso = Math.round(x.peso * 100);
+    frases.push({ tipo: "atencao", texto: `${x.nome} é a maior perda em reais: −${mil(x.delta)} por ${unidade}. Pesa ${peso}% da venda${peso >= 10 ? ", então merece atenção primeiro." : "."}` });
+  }
+  const porPeso = [...lista].sort((a, b) => b.peso - a.peso);
+  const fortes = [];
+  let pesoAcc = 0;
+  for (const x of porPeso) { if (pesoAcc >= 0.6 || fortes.length >= 4) break; fortes.push(x); pesoAcc += x.peso; }
+  if (fortes.length >= 1 && lista.length > fortes.length) {
+    frases.push({ tipo: "peso", texto: `${fortes.length === 1 ? `Só ${fortes[0].nome}` : `${fortes.length} ${nomeItens}`} ${fortes.length === 1 ? "faz" : "fazem"} ${Math.round(pesoAcc * 100)}% da venda${fortes.length > 1 ? `: ${listaNomes(fortes.map((x) => x.nome))}` : ""}.` });
+  }
+  return frases;
 }
 
 export default function ComercialLinhaTempo() {
@@ -280,21 +405,52 @@ export default function ComercialLinhaTempo() {
       porNome.get(nome)[i] += valor;
     }));
     let lista = [...porNome.entries()].map(([nome, valores]) => ({
-      nome, valores, total: valores.reduce((s, v) => s + v, 0), tendencia: tendencia(valores),
+      nome, valores, total: valores.reduce((s, v) => s + v, 0),
     })).filter((x) => x.total > 0);
     if (visao === "produtos") lista = lista.sort((a, b) => b.total - a.total).slice(0, QUANTOS_PRODUTOS);
-    // Quem sobe vem primeiro; quem não tem base para comparar fica no fim.
-    lista = lista.sort((a, b) => (b.tendencia ?? -Infinity) - (a.tendencia ?? -Infinity) || b.total - a.total);
+    const soma = lista.reduce((s, x) => s + x.total, 0) || 1;
+    // Cada item: média por ponto antes e agora, diferença em R$ e peso na venda.
+    // A lista vai na ordem de quanto cada um somou ou tirou, não pela porcentagem.
+    lista = lista.map((x) => {
+      const med = medias(x.valores);
+      const antes = med ? med.antes : 0;
+      const depois = med ? med.depois : x.total;
+      return { ...x, med, antes, depois, delta: depois - antes, pct: antes > 0 ? ((depois - antes) / antes) * 100 : null, peso: x.total / soma };
+    }).sort((a, b) => b.delta - a.delta || b.total - a.total);
     return { total: prontos.map((_, i) => lista.reduce((s, x) => s + x.valores[i], 0)), itens: lista };
   }, [prontos, visao]);
+
+  const [aberto, setAberto] = useState(null);
+  useEffect(() => { setAberto(null); }, [chave]);
+  // Na tela estreita (celular), a lista troca de colunas para duas linhas por item.
+  const caixaLista = useRef(null);
+  const [estreito, setEstreito] = useState(false);
+  useEffect(() => {
+    const el = caixaLista.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(([e]) => setEstreito(e.contentRect.width < 480));
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
 
   const rotulos = (pontos || []).map((p) => p.rotulo);
   // Ao apontar, a semana aparece inteira; o eixo marca só a segunda-feira.
   const legendas = (pontos || []).map((p) => (montado.unidade === "semana" ? `${diaMes(p.ini)} a ${diaMes(p.fim)}` : p.rotulo));
-  const tendenciaTotal = tendencia(total);
+  const medTotal = medias(total);
   const somaTotal = total.reduce((s, v) => s + v, 0);
   const unidade = montado?.unidade;
   const mesFuturo = periodo === "atual" && pontos && pontos.length === 0;
+  const nomeItens = visao === "linhas" ? "linhas" : "produtos";
+  const maxDelta = Math.max(...itens.map((x) => Math.abs(x.delta)), 1);
+  const frases = prontos ? montarFrases(itens, unidade, nomeItens) : [];
+  // A porcentagem que mais engana: item pequeno com variação enorme.
+  const enganosa = itens.filter((x) => x.peso < 0.01 && x.pct != null && Math.abs(x.pct) >= 100)
+    .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct))[0];
+
+  const quando = { atual: "Neste mês", passado: "No mês passado", tres: "Nos últimos 3 meses", seis: "Nos últimos 6 meses" }[periodo];
+  const artigo = unidade === "mês" ? "o mês" : unidade === "dia" ? "o dia" : "a semana";
+  const deltaTotal = medTotal ? medTotal.depois - medTotal.antes : 0;
+  const pctTotal = medTotal && medTotal.antes > 0 ? (deltaTotal / medTotal.antes) * 100 : null;
 
   const chip = (ativo) => ({
     padding: "6px 12px", borderRadius: 999, fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
@@ -345,28 +501,81 @@ export default function ComercialLinhaTempo() {
       ) : (
         <>
           <div style={cartao}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>
-              {visao === "linhas" ? "Total de todas as linhas" : `Total dos ${QUANTOS_PRODUTOS} principais`}
-              {tendenciaTotal != null && `: ${palavraDe(tendenciaTotal)} ${pctDe(tendenciaTotal).replace(/^[+−]/, "")}`}
+            {medTotal ? (
+              <div style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontSize: 19, lineHeight: 1.4, color: "#22231F" }}>
+                {quando}, {artigo} passou de vender <b>{mil(medTotal.antes)}</b> para{" "}
+                <b style={{ color: deltaTotal >= 0 ? VERDE : VERMELHO_BARRA }}>{mil(medTotal.depois)}</b>.
+                {Math.abs(deltaTotal) >= 1 && (
+                  <> São <b style={{ color: deltaTotal >= 0 ? VERDE : VERMELHO_BARRA }}>{mil(deltaTotal)} {deltaTotal >= 0 ? "a mais" : "a menos"} por {unidade}</b>{pctTotal != null ? ` (${pctDe(pctTotal)})` : ""}.</>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F" }}>
+                {visao === "linhas" ? "Total de todas as linhas" : `Total dos ${QUANTOS_PRODUTOS} principais`}: {brl(somaTotal)}
+              </div>
+            )}
+            <div style={{ fontSize: 12, color: "#8A8778", margin: "6px 0 8px", lineHeight: 1.5 }}>
+              {diaMes(pontos[0].ini)} a {diaMes(pontos[pontos.length - 1].fim)}, por {unidade} · {brl(somaTotal)} no período
+              {visao === "produtos" ? ` (só os ${QUANTOS_PRODUTOS} principais)` : ""}.
+              {medTotal && ` Como chegamos nisso: média ${medTotal.m === 1 ? `da primeira ${unidade}` : `das ${medTotal.m} primeiras ${PLURAL[unidade]}`} (cinza) contra ${medTotal.m === 1 ? `a última` : `a média das ${medTotal.m} últimas`} (verde).`}
             </div>
-            <div style={{ fontSize: 12, color: "#8A8778", margin: "2px 0 8px" }}>
-              {diaMes(pontos[0].ini)} a {diaMes(pontos[pontos.length - 1].fim)}, por {unidade} · {brl(somaTotal)}
+            <Grafico valores={total} rotulos={rotulos} cor={AZUL} nome="Total do período" foco={focoTotal} onFoco={setFocoTotal} med={medTotal} />
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11.5, color: NEUTRO, marginTop: 4 }}>
+              <Legenda cor={AZUL}>venda da {unidade}</Legenda>
+              {medTotal && <Legenda cor={NEUTRO} tracejado>média antes</Legenda>}
+              {medTotal && <Legenda cor={VERDE} tracejado>média agora</Legenda>}
             </div>
-            <Grafico valores={total} rotulos={rotulos} cor={corDe(tendenciaTotal)} grande nome="Total do período"
-              foco={focoTotal} onFoco={setFocoTotal} />
-            <div style={{ fontSize: 12, color: "#55534A", minHeight: 18, marginTop: 2 }}>
+            <div style={{ fontSize: 12, color: "#55534A", minHeight: 18, marginTop: 4 }}>
               {focoTotal != null && `${unidade === "semana" ? "Semana de " : ""}${legendas[focoTotal]}: ${brl(total[focoTotal])}`}
             </div>
           </div>
 
-          <div style={{ ...cartao, padding: "6px 14px" }}>
-            {itens.map((item, i) => <LinhaItem key={item.nome} item={item} rotulos={rotulos} legendas={legendas} primeira={i === 0} />)}
-          </div>
+          {medTotal && (
+            <div ref={caixaLista} style={cartao}>
+              <div style={{ fontSize: 15, fontWeight: 800, color: "#22231F" }}>Quem fez a diferença</div>
+              <div style={{ fontSize: 12, color: "#8A8778", marginTop: 2, lineHeight: 1.45 }}>
+                Em reais por {unidade}, {visao === "linhas" ? "todas as linhas" : "todos os produtos"} na mesma régua. A ordem é de quanto cada um somou ou tirou, não da porcentagem. Toque para ver o gráfico.
+              </div>
+              {!estreito && <div style={{ display: "grid", gridTemplateColumns: GRADE_LISTA, gap: 8, fontSize: 10.5, color: NEUTRO, fontWeight: 700,
+                textTransform: "uppercase", letterSpacing: 0.3, padding: "12px 0 6px" }}>
+                <span>{visao === "linhas" ? "linha" : "produto"} · peso</span>
+                <span style={{ textAlign: "right" }}>por {unidade}</span>
+                <span style={{ textAlign: "center" }}>diferença</span>
+                <span style={{ textAlign: "right" }}>variação</span>
+              </div>}
+              {itens.map((item) => (
+                <ItemDiferenca key={item.nome} item={item} maxDelta={maxDelta} rotulos={rotulos} legendas={legendas} unidade={unidade}
+                  estreito={estreito} aberto={aberto === item.nome} onAbrir={() => setAberto(aberto === item.nome ? null : item.nome)} />
+              ))}
+              {itens.some((x) => x.peso < 0.01) && (
+                <div style={{ fontSize: 11.5, color: "#55534A", marginTop: 10, lineHeight: 1.5 }}>
+                  Quem tem menos de 1% da venda aparece apagado: com pouco volume, a porcentagem engana.
+                  {enganosa && ` ${enganosa.nome} "${pctDe(enganosa.pct)}" são só ${mil(enganosa.delta)} ${enganosa.delta >= 0 ? "a mais" : "a menos"} por ${unidade}.`}
+                </div>
+              )}
+            </div>
+          )}
+
+          {frases.length > 0 && (
+            <div style={cartao}>
+              <div style={{ fontSize: 15, fontWeight: 800, color: "#22231F" }}>Em uma frase</div>
+              <div style={{ display: "grid", gap: 9, marginTop: 10 }}>
+                {frases.map((f, i) => {
+                  const Icone = f.tipo === "bom" ? CheckCircle2 : f.tipo === "atencao" ? AlertTriangle : PieChart;
+                  const cor = f.tipo === "bom" ? VERDE : f.tipo === "atencao" ? "#B07D12" : "#55534A";
+                  return (
+                    <div key={i} style={{ display: "flex", gap: 9, fontSize: 13, lineHeight: 1.5, color: "#22231F" }}>
+                      <Icone size={17} color={cor} style={{ flexShrink: 0, marginTop: 2 }} /><span>{f.texto}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div style={{ fontSize: 11, color: "#8A8778", lineHeight: 1.55 }}>
-            A porcentagem compara a primeira metade do período com a segunda.
-            {unidade === "semana" && " Só entram semanas inteiras, de segunda a domingo, e a data marcada é a segunda-feira."}
-            {" "}O dia em andamento nunca entra. Cada linha pequena usa a própria escala, então compare pelo valor em R$.
+            {unidade === "semana" && "Só entram semanas inteiras, de segunda a domingo, e a data marcada é a segunda-feira. "}
+            O dia em andamento nunca entra.
             {montado.foraDoHistorico.length > 0 && ` ${montado.foraDoHistorico.join(", ").replace(/^./, (c) => c.toUpperCase())} tem só parte do mês e ficou de fora: veja por semana.`}
           </div>
         </>
