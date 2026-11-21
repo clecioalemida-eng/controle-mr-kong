@@ -10,6 +10,7 @@ import { podeVer } from "../lib/permissoes";
 import Dashboard from "./DashboardModulo";
 import ComercialLinhaTempo, { ultimoDiaFechado } from "./ComercialLinhaTempo";
 import { MancheteMes, TresPerguntas, CurvaDoMes, LinhasQuePuxaram, Leitura, NoitesDaSemana, montarFrases } from "./ComercialMes";
+import { VendaDosItens, desmontarItens } from "./ComercialItens";
 
 // ---------------------------------------------------------------------------
 // Módulo Comercial — Relatório do dia
@@ -18,7 +19,7 @@ import { MancheteMes, TresPerguntas, CurvaDoMes, LinhasQuePuxaram, Leitura, Noit
 // relatório no grupo: vendas do dia, mês atual × mesmo período do mês
 // passado, meta, e o checklist do dia (pendências e não conformidades).
 // O botão "Copiar relatório" monta o texto pronto para o WhatsApp.
-// Painel comercial (abaixo das vendas): 3 meses, linhas, hambúrgueres,
+// Painel comercial (abaixo das vendas): 3 meses, linhas, venda de cada item,
 // altas/quedas e previsão do mês — ver PainelComercial.
 //
 // Vendas: função relatorio_vendas (migrações 126/127). Checklist: as mesmas
@@ -229,7 +230,7 @@ function VendasDoDia({ dia, vendas, erro, carregando }) {
 
 
 // ===========================================================================
-// Painel comercial — últimos 3 meses, linhas, hambúrgueres, altas e quedas,
+// Painel comercial — últimos 3 meses, linhas, venda de cada item, altas e quedas,
 // previsão do mês.
 //
 // Regra de comparação: sempre os MESMOS DIAS de cada mês (1 até o dia do
@@ -250,7 +251,6 @@ function diasDoMes(y, m0) { return new Date(y, m0 + 1, 0).getDate(); }
 function nomeMesCurto(m0) { const n = NOMES_MES[((m0 % 12) + 12) % 12]; return n.slice(0, 3); }
 function nomeMesLongo(m0) { const n = NOMES_MES[((m0 % 12) + 12) % 12]; return n[0].toUpperCase() + n.slice(1); }
 function pctTxt(p) { if (p == null) return "novo"; const r = Math.round(p); return r === 0 ? "0%" : `${r > 0 ? "+" : "−"}${Math.abs(r)}%`; }
-function corVar(p) { return p == null ? "#2F6FA3" : p >= 0 ? "#2F8F5B" : "#C4432B"; }
 function brlK(v) {
   const n = Number(v) || 0;
   if (Math.abs(n) >= 1000) return `R$ ${(n / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} mil`;
@@ -283,12 +283,13 @@ async function carregarPainel(dia) {
   const inicioHist = [somarDiasStr(dia, -63), J[2].ini, reC.ini].sort()[0];
   const a1 = { p_inicio: atC.ini, p_fim: atC.fim, p_inicio_ant: anC.ini, p_fim_ant: anC.fim };
   const a2 = { p_inicio: anC.ini, p_fim: anC.fim, p_inicio_ant: reC.ini, p_fim_ant: reC.fim };
-  const [rDias, rP1, rP2, rL1, rL2] = await Promise.all([
+  const [rDias, rP1, rP2, rL1, rL2, rItens] = await Promise.all([
     supabase.from("vendas_diarias").select("dia, faturamento_bruto").gte("dia", inicioHist).lte("dia", at.fimMes).order("dia"),
     supabase.rpc("desempenho_produtos", a1),
     supabase.rpc("desempenho_produtos", a2),
     supabase.rpc("desempenho_linhas", a1),
     supabase.rpc("desempenho_linhas", a2),
+    supabase.rpc("venda_por_item", a1),
   ]);
   const erroDias = rDias.error ? rDias.error.message : "";
   const fProd = rP1.error || rP2.error || rL1.error || rL2.error;
@@ -385,7 +386,20 @@ async function carregarPainel(dia) {
   const semana = porSemana.map((l) => ({ noites: l.filter((v) => v > 0).length, media: l.length ? l.reduce((a, b) => a + b, 0) / l.length : 0 }));
   const vendaPorDia = Object.fromEntries(porDia);
 
-  return { meses, janelasComparacao: JC, fechados, diasQueFaltam, produtos, linhas, detalhado, semana, vendaPorDia, erroDias, erroProd: fProd ? erroProd : "" };
+  // Venda de cada item: soma o que saiu sozinho com o que saiu em combo
+  // (migração 193). Se a função ainda não existir, só esse bloco avisa.
+  let itens = null, erroItens = "";
+  if (rItens.error) {
+    erroItens = /does not exist|schema cache|Could not find/i.test(rItens.error.message || "")
+      ? "Falta rodar a migração 193 (venda por item) no Supabase."
+      : /sem_acesso|permission|denied/i.test(rItens.error.message || "")
+        ? "Seu cargo não vê a venda por item."
+        : rItens.error.message;
+  } else {
+    itens = desmontarItens(rItens.data || [], produtos);
+  }
+
+  return { meses, janelasComparacao: JC, fechados, diasQueFaltam, produtos, linhas, detalhado, semana, vendaPorDia, itens, erroItens, erroDias, erroProd: fProd ? erroProd : "" };
 }
 
 // Previsão = já vendido (número do topo, conferido ao vivo) + média por dia da semana dos dias que faltam
@@ -396,24 +410,6 @@ function calcularPrevisao(dados, mesTotal) {
   const resto = dados.diasQueFaltam.reduce((s, d) => s + d.media, 0);
   const ritmo = at.ate ? (jaVendido / at.ate) * at.diasMes : 0;
   return { jaVendido, resto, previsao: jaVendido + resto, ritmo, diasRestantes: dados.diasQueFaltam.length };
-}
-
-function Barra({ valor, max, cor = "#22231F", fundo = "#EFE9DA", altura = 8 }) {
-  const w = max > 0 ? Math.max(2, Math.round((valor / max) * 100)) : 0;
-  return (
-    <div style={{ height: altura, borderRadius: 99, background: fundo, overflow: "hidden" }}>
-      <div style={{ width: `${w}%`, height: "100%", background: cor, borderRadius: 99 }} />
-    </div>
-  );
-}
-
-function Chip({ p, sufixo }) {
-  return (
-    <span style={{ fontSize: 11, fontWeight: 700, color: corVar(p), background: p == null ? "#E6EFF6" : p >= 0 ? "#E4F2E9" : "#F8E3DE",
-      borderRadius: 99, padding: "2px 7px", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
-      {pctTxt(p)}{sufixo ? ` ${sufixo}` : ""}
-    </span>
-  );
 }
 
 function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
@@ -444,24 +440,13 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
     ? "mês inteiro" : `dias 1 a ${janelasComparacao[0].ate}`;
   const vs = (a, b) => (b ? ((a - b) / b) * 100 : null);
 
-  // ---- hambúrgueres (linha com "hamb"; se ninguém tiver linha, usa os mais vendidos)
-  const ehHamb = (p) => /hamb|burg|lanche/i.test(p.linha || "");
-  let hamb = produtos.filter(ehHamb);
-  const hambPorLinha = hamb.length > 0;
-  if (!hambPorLinha) hamb = produtos;
-  hamb = [...hamb].sort((a, b) => b.q[0] - a.q[0] || b.v[0] - a.v[0]).filter((p) => p.q[0] > 0 || p.q[1] > 0).slice(0, 10);
-  const maxQ = Math.max(...hamb.map((p) => Math.max(...p.q)), 1);
-
   // ---- altas e quedas (R$ vs mesmo período do mês passado)
   const comDelta = produtos.map((p) => ({ ...p, delta: p.v[0] - p.v[1], pct: vs(p.v[0], p.v[1]) }));
   const altas = comDelta.filter((p) => p.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, QUANTOS);
   const quedas = comDelta.filter((p) => p.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, QUANTOS);
   const tresSeguidos = comDelta.filter((p) => p.v[2] > p.v[1] && p.v[1] > p.v[0] && p.v[2] > 0).sort((a, b) => (a.v[0] - a.v[2]) - (b.v[0] - b.v[2])).slice(0, 5);
 
-  const cel = { fontSize: 12, fontVariantNumeric: "tabular-nums", textAlign: "right", whiteSpace: "nowrap" };
-  const cab = { ...cel, fontSize: 10.5, color: "#8A8778", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 };
   const nome = { fontSize: 12.5, color: "#22231F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 };
-  const grade = "repeat(3, minmax(0,1fr)) 56px";
 
   // ---- leitura didática do mês (desenho em ComercialMes.jsx)
   const nomeAt = nomeMesLongo(at.m0);
@@ -534,28 +519,8 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
               escondido, que existe só para a previsão do relatório. */}
           {!oculto && <ComercialLinhaTempo />}
 
-          {/* ---------------- Hambúrgueres ---------------- */}
-          <div style={cardStyle}>
-            <div style={{ ...sectionLabel, marginBottom: 4 }}>{hambPorLinha ? "Hambúrgueres mais vendidos" : "Produtos mais vendidos"} · unidades · {faixaC}</div>
-            {!hambPorLinha && (
-              <div style={{ fontSize: 11, color: "#8A6A0F", marginBottom: 6 }}>Nenhum prato tem linha "Hambúrguer" ainda — mostrando todos. Defina a linha no Dashboard.</div>
-            )}
-            <div style={{ display: "grid", gridTemplateColumns: grade, gap: "0 6px", alignItems: "center" }}>
-              <span style={cab}>{rotuloC(2)}</span><span style={cab}>{rotuloC(1)}</span><span style={cab}>{rotuloC(0)}</span><span style={cab}>vs {rotuloC(1)}</span>
-            </div>
-            {hamb.map((p, i) => (
-              <div key={p.produto} style={{ padding: "7px 0", borderTop: "1px solid #EFE9DA" }}>
-                <div style={{ ...nome, marginBottom: 2 }} title={p.produto}><b style={{ color: "#8A8778", fontWeight: 700, marginRight: 6 }}>{i + 1}</b>{p.produto}</div>
-                <div style={{ display: "grid", gridTemplateColumns: grade, gap: "0 6px", alignItems: "center" }}>
-                  <span style={{ ...cel, color: "#8A8778" }}>{p.q[2]}</span>
-                  <span style={{ ...cel, color: "#5C5A4E" }}>{p.q[1]}</span>
-                  <span style={{ ...cel, fontWeight: 700 }}>{p.q[0]}</span>
-                  <span style={cel}><Chip p={p.q[1] ? vs(p.q[0], p.q[1]) : null} /></span>
-                </div>
-                <div style={{ marginTop: 4 }}><Barra valor={p.q[0]} max={maxQ} altura={4} cor="#22231F" /></div>
-              </div>
-            ))}
-          </div>
+          {/* ---------------- Venda de cada item (ComercialItens.jsx) ---------------- */}
+          <VendaDosItens itens={dados.itens} erro={dados.erroItens} rotuloAt={rotuloC(0)} rotuloAn={rotuloC(1)} faixa={faixaC} />
 
           {/* ---------------- Altas e quedas ---------------- */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
