@@ -35,6 +35,9 @@ export default function ArrumarCadastro({ irPara }) {
   const [erro, setErro] = useState("");
   const [aviso, setAviso] = useState("");
   const [ocupado, setOcupado] = useState(null);
+  // A resposta aparece NA LINHA clicada: o aviso só no topo ficava fora da
+  // tela de quem estava no meio da lista, e parecia que nada acontecia.
+  const [naLinha, setNaLinha] = useState(null); // { id, erro?, ok? }
 
   const carregar = useCallback(async () => {
     const { data, error } = await supabase.rpc("cadastro_insumos_raio");
@@ -49,16 +52,30 @@ export default function ArrumarCadastro({ irPara }) {
 
   const decidir = async (chave, decisao) => {
     const { error } = await supabase.from("cadastro_decisoes").upsert({ chave, decisao }, { onConflict: "chave" });
-    if (error) { setErro(error.message); return false; }
+    if (error) throw new Error(/relation .* does not exist|schema cache/i.test(error.message || "") ? "Falta rodar a migração 195 no Supabase." : error.message);
     return true;
   };
   const agir = async (id, fn) => {
-    setOcupado(id); setErro(""); setAviso("");
-    try { await fn(); } catch (e) { setErro(e.message || String(e)); }
-    setOcupado(null);
+    setOcupado(id); setErro(""); setAviso(""); setNaLinha(null);
+    try {
+      const ok = await fn();
+      if (ok === false) throw new Error("Não deu para gravar a decisão.");
+    } catch (e) {
+      const texto = e?.message || e?.details || String(e);
+      setNaLinha({ id, erro: texto });
+      setOcupado(null);
+      return;
+    }
     esquecerInsumos();
     await carregar();
+    setOcupado(null);
   };
+  const Resposta = ({ id }) => (naLinha && naLinha.id === id && naLinha.erro ? (
+    <div style={{ width: "100%", fontSize: 12, color: "#A32D2D", background: "#FCEBEB", border: "1px solid #F7C1C1", borderRadius: 8, padding: "6px 9px", marginTop: 6 }}>
+      Não foi: {naLinha.erro}
+    </div>
+  ) : null);
+  const rotulo = (id, texto, fazendo) => (ocupado === id ? fazendo : texto);
 
   const grupos = useMemo(() => {
     if (!dados) return null;
@@ -136,18 +153,20 @@ export default function ArrumarCadastro({ irPara }) {
               </div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {[[p.a, p.b], [p.b, p.a]].map(([origem, destino], k) => (
-                  <button key={k} disabled={unidDif || ocupado === p.chave} style={k === 0 && destino.fichas > 0 ? btnEscuro : btnClaro}
+                  <button key={k} disabled={unidDif || !!ocupado} title={unidDif ? "Unidades diferentes: não dá para juntar daqui" : ""}
+                    style={estilo(k === 0 && destino.fichas > 0 ? btnEscuro : btnClaro, unidDif || !!ocupado)}
                     onClick={() => agir(p.chave, async () => {
                       const { error } = await supabase.rpc("juntar_e_lembrar", { p_origem: origem.id, p_destino: destino.id });
                       if (error) throw error;
                       setAviso(`"${origem.nome}" foi juntado em "${destino.nome}".`);
                     })}>
-                    Ficar com "{destino.nome}"
+                    {ocupado === p.chave ? "Juntando…" : `Ficar com "${destino.nome}"`}
                   </button>
                 ))}
-                <button style={btnClaro} disabled={ocupado === p.chave}
+                <button style={estilo(btnClaro, !!ocupado)} disabled={!!ocupado}
                   onClick={() => agir(p.chave, () => decidir(p.chave, "diferentes"))}>Não são</button>
               </div>
+              <Resposta id={p.chave} />
             </div>
           );
         })}
@@ -167,10 +186,13 @@ export default function ArrumarCadastro({ irPara }) {
               <Nome i={i} />
               <div style={{ fontSize: 11, color: CINZA }}>comprado {i.compras}× · última {dataBR(i.ultima_compra)}{i.ultimo_preco ? ` · ${brl(i.ultimo_preco)}/${i.unidade}` : ""}</div>
             </div>
-            <EscolherTipo compacto valor={i.tipo} onMudar={(t) => agir(i.id, async () => {
-              const { error } = await supabase.from("insumos").update({ tipo: t }).eq("id", i.id);
-              if (error) throw error;
-            })} />
+            {ocupado === i.id ? <span style={{ fontSize: 12, color: CINZA }}>Gravando…</span> : (
+              <EscolherTipo compacto valor={i.tipo} onMudar={(t) => !ocupado && agir(i.id, async () => {
+                const { error } = await supabase.from("insumos").update({ tipo: t }).eq("id", i.id);
+                if (error) throw error;
+              })} />
+            )}
+            <Resposta id={i.id} />
           </div>
         ))}
         {g.paraOnde.length > 40 && <div style={{ ...explica, marginTop: 8 }}>Mostrando 40 de {g.paraOnde.length}.</div>}
@@ -194,11 +216,12 @@ export default function ArrumarCadastro({ irPara }) {
         {g.soltos.slice(0, 40).map((i) => (
           <div key={i.id} style={linha}>
             <div style={{ flex: 1, minWidth: 180 }}><Nome i={i} /></div>
-            <button style={btnClaro} disabled={ocupado === i.id} onClick={() => agir(i.id, async () => {
+            <button style={estilo(btnClaro, !!ocupado)} disabled={!!ocupado} onClick={() => agir(i.id, async () => {
               const { error } = await supabase.from("insumos").delete().eq("id", i.id);
-              if (error) throw new Error(`Não deu para excluir "${i.nome}": ${error.message}`);
-            })}>Excluir</button>
-            <button style={btnClaro} disabled={ocupado === i.id} onClick={() => agir(i.id, () => decidir(`solto:${i.id}`, "manter"))}>Manter</button>
+              if (error) throw new Error(error.message);
+            })}>{rotulo(i.id, "Excluir", "Aguarde…")}</button>
+            <button style={estilo(btnClaro, !!ocupado)} disabled={!!ocupado} onClick={() => agir(i.id, () => decidir(`solto:${i.id}`, "manter"))}>Manter</button>
+            <Resposta id={i.id} />
           </div>
         ))}
         {g.soltos.length > 40 && <div style={{ ...explica, marginTop: 8 }}>Mostrando 40 de {g.soltos.length}.</div>}
@@ -213,7 +236,7 @@ export default function ArrumarCadastro({ irPara }) {
         </div>
         {g.naoInsumo.length === 0 && <Vazio texto="Nada para conferir." />}
         {g.naoInsumo.slice(0, 40).map((n) => (
-          <LinhaNaoInsumo key={n.nome} n={n} insumos={g.ins} ocupado={ocupado === n.nome}
+          <LinhaNaoInsumo key={n.nome} n={n} insumos={g.ins} ocupado={!!ocupado} resposta={<Resposta id={n.nome} />}
             onLigar={(insumo, criarTipo) => agir(n.nome, async () => {
               let alvo = insumo;
               if (!alvo) {
@@ -234,7 +257,7 @@ export default function ArrumarCadastro({ irPara }) {
   );
 }
 
-function LinhaNaoInsumo({ n, insumos, ocupado, onLigar, onDespesa }) {
+function LinhaNaoInsumo({ n, insumos, ocupado, onLigar, onDespesa, resposta }) {
   const [aberto, setAberto] = useState(false);
   const [busca, setBusca] = useState("");
   const [tipo, setTipo] = useState("");
@@ -254,9 +277,10 @@ function LinhaNaoInsumo({ n, insumos, ocupado, onLigar, onDespesa }) {
           <b style={{ fontWeight: 700, fontSize: 13 }}>{n.nome}</b>
           <div style={{ fontSize: 11, color: CINZA }}>{n.vezes}× · última {dataBR(n.ultima)}{n.centro ? ` · ${n.centro}` : ""}</div>
         </div>
-        <button style={btnEscuro} disabled={ocupado} onClick={() => setAberto(!aberto)}>Ligar a um produto</button>
-        <button style={btnClaro} disabled={ocupado} onClick={onDespesa}>É despesa mesmo</button>
+        <button style={estilo(btnEscuro, ocupado)} disabled={ocupado} onClick={() => setAberto(!aberto)}>Ligar a um produto</button>
+        <button style={estilo(btnClaro, ocupado)} disabled={ocupado} onClick={onDespesa}>É despesa mesmo</button>
       </div>
+      {resposta}
       {aberto && (
         <div style={{ marginTop: 8, background: "#FBF8F1", border: "1px solid #EFE9DA", borderRadius: 9, padding: "8px 10px" }}>
           <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Procurar produto cadastrado"
@@ -310,3 +334,5 @@ const aviso_ = { display: "flex", gap: 8, background: "#FBF3D9", border: "1px so
 const btnBase = { borderRadius: 8, padding: "6px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" };
 const btnEscuro = { ...btnBase, background: ESCURO, color: "#F3EFE3", border: "1px solid #22231F" };
 const btnClaro = { ...btnBase, background: "#FFFFFF", color: ESCURO, border: "1px solid #E8E2D2" };
+// botão travado tem que PARECER travado
+function estilo(base, travado) { return travado ? { ...base, opacity: 0.4, cursor: "not-allowed" } : base; }
