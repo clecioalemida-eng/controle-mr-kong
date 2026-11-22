@@ -82,7 +82,9 @@ export default function ArrumarCadastro({ irPara }) {
     const dec = dados.decisoes || {};
     const ins = dados.insumos || [];
     const emUso = (i) => i.fichas > 0 || i.composto;
-    const semFicha = ins.filter((i) => i.compras > 0 && !emUso(i) && i.tipo !== "uso");
+    // uso e limpeza, utensílio e imobilizado não vão em ficha: saem da fila
+    const foraDeFicha = (i) => ["uso", "utensilio", "imobilizado"].includes(i.tipo);
+    const semFicha = ins.filter((i) => i.compras > 0 && !emUso(i) && !foraDeFicha(i));
     const nuncaComprados = ins.filter((i) => i.compras === 0 && emUso(i));
     const soltos = ins.filter((i) => i.compras === 0 && !emUso(i) && !dec[`solto:${i.id}`]);
     const chavePar = (a, b) => `par:${[a.id, b.id].sort().join(":")}`;
@@ -107,9 +109,9 @@ export default function ArrumarCadastro({ irPara }) {
     pares.sort((x, y) => y.nota - x.nota);
 
     const paraOnde = semFicha.filter((i) => !i.tipo);
-    const faltaFicha = semFicha.filter((i) => i.tipo && i.tipo !== "uso");
+    const faltaFicha = semFicha.filter((i) => i.tipo);
     const naoInsumo = (dados.nao_insumo || []).filter((n) => !dec[`nao:${chaveNome(n.nome)}`]);
-    const completos = ins.filter((i) => (i.compras > 0 && emUso(i)) || i.tipo === "uso").length;
+    const completos = ins.filter((i) => (i.compras > 0 && emUso(i)) || foraDeFicha(i)).length;
     return { ins, semFicha, nuncaComprados, soltos, pares, paraOnde, faltaFicha, naoInsumo, completos };
   }, [dados]);
 
@@ -122,7 +124,7 @@ export default function ArrumarCadastro({ irPara }) {
       <div style={card}>
         <div style={titulo}>Cada produto existe uma vez, e todo produto tem para onde ir</div>
         <div style={explica}>
-          {g.completos} de {g.ins.length} insumos estão completos (comprados e usados em ficha, ou marcados como uso e limpeza).
+          {g.completos} de {g.ins.length} insumos estão completos (comprados e usados em ficha, ou marcados como uso e limpeza, utensílio ou imobilizado).
           A fila abaixo some conforme o cadastro fica limpo.
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, marginTop: 10 }}>
@@ -177,20 +179,31 @@ export default function ArrumarCadastro({ irPara }) {
       <div style={card}>
         <div style={titulo}>Comprado sem ficha: para onde ele vai?</div>
         <div style={explica}>
-          Uso e limpeza sai da fila. Ingrediente, revenda e embalagem precisam entrar numa ficha (revenda: ficha de 1 para 1 com o produto vendido).
+          Uso e limpeza, utensílio e imobilizado saem da fila. Utensílio e imobilizado viram despesa: a próxima nota com esse nome não entra no estoque.
+          Ingrediente, revenda e embalagem precisam entrar numa ficha (revenda: ficha de 1 para 1 com o produto vendido).
         </div>
         {g.paraOnde.length === 0 && <Vazio texto="Todos os comprados sem ficha já têm tipo." />}
         {g.paraOnde.slice(0, 40).map((i) => (
           <div key={i.id} style={linha}>
             <div style={{ flex: 1, minWidth: 180 }}>
               <Nome i={i} />
-              <div style={{ fontSize: 11, color: CINZA }}>comprado {i.compras}× · última {dataBR(i.ultima_compra)}{i.ultimo_preco ? ` · ${brl(i.ultimo_preco)}/${i.unidade}` : ""}</div>
+              <div style={{ fontSize: 11, color: CINZA }}>última {dataBR(i.ultima_compra)}{i.ultimo_preco ? ` · ${brl(i.ultimo_preco)}/${i.unidade}` : ""}</div>
             </div>
             {ocupado === i.id ? <span style={{ fontSize: 12, color: CINZA }}>Gravando…</span> : (
-              <EscolherTipo compacto valor={i.tipo} onMudar={(t) => !ocupado && agir(i.id, async () => {
-                const { error } = await supabase.from("insumos").update({ tipo: t }).eq("id", i.id);
-                if (error) throw error;
-              })} />
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <EscolherTipo compacto valor={i.tipo} onMudar={(t) => !ocupado && agir(i.id, async () => {
+                  const { error } = await supabase.from("insumos").update({ tipo: t }).eq("id", i.id);
+                  if (error) throw error;
+                })} />
+                {[["utensilios", "Utensílio", "espátula, pegador, panela: despesa"], ["imobilizado", "Imobilizado", "equipamento durável: despesa e depreciação"]].map(([centro, rot, ajuda]) => (
+                  <button key={centro} title={ajuda} disabled={!!ocupado} style={estilo(btnTipoDespesa, !!ocupado)}
+                    onClick={() => agir(i.id, async () => {
+                      const { error } = await supabase.rpc("marcar_como_despesa", { p_insumo: i.id, p_centro: centro });
+                      if (error) throw new Error(/does not exist|schema cache|Could not find/i.test(error.message || "") ? "Falta rodar a migração 196 no Supabase." : error.message);
+                      setAviso(`"${i.nome}" virou ${rot.toLowerCase()}: as próximas notas com esse nome entram como despesa.`);
+                    })}>{rot}</button>
+                ))}
+              </div>
             )}
             <Resposta id={i.id} />
           </div>
@@ -334,5 +347,6 @@ const aviso_ = { display: "flex", gap: 8, background: "#FBF3D9", border: "1px so
 const btnBase = { borderRadius: 8, padding: "6px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" };
 const btnEscuro = { ...btnBase, background: ESCURO, color: "#F3EFE3", border: "1px solid #22231F" };
 const btnClaro = { ...btnBase, background: "#FFFFFF", color: ESCURO, border: "1px solid #E8E2D2" };
+const btnTipoDespesa = { border: "1px dashed #C9C2AE", borderRadius: 999, padding: "5px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", background: "#FBF8F1", color: "#55534A" };
 // botão travado tem que PARECER travado
 function estilo(base, travado) { return travado ? { ...base, opacity: 0.4, cursor: "not-allowed" } : base; }
