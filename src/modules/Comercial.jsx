@@ -11,6 +11,8 @@ import Dashboard from "./DashboardModulo";
 import ComercialLinhaTempo, { ultimoDiaFechado } from "./ComercialLinhaTempo";
 import { MancheteMes, TresPerguntas, CurvaDoMes, LinhasQuePuxaram, Leitura, NoitesDaSemana, montarFrases, Comparando, faixaDatas } from "./ComercialMes";
 import { VendaDosItens, desmontarItens } from "./ComercialItens";
+// Aba Dia: o que saiu no dia, em números (combos, artesanal, tradicional…)
+import ComercialDiaItens from "./ComercialDiaItens";
 
 // ---------------------------------------------------------------------------
 // Módulo Comercial — Relatório do dia
@@ -840,7 +842,12 @@ export default function Comercial({ onVoltar, perfil, permissoes }) {
           {vendasSemAcesso ? (
             <div style={avisoBloqueio}><AlertTriangle size={16} /> Seu cargo não vê as vendas. O admin libera em Cargos → Comercial.</div>
           ) : (
-            <VendasDoDia dia={dia} vendas={vendas} erro={vendasErro} carregando={carregandoVendas} />
+            <>
+              <VendasDoDia dia={dia} vendas={vendas} erro={vendasErro} carregando={carregandoVendas} />
+              <div style={{ marginTop: 10 }}>
+                <ComercialDiaItens dia={dia} pedidos={vendas && !carregandoVendas ? vendas.dia_pedidos : null} />
+              </div>
+            </>
           )}
         </div>
 
