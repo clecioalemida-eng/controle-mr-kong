@@ -3,10 +3,12 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   Loader2, AlertTriangle, RefreshCw, Plus, Trash2, Check,
   Calculator, Package, Tag, Settings, List, Lock, Pencil, Power, Eye, Printer,
-  ChevronDown, ChevronRight,
+  ChevronDown, ChevronRight, BarChart3,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { podeEditar } from "../lib/permissoes";
+// Aba "Despesas": para onde vai o dinheiro, por mês, 3 ou 6 meses.
+import DREDespesas from "./DREDespesas";
 
 // ---------------------------------------------------------------------
 // DRE — Demonstrativo de Resultado
@@ -47,6 +49,7 @@ async function abrirNota(caminho) {
 
 const ABAS = [
   { chave: "dre",         label: "Demonstrativo", icone: Calculator },
+  { chave: "despesas",    label: "Despesas",      icone: BarChart3 },
   { chave: "classificar", label: "Classificar",   icone: Tag },
   { chave: "lancamentos", label: "Lançamentos",   icone: Plus },
   { chave: "imobilizado", label: "Imobilizado",   icone: Package },
@@ -135,6 +138,7 @@ export default function DRE({ permissoes }) {
       </div>
 
       {aba === "dre" && <Demonstrativo irPara={setAba} />}
+      {aba === "despesas" && <DREDespesas irPara={setAba} />}
       {aba === "classificar" && <Classificar editar={editar} />}
       {aba === "lancamentos" && <Lancamentos editar={editar} />}
       {aba === "imobilizado" && <Imobilizado editar={editar} />}
