@@ -7,6 +7,8 @@ import Estoque from "./Estoque";
 import FichasTecnicas from "./FichasTecnicas";
 import Insumos from "./Insumos";
 import CurvaABC from "./CurvaABC";
+import ArrumarCadastro from "./ArrumarCadastro";
+import HistoricoPrecos from "./HistoricoPrecos";
 // ---------------------------------------------------------------------------
 // Supply Chain — a cadeia de suprimento inteira num lugar só.
 //
@@ -23,6 +25,10 @@ const ABAS = [
   { chave: "notas", label: "Notas" },
   { chave: "compras", label: "Compras" },
   { chave: "insumos", label: "Insumos" },
+  // Arrumar o cadastro e Preços (migração 195) usam permissões que já
+  // existem: quem mexe em insumo arruma o cadastro; quem compra vê preço.
+  { chave: "arrumar", label: "Arrumar o cadastro", permissao: "insumos" },
+  { chave: "precos", label: "Preços", permissao: "compras" },
   { chave: "fichas", label: "Fichas técnicas" },
   { chave: "curvaabc", label: "Curva ABC" },
   // Usa a permissão de Insumos de propósito: quem já consulta insumo
@@ -62,6 +68,8 @@ export default function SupplyChain({ onVoltar, permissoes, abaInicial }) {
             {aba === "insumos" && <Insumos permissoes={permissoes} />}
             {aba === "fichas" && <FichasTecnicas />}
             {aba === "curvaabc" && <CurvaABC />}
+            {aba === "arrumar" && <ArrumarCadastro irPara={setAba} />}
+            {aba === "precos" && <HistoricoPrecos />}
             {aba === "contagens" && <EstoqueContado />}
           </>
         )}

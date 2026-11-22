@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ChevronLeft, AlertTriangle, Truck, SlidersHorizontal, Search, RefreshCw, Loader2, Pencil, Check, Trash2 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+import { useParecidos, AvisoParecidos, EscolherTipo, esquecerInsumos } from "./AvisoParecidos";
 
 function fmt(v, unidade) {
   const n = (v ?? 0).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
@@ -74,11 +75,16 @@ export default function Estoque() {
     await supabase.from("configuracoes").upsert({ chave: "dias_estoque_compras", valor: String(valor) }, { onConflict: "chave" });
   };
 
+  // Antes de criar: tipo obrigatório e conferência dos parecidos.
+  const parecidosNovo = useParecidos(novoInsumo.nome);
   const criarInsumo = async () => {
     const nome = novoInsumo.nome.trim();
     if (!nome) return;
-    const { error } = await supabase.from("insumos").insert({ nome, unidade: novoInsumo.unidade });
+    if (!novoInsumo.tipo) { setErro("Escolha o tipo do insumo novo."); return; }
+    if (parecidosNovo.length && !novoInsumo.outro) { setErro("Confira os produtos parecidos antes de criar um novo."); return; }
+    const { error } = await supabase.from("insumos").insert({ nome, unidade: novoInsumo.unidade, tipo: novoInsumo.tipo });
     if (error) { setErro(error.message); return; }
+    esquecerInsumos();
     setNovoInsumo({ nome: "", unidade: "un" });
     setCriandoInsumo(false);
     carregar();
@@ -207,8 +213,8 @@ export default function Estoque() {
       )}
 
       {criandoInsumo ? (
-        <div style={{ ...cardStyle, border: "1px dashed #37A0E5", marginBottom: 14, display: "flex", gap: 8, alignItems: "center" }}>
-          <input value={novoInsumo.nome} onChange={(e) => setNovoInsumo((f) => ({ ...f, nome: e.target.value }))} autoFocus
+        <div style={{ ...cardStyle, border: "1px dashed #37A0E5", marginBottom: 14, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input value={novoInsumo.nome} onChange={(e) => setNovoInsumo((f) => ({ ...f, nome: e.target.value, outro: false }))} autoFocus
             onKeyDown={(e) => e.key === "Enter" && criarInsumo()}
             placeholder="Nome do insumo" style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 13 }} />
           <select value={novoInsumo.unidade} onChange={(e) => setNovoInsumo((f) => ({ ...f, unidade: e.target.value }))}
@@ -216,6 +222,10 @@ export default function Estoque() {
             {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
           </select>
           <button onClick={criarInsumo} style={{ ...btnSecondary, fontSize: 12, padding: "6px 12px" }}>Criar</button>
+          <div style={{ width: "100%" }}><EscolherTipo valor={novoInsumo.tipo} onMudar={(t) => setNovoInsumo((f) => ({ ...f, tipo: t }))} /></div>
+          <AvisoParecidos lista={parecidosNovo} rotuloUsar="Já é este" confirmado={!!novoInsumo.outro}
+            onConfirmar={() => setNovoInsumo((f) => ({ ...f, outro: true }))}
+            onUsar={(i) => { setErro(`"${i.nome}" já está cadastrado: use ele em vez de criar outro.`); setNovoInsumo({ nome: "", unidade: "un" }); setCriandoInsumo(false); }} />
         </div>
       ) : (
         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
@@ -483,6 +493,9 @@ function CompraManual({ onVoltar }) {
   const [fornecedorNome, setFornecedorNome] = useState("");
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState("");
+  // Produto novo: tipo obrigatório e "é outro produto" quando há parecidos.
+  const [tipoNovo, setTipoNovo] = useState("");
+  const [outroProduto, setOutroProduto] = useState(false);
 
   useEffect(() => {
     supabase.from("insumos").select("id, nome, unidade, composto").order("nome").then(({ data }) => setInsumos(data || []));
@@ -490,6 +503,7 @@ function CompraManual({ onVoltar }) {
   }, []);
 
   const insumoSelecionado = insumos.find((i) => i.nome.toLowerCase() === itemNome.trim().toLowerCase());
+  const parecidosItem = useParecidos(insumoSelecionado ? "" : itemNome);
   useEffect(() => {
     if (insumoSelecionado) setItemUnidade(insumoSelecionado.unidade);
   }, [insumoSelecionado?.id]);
@@ -515,11 +529,15 @@ function CompraManual({ onVoltar }) {
     setErro("");
     const { data: userData } = await supabase.auth.getUser();
 
-    // resolve o insumo — usa o já cadastrado (mesmo nome) ou cria um novo
+    // resolve o insumo — usa o já cadastrado (mesmo nome) ou cria um novo,
+    // mas só depois de conferir os parecidos e escolher o tipo.
     let insumo = insumoSelecionado;
     if (!insumo) {
-      const { data, error } = await supabase.from("insumos").insert({ nome, unidade: itemUnidade }).select().single();
+      if (parecidosItem.length && !outroProduto) { setErro("Esse nome parece um produto já cadastrado. Use um deles ou confirme que é outro produto."); setSalvando(false); return; }
+      if (!tipoNovo) { setErro("Produto novo: escolha o tipo (ingrediente, revenda, embalagem ou uso e limpeza)."); setSalvando(false); return; }
+      const { data, error } = await supabase.from("insumos").insert({ nome, unidade: itemUnidade, tipo: tipoNovo }).select().single();
       if (error) { setErro(error.message); setSalvando(false); return; }
+      esquecerInsumos();
       insumo = data;
     }
 
@@ -537,9 +555,9 @@ function CompraManual({ onVoltar }) {
     }).select().single();
     if (errMov) { setErro(errMov.message); setSalvando(false); return; }
 
-    if (!insumo.composto) {
-      await supabase.from("insumos").update({ custo_medio_atual: preco, atualizado_em: new Date().toISOString() }).eq("id", insumo.id);
-    }
+    // O custo do insumo NÃO é gravado aqui: o gatilho da compra (migração
+    // 152) faz isso respeitando a origem do custo de cada insumo. Gravar
+    // direto passava por cima de quem tem custo manual.
 
     // Toda compra vira registro em Contas a Pagar — pago ou a pagar, mas
     // sempre lá. Boleto entra pendente; pix/débito/crédito entra já pago.
@@ -578,13 +596,22 @@ function CompraManual({ onVoltar }) {
 
       <div style={{ ...cardStyle, marginBottom: 14 }}>
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 3 }}>Item</label>
-        <input list="lista-insumos-compra" value={itemNome} onChange={(e) => setItemNome(e.target.value)}
+        <input list="lista-insumos-compra" value={itemNome} onChange={(e) => { setItemNome(e.target.value); setOutroProduto(false); }}
           placeholder="Busca insumo já cadastrado, ou digite um nome novo" style={{ ...inputStyle, marginBottom: 8 }} />
         <datalist id="lista-insumos-compra">
           {insumos.map((i) => <option key={i.id} value={i.nome} />)}
         </datalist>
         {!insumoSelecionado && itemNome.trim() && (
-          <div style={{ fontSize: 11, color: "#185FA5", marginBottom: 8 }}>Esse insumo ainda não existe — vai ser criado ao salvar.</div>
+          <div style={{ marginBottom: 8 }}>
+            <AvisoParecidos lista={parecidosItem} confirmado={outroProduto} onConfirmar={() => setOutroProduto(true)}
+              onUsar={(i) => { setItemNome(i.nome); setOutroProduto(false); }} />
+            {(!parecidosItem.length || outroProduto) && (
+              <>
+                <div style={{ fontSize: 11, color: "#185FA5", marginBottom: 6 }}>Produto novo: vai ser cadastrado ao salvar. Qual o tipo dele?</div>
+                <EscolherTipo valor={tipoNovo} onMudar={setTipoNovo} compacto />
+              </>
+            )}
+          </div>
         )}
 
         <div style={{ border: "1px dashed #37A0E5", borderRadius: 8, padding: 10, marginBottom: 8 }}>

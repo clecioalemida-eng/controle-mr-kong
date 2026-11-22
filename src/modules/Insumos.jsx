@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { podeEditar } from "../lib/permissoes";
+import { useParecidos, AvisoParecidos, EscolherTipo, esquecerInsumos } from "./AvisoParecidos";
 
 // ---------------------------------------------------------------------
 // Insumos — cadastro central
@@ -790,23 +791,33 @@ function Limpeza({ aoMudar }) {
 // =====================================================================
 // Criar um insumo avulso
 // =====================================================================
+// Antes de criar, mostra os cadastrados parecidos (AvisoParecidos): o
+// duplicado nasce aqui quando ninguém olha. E todo insumo novo já nasce
+// com o tipo, para saber se ele precisa estar em ficha.
 function NovoInsumo({ aoCriar, setErro }) {
   const [aberto, setAberto] = useState(false);
-  const [form, setForm] = useState({ nome: "", unidade: "un", custo: "" });
+  const [form, setForm] = useState({ nome: "", unidade: "un", custo: "", tipo: "" });
   const [salvando, setSalvando] = useState(false);
+  const [outroProduto, setOutroProduto] = useState(false);
+  const lista = useParecidos(form.nome);
 
   const criar = async () => {
     const nome = form.nome.trim();
     if (!nome) { setErro("Dê um nome ao insumo."); return; }
+    if (!form.tipo) { setErro("Escolha o tipo: ingrediente, revenda, embalagem ou uso e limpeza."); return; }
+    if (lista.length && !outroProduto) { setErro("Confira os produtos parecidos antes de criar um novo."); return; }
     setSalvando(true);
     const { error } = await supabase.from("insumos").insert({
       nome,
       unidade: form.unidade,
       custo_medio_atual: numeroBR(form.custo) || 0,
+      tipo: form.tipo,
     });
     setSalvando(false);
     if (error) { setErro(error.message); return; }
-    setForm({ nome: "", unidade: "un", custo: "" });
+    esquecerInsumos();
+    setForm({ nome: "", unidade: "un", custo: "", tipo: "" });
+    setOutroProduto(false);
     setAberto(false);
     aoCriar();
   };
@@ -823,7 +834,7 @@ function NovoInsumo({ aoCriar, setErro }) {
   return (
     <div style={{ ...cardStyle, marginBottom: 14, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
       <input autoFocus value={form.nome} placeholder="Nome (ex.: Mozzarela)"
-        onChange={(e) => setForm({ ...form, nome: e.target.value })}
+        onChange={(e) => { setForm({ ...form, nome: e.target.value }); setOutroProduto(false); }}
         onKeyDown={(e) => e.key === "Enter" && criar()}
         style={{ ...inputStyle, flex: 1, minWidth: 160 }} />
       <select value={form.unidade} onChange={(e) => setForm({ ...form, unidade: e.target.value })}
@@ -838,6 +849,10 @@ function NovoInsumo({ aoCriar, setErro }) {
         {salvando ? "Criando…" : "Criar"}
       </button>
       <button onClick={() => setAberto(false)} style={linkBtn}>Cancelar</button>
+      <div style={{ width: "100%" }}><EscolherTipo valor={form.tipo} onMudar={(t) => setForm({ ...form, tipo: t })} /></div>
+      <AvisoParecidos lista={lista} rotuloUsar="Já é este"
+        confirmado={outroProduto} onConfirmar={() => setOutroProduto(true)}
+        onUsar={(i) => { setErro(`"${i.nome}" já está cadastrado: use ele em vez de criar outro.`); setForm({ nome: "", unidade: "un", custo: "", tipo: "" }); setAberto(false); }} />
     </div>
   );
 }

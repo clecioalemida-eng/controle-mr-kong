@@ -5,6 +5,7 @@ import {
   ChevronLeft, Upload, Loader2, AlertTriangle, Pencil, Trash2, Check, FileText, Eye, Search, X, ExternalLink, RotateCcw, Plus,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+import { useParecidos, AvisoParecidos, EscolherTipo, esquecerInsumos } from "./AvisoParecidos";
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
 // Para onde vai o item de nota que NÃO é insumo (migração 171).
 //
@@ -1994,13 +1995,15 @@ function Conferencia({ documento, onVoltar }) {
     await supabase.from("itens_documento_compra").update({ insumo_id: insumoId, ...limparNaoInsumo(itemId) }).eq("id", itemId);
     carregar();
   };
-  const criarEVincularInsumo = async (item) => {
+  const criarEVincularInsumo = async (item, tipo) => {
     const nome = novoInsumoNome.trim();
     if (!nome) return;
+    if (!tipo) { setErro("Produto novo: escolha o tipo (ingrediente, revenda, embalagem ou uso e limpeza)."); return; }
     setErro("");
     let { data: insumo, error } = await supabase.from("insumos")
-      .insert({ nome, unidade: novoInsumoUnidade, custo_medio_atual: item.preco_unitario })
+      .insert({ nome, unidade: novoInsumoUnidade, custo_medio_atual: item.preco_unitario, tipo })
       .select().single();
+    if (!error) esquecerInsumos();
 
     // 23505 = já existe insumo com esse nome. Isso não é erro do usuário:
     // ele quis dizer "este item é este insumo". Antes a tela devolvia
@@ -2474,15 +2477,10 @@ function Conferencia({ documento, onVoltar }) {
                   </div>
                 )}
                 {criarInsumoAberto === item.id && (
-                  <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderTop: "1px dashed #E8D48A", flexWrap: "wrap" }}>
-                    <input value={novoInsumoNome} onChange={(e) => setNovoInsumoNome(e.target.value)}
-                      style={{ flex: 1, minWidth: 100, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
-                    <select value={novoInsumoUnidade} onChange={(e) => setNovoInsumoUnidade(e.target.value)}
-                      style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }}>
-                      {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
-                    </select>
-                    <button onClick={() => criarEVincularInsumo(item)} style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px" }}>Salvar</button>
-                  </div>
+                  <CriarInsumoDaNota nome={novoInsumoNome} setNome={setNovoInsumoNome}
+                    unidade={novoInsumoUnidade} setUnidade={setNovoInsumoUnidade}
+                    onSalvar={(tipo) => criarEVincularInsumo(item, tipo)}
+                    onUsar={async (i) => { await vincularInsumo(item.id, i.id); setCriarInsumoAberto(null); setNovoInsumoNome(""); }} />
                 )}
                 {editandoId === item.id && (
                   <div style={{ padding: "10px", borderTop: "1px solid #E8E2D2", display: "grid", gap: 8 }}>
@@ -3199,21 +3197,53 @@ function CompraManual({ onVoltar, onCriada }) {
   );
 }
 
+// Criar insumo a partir de uma linha da nota. Mostra antes os cadastrados
+// parecidos ("Usar este" vincula a linha nele) e pede o tipo do produto.
+function CriarInsumoDaNota({ nome, setNome, unidade, setUnidade, onSalvar, onUsar }) {
+  const [tipo, setTipo] = useState("");
+  const [outroProduto, setOutroProduto] = useState(false);
+  const lista = useParecidos(nome);
+  const bloqueado = lista.length > 0 && !outroProduto;
+  return (
+    <div style={{ padding: "8px 10px", borderTop: "1px dashed #E8D48A" }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <input value={nome} onChange={(e) => { setNome(e.target.value); setOutroProduto(false); }}
+          style={{ flex: 1, minWidth: 100, padding: "5px 8px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }} />
+        <select value={unidade} onChange={(e) => setUnidade(e.target.value)}
+          style={{ padding: "5px 6px", borderRadius: 6, border: "1px solid #E8E2D2", fontSize: 12 }}>
+          {UNIDADES.map((u) => <option key={u} value={u}>{u}</option>)}
+        </select>
+        <button onClick={() => onSalvar(tipo)} disabled={bloqueado}
+          style={{ ...btnSecondary, fontSize: 12, padding: "5px 10px", opacity: bloqueado ? 0.5 : 1 }}>Salvar</button>
+      </div>
+      <AvisoParecidos lista={lista} rotuloUsar="Vincular neste" confirmado={outroProduto}
+        onConfirmar={() => setOutroProduto(true)} onUsar={onUsar} />
+      <div style={{ marginTop: 7 }}><EscolherTipo valor={tipo} onMudar={setTipo} compacto /></div>
+    </div>
+  );
+}
+
 // Cadastro rápido dentro da compra manual: aqui o preço vem da PRÓPRIA
 // compra, então não se pergunta custo — só nome e como se compra.
 function CadastroRapidoInsumo({ nomeInicial, onCriado, onCancelar }) {
   const [nome, setNome] = useState(nomeInicial);
   const [unidade, setUnidade] = useState("kg");
+  const [tipo, setTipo] = useState("");
+  const [outroProduto, setOutroProduto] = useState(false);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState("");
+  const lista = useParecidos(nome);
 
   const salvar = async () => {
     if (!nome.trim()) { setErro("Dê um nome ao insumo."); return; }
+    if (lista.length && !outroProduto) { setErro("Confira os produtos parecidos acima antes de cadastrar outro."); return; }
+    if (!tipo) { setErro("Escolha o tipo do insumo."); return; }
     setSalvando(true);
     setErro("");
     const { data, error } = await supabase.from("insumos")
-      .insert({ nome: nome.trim(), unidade, custo_medio_atual: 0 })
+      .insert({ nome: nome.trim(), unidade, custo_medio_atual: 0, tipo })
       .select().single();
+    if (!error) esquecerInsumos();
     setSalvando(false);
     if (error) {
       setErro(/duplicate key|23505/i.test(error.message)
@@ -3227,8 +3257,11 @@ function CadastroRapidoInsumo({ nomeInicial, onCriado, onCancelar }) {
   return (
     <div style={{ padding: 12, background: "#FCFAF3", borderTop: "1px dashed #DDD5BF" }}>
       <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 9 }}>Cadastrar insumo</div>
-      <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Nome do insumo"
+      <input value={nome} onChange={(e) => { setNome(e.target.value); setOutroProduto(false); }} placeholder="Nome do insumo"
         style={{ ...campoCM, marginBottom: 9 }} />
+      <AvisoParecidos lista={lista} confirmado={outroProduto} onConfirmar={() => setOutroProduto(true)}
+        onUsar={(i) => onCriado({ id: i.id, nome: i.nome, unidade: i.unidade })} />
+      <div style={{ marginBottom: 9 }}><EscolherTipo valor={tipo} onMudar={setTipo} /></div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
         <span style={{ fontSize: 12.5, color: "#8A8778" }}>Como você compra?</span>
         {[["kg", "Por peso (kg)"], ["l", "Por volume (l)"], ["un", "Por unidade"]].map(([v, rot]) => (
