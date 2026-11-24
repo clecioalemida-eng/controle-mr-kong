@@ -115,10 +115,12 @@ function agoraTexto() {
   return `${d.toLocaleDateString("pt-BR")} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-export default function DRE({ permissoes }) {
+export default function DRE({ permissoes, abaInicial, onAba }) {
   const editar = podeEditar(permissoes, "financeiro.dre");
   const admin = !!permissoes?.admin;
-  const [aba, setAba] = useState("dre");
+  // a sub-aba vai para o endereço (#financeiro/dre/despesas): recarregar volta nela
+  const [aba, setAbaInterna] = useState(() => (ABAS.some((a) => a.chave === abaInicial) ? abaInicial : "dre"));
+  const setAba = (a) => { setAbaInterna(a); if (onAba) onAba(a); };
 
   const soAdmin = ["config", "listas"];
   const abasVisiveis = ABAS.filter((a) => (soAdmin.includes(a.chave) ? admin : true));

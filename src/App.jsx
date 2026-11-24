@@ -81,6 +81,10 @@ export default function App() {
   const [abaPermissoes, setAbaPermissoes] = useState("cargos");
   const [sub, setSub] = useState(() => lerRota().sub);
   const [sub2, setSub2] = useState(() => lerRota().sub2);
+  // Enquanto a sessão é conferida, a tela começa em "login" por um
+  // instante. Sem esta trava, esse instante apagava a rota do endereço e,
+  // ao recarregar, a pessoa caía sempre na tela inicial.
+  const [rotaPronta, setRotaPronta] = useState(false);
   const [modulos, setModulos] = useState([]);
   const [carregandoModulos, setCarregandoModulos] = useState(false);
   const [totalPendentes, setTotalPendentes] = useState(0);
@@ -101,14 +105,16 @@ export default function App() {
     if (error || !data) {
       setPerfil(null);
       setTela("login");
+      setRotaPronta(true);
       return;
     }
     setPerfil(data);
-    if (data.status !== "aprovado") { setTela("aguardando"); return; }
+    if (data.status !== "aprovado") { setTela("aguardando"); setRotaPronta(true); return; }
     // Volta pra tela que estava na URL. A permissão ainda é conferida lá
     // embaixo, no roteamento — restaurar a rota não é autorizar nada.
     const rota = lerRota();
     setTela(rota.tela && rota.tela !== "login" ? rota.tela : "home");
+    setRotaPronta(true);
   }, []);
   useEffect(() => {
     if (sessao?.user?.id) {
@@ -117,6 +123,7 @@ export default function App() {
       setPerfil(null);
       setPermissoes(null);
       setTela("login");
+      setRotaPronta(true);
     }
     // Depende só do ID do usuário (não do objeto de sessão inteiro) —
     // assim, uma renovação automática de token (que troca o objeto de
@@ -156,9 +163,10 @@ export default function App() {
   // Mantém a URL alinhada com a tela. Em login/aguardando a rota é limpa,
   // pra ninguém guardar um link que só funciona deslogado.
   useEffect(() => {
+    if (!rotaPronta) return; // ainda restaurando a rota do endereço
     if (tela === "login" || tela === "aguardando") { escreverRota(null); return; }
     escreverRota(tela, tela === "home" ? null : sub, tela === "home" ? null : sub2);
-  }, [tela, sub, sub2]);
+  }, [tela, sub, sub2, rotaPronta]);
 
   const sair = async () => {
     await supabase.auth.signOut();

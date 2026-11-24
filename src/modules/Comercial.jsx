@@ -711,8 +711,10 @@ const ABAS = [
   { chave: "custos", label: "Previsão e custos", chavePermissao: "dashboard" },
 ];
 
-export default function Comercial({ onVoltar, perfil, permissoes }) {
-  const [aba, setAba] = useState("dia");
+export default function Comercial({ onVoltar, perfil, permissoes, abaInicial, onAba }) {
+  // a aba vai para o endereço: recarregar a página volta nela
+  const [aba, setAbaInterna] = useState(() => (ABAS.some((a) => a.chave === abaInicial) ? abaInicial : "dia"));
+  const setAba = (a) => { setAbaInterna(a); if (onAba) onAba(a, null); };
   const [dia, setDia] = useState(diaOperacional());
   const [vendas, setVendas] = useState(null);
   const [vendasErro, setVendasErro] = useState("");

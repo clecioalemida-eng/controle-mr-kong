@@ -113,7 +113,7 @@ export default function Financeiro({ onVoltar, abaInicial, subInicial, onAba, pe
             ) : aba === "fluxo" ? (
               <EntrouSaiu />
             ) : aba === "dre" ? (
-              <DRE permissoes={permissoes} />
+              <DRE permissoes={permissoes} abaInicial={subInicial} onAba={(x) => onAba && onAba(aba, x)} />
             ) : aba === "fiado" ? (
               <RelatorioFiado />
             ) : aba === "precos" ? (

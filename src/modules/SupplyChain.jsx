@@ -36,12 +36,14 @@ const ABAS = [
   // criar a chave `supply.contagens` no catálogo e trocar aqui.
   { chave: "contagens", label: "Estoque contado", permissao: "insumos" },
 ];
-export default function SupplyChain({ onVoltar, permissoes, abaInicial }) {
+export default function SupplyChain({ onVoltar, permissoes, abaInicial, onAba }) {
   const abasVisiveis = ABAS.filter((a) => podeVer(permissoes, `supply.${a.permissao || a.chave}`));
   const abaPadrao = abasVisiveis.some((a) => a.chave === abaInicial)
     ? abaInicial
     : (abasVisiveis[0]?.chave || null);
-  const [aba, setAba] = useState(abaPadrao);
+  const [aba, setAbaInterna] = useState(abaPadrao);
+  // a aba vai para o endereço: recarregar a página volta nela
+  const setAba = (a) => { setAbaInterna(a); if (onAba) onAba(a, null); };
   return (
     <div style={pageStyle}>
       <div className="app-shell">
