@@ -13,6 +13,8 @@ import { MancheteMes, TresPerguntas, CurvaDoMes, LinhasQuePuxaram, Leitura, Noit
 import { VendaDosItens, desmontarItens } from "./ComercialItens";
 // Aba Dia: o que saiu no dia, em números (combos, artesanal, tradicional…)
 import ComercialDiaItens from "./ComercialDiaItens";
+// Aba Mês: o que saiu no mês, e a linha do tempo de trimestre, semestre e ano
+import ComercialPeriodo from "./ComercialPeriodo";
 
 // ---------------------------------------------------------------------------
 // Módulo Comercial — Relatório do dia
@@ -641,6 +643,9 @@ function PainelComercial({ dia, mesTotal, onPrevisao, oculto }) {
           {/* Ela faz uma chamada por ponto do gráfico: não roda com o painel
               escondido, que existe só para a previsão do relatório. */}
           {!oculto && <ComercialLinhaTempo />}
+
+          {/* ---------------- O que saiu no período (ComercialPeriodo.jsx) ---------------- */}
+          {!oculto && <ComercialPeriodo dia={dia} />}
 
           {/* ---------------- Venda de cada item (ComercialItens.jsx) ---------------- */}
           <VendaDosItens itens={dados.itens} erro={dados.erroItens} rotuloAn={media ? nomeMedia : fechadasAn} etiqueta={etqFechadas} />
