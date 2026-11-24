@@ -41,40 +41,59 @@ function variacao(a, b) {
   return { texto: p === 0 ? "igual" : `${p > 0 ? "+" : "−"}${Math.abs(p)}%`, cor: p > 0 ? VERDE : p < 0 ? VERMELHO : CINZA };
 }
 
+// Busca e soma, por linha, o que saiu em dois períodos (atual e anterior).
+// Também usada pelo relatório do mês (ComercialPeriodo.jsx).
+export async function carregarComparado(args) {
+  const [rp, ri] = await Promise.all([supabase.rpc("desempenho_produtos", args), supabase.rpc("venda_por_item", args)]);
+  if (rp.error) {
+    throw new Error(/sem_acesso|permission|denied/i.test(rp.error.message || "") ? "Seu cargo não vê a venda por produto." : rp.error.message);
+  }
+  return { linhas: montarLinhas(rp.data || [], 2), combos: ri.error ? null : desmontarItens(ri.data || [], []).combos };
+}
+
+// Linhas de desempenho_produtos → por linha de produto, com os produtos
+// dentro. `n` períodos: cada entrada de `respostas` é [resposta, posA, posB].
+export function montarLinhas(dados, n = 2, posicoes = [0, 1]) {
+  return juntarLinhas([[dados, posicoes[0], posicoes[1]]], n);
+}
+export function juntarLinhas(respostas, n) {
+  const porProduto = new Map();
+  respostas.forEach(([dados, a, b]) => (dados || []).forEach((p) => {
+    const chave = p.produto;
+    if (!porProduto.has(chave)) {
+      porProduto.set(chave, { produto: p.produto, linha: String(p.linha || "").trim() || "Sem linha definida", q: Array(n).fill(0), v: Array(n).fill(0) });
+    }
+    const x = porProduto.get(chave);
+    if (String(p.linha || "").trim()) x.linha = String(p.linha).trim();
+    x.q[a] = Number(p.qtd_atual) || 0; x.v[a] = Number(p.valor_atual) || 0;
+    if (b != null && b !== a) { x.q[b] = Number(p.qtd_ant) || 0; x.v[b] = Number(p.valor_ant) || 0; }
+  }));
+  const porLinha = new Map();
+  [...porProduto.values()].filter((p) => p.q.some(Boolean)).forEach((p) => {
+    if (!porLinha.has(p.linha)) porLinha.set(p.linha, { linha: p.linha, q: Array(n).fill(0), v: Array(n).fill(0), produtos: [] });
+    const l = porLinha.get(p.linha);
+    for (let k = 0; k < n; k++) { l.q[k] += p.q[k]; l.v[k] += p.v[k]; }
+    l.produtos.push(p);
+  });
+  const linhas = [...porLinha.values()].sort((a, b) => b.v[0] - a.v[0] || b.q[0] - a.q[0]);
+  linhas.forEach((l) => l.produtos.sort((a, b) => b.q[0] - a.q[0] || b.v[0] - a.v[0]));
+  return linhas;
+}
+
 export default function ComercialDiaItens({ dia, pedidos }) {
   const [dados, setDados] = useState(null);
   const [erro, setErro] = useState("");
-  const [aberta, setAberta] = useState(null);
   const semana = somarDias(dia, -7);
   const emAndamento = dia > ultimoDiaFechado();
 
   useEffect(() => {
     if (emAndamento) { setDados(null); return; }
     let vivo = true;
-    setDados(null); setErro(""); setAberta(null);
+    setDados(null); setErro("");
     const args = { p_inicio: dia, p_fim: dia, p_inicio_ant: semana, p_fim_ant: semana };
-    Promise.all([supabase.rpc("desempenho_produtos", args), supabase.rpc("venda_por_item", args)]).then(([rp, ri]) => {
-      if (!vivo) return;
-      if (rp.error) {
-        setErro(/sem_acesso|permission|denied/i.test(rp.error.message || "") ? "Seu cargo não vê a venda por produto." : rp.error.message);
-        return;
-      }
-      const produtos = (rp.data || []).map((p) => ({
-        produto: p.produto, linha: String(p.linha || "").trim() || "Sem linha definida",
-        q: [Number(p.qtd_atual) || 0, Number(p.qtd_ant) || 0], v: [Number(p.valor_atual) || 0, Number(p.valor_ant) || 0],
-      })).filter((p) => p.q[0] || p.q[1]);
-      const porLinha = new Map();
-      produtos.forEach((p) => {
-        if (!porLinha.has(p.linha)) porLinha.set(p.linha, { linha: p.linha, q: [0, 0], v: [0, 0], produtos: [] });
-        const l = porLinha.get(p.linha);
-        l.q[0] += p.q[0]; l.q[1] += p.q[1]; l.v[0] += p.v[0]; l.v[1] += p.v[1];
-        l.produtos.push(p);
-      });
-      const linhas = [...porLinha.values()].sort((a, b) => b.v[0] - a.v[0] || b.q[0] - a.q[0]);
-      linhas.forEach((l) => l.produtos.sort((a, b) => b.q[0] - a.q[0] || b.v[0] - a.v[0]));
-      const combos = ri.error ? null : desmontarItens(ri.data || [], []).combos;
-      setDados({ linhas, combos });
-    });
+    carregarComparado(args)
+      .then((d) => { if (vivo) setDados(d); })
+      .catch((e) => { if (vivo) setErro(e.message || String(e)); });
     return () => { vivo = false; };
   }, [dia]); // eslint-disable-line
 
@@ -85,13 +104,23 @@ export default function ComercialDiaItens({ dia, pedidos }) {
   if (!dados) return <div style={{ ...card, fontSize: 12.5, color: CINZA, display: "flex", gap: 6, alignItems: "center" }}><Loader2 size={13} /> Contando o que saiu no dia…</div>;
   if (!dados.linhas.length) return <div style={{ ...card, fontSize: 12.5, color: CINZA }}>Nenhum produto vendido registrado em {rotuloDia(dia)}.</div>;
 
+  return (
+    <QuadroComparado dados={dados} pedidos={pedidos} rotuloAnt={rotuloDia(semana)} colAnt={rotuloDia(semana).slice(5)}
+      etiqueta={<Comparando agora={rotuloDia(dia)} antes={rotuloDia(semana)} fim="· mesmo dia da semana passada" />} />
+  );
+}
+
+// Os quatro números e a lista de linhas com os produtos, atual contra
+// anterior. Usado pelo Dia e pelo modo Mês do relatório do período.
+export function QuadroComparado({ dados, pedidos, etiqueta, rotuloAnt, colAnt, semMoldura }) {
+  const [aberta, setAberta] = useState(null);
   const acha = (re) => dados.linhas.find((l) => re.test(l.linha));
   const lCombos = acha(/combo/i), lArtesanal = acha(/gourmet|artesanal/i), lTradicional = acha(/tradicional/i);
   const c = dados.combos;
 
   return (
-    <div style={card}>
-      <Comparando agora={rotuloDia(dia)} antes={rotuloDia(semana)} fim="· mesmo dia da semana passada" />
+    <div style={semMoldura ? {} : card}>
+      {etiqueta}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 8, margin: "10px 0 12px" }}>
         {lCombos && (
           <Numero titulo="Combos" q={lCombos.q}
@@ -103,7 +132,7 @@ export default function ComercialDiaItens({ dia, pedidos }) {
       </div>
 
       <div style={{ ...grade, fontSize: 11, color: CINZA, fontWeight: 700, padding: "0 0 6px" }}>
-        <span>Linha</span><span style={dir}>Qtd</span><span style={dir}>R$</span><span style={dir}>vs {rotuloDia(semana).slice(5)}</span>
+        <span>Linha</span><span style={dir}>Qtd</span><span style={dir}>R$</span><span style={dir}>vs {colAnt}</span>
       </div>
       {dados.linhas.map((l) => {
         const vl = variacao(l.q[0], l.q[1]);
@@ -134,7 +163,7 @@ export default function ComercialDiaItens({ dia, pedidos }) {
         );
       })}
       <div style={{ fontSize: 11.5, color: CINZA, marginTop: 8 }}>
-        Toque numa linha para ver cada produto. Nos produtos, a última coluna é quantas unidades a mais ou a menos que em {rotuloDia(semana)}.
+        Toque numa linha para ver cada produto. Nos produtos, a última coluna é quantas unidades a mais ou a menos que em {rotuloAnt}.
       </div>
     </div>
   );
