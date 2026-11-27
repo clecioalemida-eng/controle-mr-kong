@@ -24,6 +24,7 @@ import { Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { parecenca, chaveNome, parecidos } from "../lib/insumoParecido";
 import { TIPOS_INSUMO, EscolherTipo, esquecerInsumos } from "./AvisoParecidos";
+import { buscarCentrosDespesa, CENTROS_DESPESA_PADRAO, AJUDA_CENTRO } from "../lib/centrosCusto";
 
 const ESCURO = "#22231F", CINZA = "#8A8778";
 
@@ -38,6 +39,10 @@ export default function ArrumarCadastro({ irPara }) {
   // A resposta aparece NA LINHA clicada: o aviso só no topo ficava fora da
   // tela de quem estava no meio da lista, e parecia que nada acontecia.
   const [naLinha, setNaLinha] = useState(null); // { id, erro?, ok? }
+  // "Não é estoque": os centros de custo do Contas a pagar (DRE → Listas)
+  const [centros, setCentros] = useState(CENTROS_DESPESA_PADRAO);
+  const [menuAberto, setMenuAberto] = useState(null);
+  useEffect(() => { buscarCentrosDespesa().then(setCentros); }, []);
 
   const carregar = useCallback(async () => {
     const { data, error } = await supabase.rpc("cadastro_insumos_raio");
@@ -83,7 +88,7 @@ export default function ArrumarCadastro({ irPara }) {
     const ins = dados.insumos || [];
     const emUso = (i) => i.fichas > 0 || i.composto;
     // uso e limpeza, utensílio e imobilizado não vão em ficha: saem da fila
-    const foraDeFicha = (i) => ["uso", "utensilio", "imobilizado"].includes(i.tipo);
+    const foraDeFicha = (i) => ["uso", "utensilio", "imobilizado", "despesa"].includes(i.tipo);
     const semFicha = ins.filter((i) => i.compras > 0 && !emUso(i) && !foraDeFicha(i));
     const nuncaComprados = ins.filter((i) => i.compras === 0 && emUso(i));
     const soltos = ins.filter((i) => i.compras === 0 && !emUso(i) && !dec[`solto:${i.id}`]);
@@ -124,7 +129,7 @@ export default function ArrumarCadastro({ irPara }) {
       <div style={card}>
         <div style={titulo}>Cada produto existe uma vez, e todo produto tem para onde ir</div>
         <div style={explica}>
-          {g.completos} de {g.ins.length} insumos estão completos (comprados e usados em ficha, ou marcados como uso e limpeza, utensílio ou imobilizado).
+          {g.completos} de {g.ins.length} insumos estão completos (comprados e usados em ficha, ou marcados como uso e limpeza ou como despesa).
           A fila abaixo some conforme o cadastro fica limpo.
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, marginTop: 10 }}>
@@ -179,7 +184,7 @@ export default function ArrumarCadastro({ irPara }) {
       <div style={card}>
         <div style={titulo}>Comprado sem ficha: para onde ele vai?</div>
         <div style={explica}>
-          Uso e limpeza, utensílio e imobilizado saem da fila. Utensílio e imobilizado viram despesa: a próxima nota com esse nome não entra no estoque.
+          Fica no estoque: escolha o tipo. Não é estoque: escolha o centro de custo, e a próxima nota com esse nome já entra como despesa desse centro, sem estoque.
           Ingrediente, revenda e embalagem precisam entrar numa ficha (revenda: ficha de 1 para 1 com o produto vendido).
         </div>
         {g.paraOnde.length === 0 && <Vazio texto="Todos os comprados sem ficha já têm tipo." />}
@@ -195,14 +200,30 @@ export default function ArrumarCadastro({ irPara }) {
                   const { error } = await supabase.from("insumos").update({ tipo: t }).eq("id", i.id);
                   if (error) throw error;
                 })} />
-                {[["utensilios", "Utensílio", "espátula, pegador, panela: despesa"], ["imobilizado", "Imobilizado", "equipamento durável: despesa e depreciação"]].map(([centro, rot, ajuda]) => (
-                  <button key={centro} title={ajuda} disabled={!!ocupado} style={estilo(btnTipoDespesa, !!ocupado)}
-                    onClick={() => agir(i.id, async () => {
-                      const { error } = await supabase.rpc("marcar_como_despesa", { p_insumo: i.id, p_centro: centro });
-                      if (error) throw new Error(/does not exist|schema cache|Could not find/i.test(error.message || "") ? "Falta rodar a migração 196 no Supabase." : error.message);
-                      setAviso(`"${i.nome}" virou ${rot.toLowerCase()}: as próximas notas com esse nome entram como despesa.`);
-                    })}>{rot}</button>
-                ))}
+                <button disabled={!!ocupado} onClick={() => setMenuAberto(menuAberto === i.id ? null : i.id)}
+                  style={estilo({ ...btnTipoDespesa, ...(menuAberto === i.id ? { borderStyle: "solid", borderColor: ESCURO } : {}) }, !!ocupado)}>
+                  Não é estoque {menuAberto === i.id ? "▴" : "▾"}
+                </button>
+              </div>
+            )}
+            {menuAberto === i.id && !ocupado && (
+              <div style={{ width: "100%", display: "flex", justifyContent: "flex-end" }}>
+                <div style={{ border: "1px solid #E8E2D2", borderRadius: 10, background: "#FFFFFF", padding: "4px 0", width: "min(360px, 100%)" }}>
+                  {centros.map((c) => (
+                    <div key={c.valor} onClick={() => agir(i.id, async () => {
+                      setMenuAberto(null);
+                      const { error } = await supabase.rpc("marcar_como_despesa", { p_insumo: i.id, p_centro: c.valor });
+                      if (error) throw new Error(/does not exist|schema cache|Could not find|check constraint|violates/i.test(error.message || "") ? "Falta rodar a migração 200 no Supabase." : error.message);
+                      setAviso(`"${i.nome}" virou despesa de ${c.rotulo}: as próximas notas com esse nome entram assim, sem estoque.`);
+                    })} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 12px", fontSize: 12.5, cursor: "pointer", color: ESCURO }}>
+                      <span>{c.rotulo}</span>
+                      <span style={{ color: CINZA, fontSize: 11.5, textAlign: "right" }}>{AJUDA_CENTRO[c.valor] || ""}</span>
+                    </div>
+                  ))}
+                  <div style={{ borderTop: "1px solid #EFE9DA", marginTop: 4, padding: "7px 12px 4px", fontSize: 11.5, color: CINZA }}>
+                    Falta algum? Crie em Financeiro → DRE → Listas → Centros de custo.
+                  </div>
+                </div>
               </div>
             )}
             <Resposta id={i.id} />

@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import { useParecidos, AvisoParecidos, EscolherTipo, esquecerInsumos } from "./AvisoParecidos";
+import { buscarCentrosDespesa } from "../lib/centrosCusto";
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
 // Para onde vai o item de nota que NÃO é insumo (migração 171).
 //
@@ -18,7 +19,10 @@ const UNIDADES = ["un", "g", "kg", "ml", "l"];
 // "nao_produto": desconto, Pix, linha de pagamento. Esse não é custo de
 // nada; só acerta o total pago, e o valor dele vai junto com o maior
 // grupo da nota.
-const DESTINOS_NAO_INSUMO = [
+// Desde a migração 200 a lista vem dos centros de custo do Contas a pagar
+// (DRE → Listas), carregada pela Conferencia. Estes 6 são só o começo,
+// usados até a lista chegar ou se a consulta falhar.
+let DESTINOS_NAO_INSUMO = [
   { valor: "utensilios",     rotulo: "Limpeza e utensílios" },
   { valor: "manutencao",     rotulo: "Consertos e manutenção" },
   { valor: "imobilizado",    rotulo: "Equipamento" },
@@ -1587,6 +1591,11 @@ function NotaJaConferida({ documento, isAdmin, onFechar, aoDesfazer }) {
 // Tela de conferência: revisar/editar os itens lidos antes de confirmar
 // ---------------------------------------------------------------------------
 function Conferencia({ documento, onVoltar }) {
+  // "Não é insumo": os mesmos centros de custo da fila "Arrumar o cadastro"
+  const [, setDestinosProntos] = useState(0);
+  useEffect(() => {
+    buscarCentrosDespesa().then((lista) => { DESTINOS_NAO_INSUMO = lista; setDestinosProntos((x) => x + 1); });
+  }, []);
   // A nota original abre em ABA NOVA, não mais num painel embutido. O
   // painel empurrava a lista de itens pra baixo e, numa nota de 18
   // itens, sobrava pouca tela pra cada linha. Na aba separada dá pra
