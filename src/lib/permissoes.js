@@ -30,6 +30,7 @@ export const CATALOGO = [
       { chave: "gente.escala",    nome: "Escala do dia" },
       { chave: "gente.mensal",    nome: "Fechamento mensal",         sensivel: true },
       { chave: "gente.folha",     nome: "Folha de pagamento",        sensivel: true },
+      { chave: "gente.encargos",  nome: "Encargos e riscos",         sensivel: true },
     ],
   },
   {
