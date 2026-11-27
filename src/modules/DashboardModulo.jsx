@@ -4,6 +4,7 @@ import React, { useState, useRef } from "react";
 import { AlertTriangle, Loader2, RefreshCw, TrendingUp, TrendingDown, Trophy, Layers } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import PainelOperacao from "./PainelOperacao";
+import { SeletorLinha, useLinhasProduto } from "./SeletorLinha";
 
 function brl(v) { return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
@@ -56,10 +57,8 @@ const PISO_PRECO = 9;
 // Mesma lista de Fichas técnicas. Fica repetida de propósito: são dois
 // módulos independentes, e um importar o outro só por causa de um array
 // amarraria as duas telas por nada.
-const LINHAS_PRODUTO = [
-  "Hambúrguer Gourmet", "Hambúrguer Tradicional", "Bebidas", "Bombons e Balas",
-  "Milkshake e Sorvetes", "Cremes", "Petiscos", "Chapa", "Combos", "Batatas Fritas", "Açaí",
-];
+// A lista de linhas vem de SeletorLinha.jsx (as de sempre + as que já
+// estão nos pratos + as criadas pelo "+ Nova linha…").
 // Palavras que não ajudam a reconhecer um produto renomeado — aparecem em
 // meio cardápio e casariam qualquer coisa com qualquer coisa.
 // Como o banco chama a fatia dos produtos que ainda nao tem linha. E o
@@ -160,6 +159,7 @@ function variacao(atual, anterior) {
 // às 4h via pg_cron. NÃO chama mais o CardápioWeb ao vivo: 90 dias de
 // histórico estouravam o limite de 5 consultas/minuto.
 export default function Dashboard() {
+  const [LINHAS_PRODUTO, lembrarLinha] = useLinhasProduto();
   const [carregando, setCarregando] = useState(true);
   const [recalculando, setRecalculando] = useState(false);
   const [erro, setErro] = useState("");
@@ -1361,14 +1361,13 @@ export default function Dashboard() {
                                 </div>
                                 <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap" }}>{brl(p.valor_atual)}</span>
                                 {p.pratoId ? (
-                                  <select defaultValue="" disabled={salvandoLinha === p.produto}
-                                    onChange={(e) => salvarLinhaDoProduto(p, e.target.value)}
+                                  <SeletorLinha valor="" linhas={LINHAS_PRODUTO} onCriada={lembrarLinha}
+                                    disabled={salvandoLinha === p.produto}
+                                    vazio={salvandoLinha === p.produto ? "salvando…" : "Escolher linha…"}
+                                    onEscolher={(l) => l && salvarLinhaDoProduto(p, l)}
                                     style={{ padding: "6px 8px", fontSize: 11.5, border: "1px solid #E8E2D2",
                                              borderRadius: 7, background: "#FFFFFF", fontFamily: "inherit",
-                                             color: "#22231F", minWidth: 150 }}>
-                                    <option value="">{salvandoLinha === p.produto ? "salvando…" : "Escolher linha…"}</option>
-                                    {LINHAS_PRODUTO.map((l) => <option key={l} value={l}>{l}</option>)}
-                                  </select>
+                                             color: "#22231F", minWidth: 150 }} />
                                 ) : (
                                   /* Item sem dono. O seletor lista os SEUS pratos,
                                      nao linhas: a pergunta aqui e "isso e qual prato

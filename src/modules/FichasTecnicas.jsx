@@ -7,12 +7,11 @@ import {
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
 import VendidosSemFicha, { ApelidosDoPrato } from "./FichasVendidosSemFicha";
+import { SeletorLinha, useLinhasProduto } from "./SeletorLinha";
 
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
-const LINHAS_PRODUTO = [
-  "Hambúrguer Gourmet", "Hambúrguer Tradicional", "Bebidas", "Bombons e Balas",
-  "Milkshake e Sorvetes", "Cremes", "Petiscos", "Chapa", "Combos", "Batatas Fritas", "Açaí",
-];
+// Linhas de produto: as de sempre, as que já estão nos pratos e as novas
+// criadas pelo "+ Nova linha…" (SeletorLinha.jsx).
 
 function brl(v) {
   return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -328,6 +327,7 @@ function CadastrarInsumo({ nomeInicial, onCriado, onCancelar }) {
 export default function FichasTecnicas() {
   const [tela, setTela] = useState("lista"); // lista | editor
   const [pratos, setPratos] = useState([]);
+  const [LINHAS_PRODUTO, lembrarLinha] = useLinhasProduto(pratos.map((p) => p.linha_produto));
   const [carregandoLista, setCarregandoLista] = useState(true);
   const [importando, setImportando] = useState(false);
   const [resumoImport, setResumoImport] = useState(null);
@@ -991,16 +991,12 @@ export default function FichasTecnicas() {
                     )}
                   </span>
                 </button>
-                <select value={p.linha_produto || ""} onClick={(e) => e.stopPropagation()}
-                  onChange={async (e) => {
-                    const linha = e.target.value || null;
+                <SeletorLinha valor={p.linha_produto} linhas={LINHAS_PRODUTO} onCriada={lembrarLinha}
+                  onEscolher={async (linha) => {
                     await supabase.from("pratos").update({ linha_produto: linha }).eq("id", p.id);
                     setPratos((prev) => prev.map((x) => x.id === p.id ? { ...x, linha_produto: linha } : x));
                   }}
-                  style={{ fontSize: 11, padding: "3px 6px", borderRadius: 6, border: "1px solid #E8E2D2", background: p.linha_produto ? "#FFFFFF" : "#FBF3D9", color: p.linha_produto ? "#22231F" : "#7A6A1E" }}>
-                  <option value="">— linha de produto pendente —</option>
-                  {LINHAS_PRODUTO.map((l) => <option key={l} value={l}>{l}</option>)}
-                </select>
+                  style={{ fontSize: 11, padding: "3px 6px", borderRadius: 6, border: "1px solid #E8E2D2", background: p.linha_produto ? "#FFFFFF" : "#FBF3D9", color: p.linha_produto ? "#22231F" : "#7A6A1E" }} />
 
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: 4 }}>
                   {!p.ativo && (
