@@ -20,10 +20,10 @@
 //      próximas notas; as já confirmadas não voltam ao estoque)
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Loader2, AlertTriangle, CheckCircle2, Pencil } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { parecenca, chaveNome, parecidos } from "../lib/insumoParecido";
-import { TIPOS_INSUMO, EscolherTipo, esquecerInsumos } from "./AvisoParecidos";
+import { TIPOS_INSUMO, EscolherTipo, esquecerInsumos, useParecidos, AvisoParecidos } from "./AvisoParecidos";
 import { buscarCentrosDespesa, CENTROS_DESPESA_PADRAO, AJUDA_CENTRO } from "../lib/centrosCusto";
 
 const ESCURO = "#22231F", CINZA = "#8A8778";
@@ -190,10 +190,8 @@ export default function ArrumarCadastro({ irPara }) {
         {g.paraOnde.length === 0 && <Vazio texto="Todos os comprados sem ficha já têm tipo." />}
         {g.paraOnde.slice(0, 40).map((i) => (
           <div key={i.id} style={linha}>
-            <div style={{ flex: 1, minWidth: 180 }}>
-              <Nome i={i} />
-              <div style={{ fontSize: 11, color: CINZA }}>última {dataBR(i.ultima_compra)}{i.ultimo_preco ? ` · ${brl(i.ultimo_preco)}/${i.unidade}` : ""}</div>
-            </div>
+            <NomeEditavel i={i} ocupado={!!ocupado} agir={agir} setAviso={setAviso}
+              sub={`última ${dataBR(i.ultima_compra)}${i.ultimo_preco ? ` · ${brl(i.ultimo_preco)}/${i.unidade}` : ""}`} />
             {ocupado === i.id ? <span style={{ fontSize: 12, color: CINZA }}>Gravando…</span> : (
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <EscolherTipo compacto valor={i.tipo} onMudar={(t) => !ocupado && agir(i.id, async () => {
@@ -243,13 +241,15 @@ export default function ArrumarCadastro({ irPara }) {
       </div>
 
       {/* 3. soltos */}
+      <NuncaComprados lista={g.nuncaComprados} ocupado={!!ocupado} agir={agir} setAviso={setAviso} />
+
       <div style={card}>
         <div style={titulo}>Soltos: sem compra e sem ficha</div>
         <div style={explica}>Cadastrados que nunca foram comprados nem usados. Excluir não apaga histórico nenhum, porque não há.</div>
         {g.soltos.length === 0 && <Vazio texto="Nenhum insumo solto." />}
         {g.soltos.slice(0, 40).map((i) => (
           <div key={i.id} style={linha}>
-            <div style={{ flex: 1, minWidth: 180 }}><Nome i={i} /></div>
+            <NomeEditavel i={i} ocupado={!!ocupado} agir={agir} setAviso={setAviso} />
             <button style={estilo(btnClaro, !!ocupado)} disabled={!!ocupado} onClick={() => agir(i.id, async () => {
               const { error } = await supabase.from("insumos").delete().eq("id", i.id);
               if (error) throw new Error(error.message);
@@ -330,6 +330,129 @@ function LinhaNaoInsumo({ n, insumos, ocupado, onLigar, onDespesa, resposta }) {
             <div style={{ fontSize: 12, color: "#5C5A4E" }}>Ou cadastrar "{n.nome}" como produto novo:</div>
             <EscolherTipo compacto valor={tipo} onMudar={setTipo} />
             <div><button style={btnClaro} disabled={ocupado || !tipo} onClick={() => onLigar(null, tipo)}>Cadastrar e ligar</button></div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// "Na ficha, nunca comprados": quase sempre o mesmo produto que chega na
+// nota com outro nome. A lista fica recolhida; corrigir o nome aqui faz o
+// par aparecer em "Parecem o mesmo produto".
+function NuncaComprados({ lista, ocupado, agir, setAviso }) {
+  const [aberto, setAberto] = useState(false);
+  if (!lista.length) return null;
+  return (
+    <div style={card}>
+      <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+        <div style={{ ...titulo, flex: 1 }}>Na ficha, nunca comprados: {lista.length}</div>
+        <button style={btnClaro} onClick={() => setAberto(!aberto)}>{aberto ? "Esconder" : "Ver a lista"}</button>
+      </div>
+      <div style={explica}>Estão em ficha, mas nenhuma nota trouxe esse nome. Corrija o nome para o que vem na nota, ou junte com o produto comprado.</div>
+      {aberto && lista.slice(0, 80).map((i) => (
+        <div key={i.id} style={linha}>
+          <NomeEditavel i={i} ocupado={ocupado} agir={agir} setAviso={setAviso} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Nome com lápis: corrige o nome que veio errado da leitura da nota. O nome
+// antigo vira apelido (a próxima nota com ele já cai aqui). Se o nome novo
+// parece um produto que já existe, oferece juntar em vez de duplicar.
+// "Ver a nota" mostra como o item chegou e abre o arquivo da nota.
+function NomeEditavel({ i, sub, ocupado, agir, setAviso }) {
+  const [editando, setEditando] = useState(false);
+  const [novo, setNovo] = useState(i.nome);
+  const [outro, setOutro] = useState(false);
+  const [origens, setOrigens] = useState(null);
+  const mudou = novo.trim() && chaveNome(novo) !== chaveNome(i.nome);
+  const lista = useParecidos(editando && mudou ? novo : "", { excluir: i.id });
+
+  const buscarOrigens = async () => {
+    if (origens) return origens;
+    const { data } = await supabase.from("itens_documento_compra")
+      .select("nome_lido, documentos_compra(fornecedor, data_documento, arquivo_path)")
+      .eq("insumo_id", i.id).limit(30);
+    const vistos = new Set();
+    const lista = (data || []).map((x) => ({ nome: x.nome_lido, ...(x.documentos_compra || {}) }))
+      .sort((a, b) => String(b.data_documento || "").localeCompare(String(a.data_documento || "")))
+      .filter((x) => { const k = `${x.nome}|${x.data_documento}`; if (vistos.has(k)) return false; vistos.add(k); return true; })
+      .slice(0, 3);
+    setOrigens(lista);
+    return lista;
+  };
+  const abrir = async (caminho) => {
+    const aba = window.open("", "_blank"); // o Safari só abre aba no mesmo instante do clique
+    const { data, error } = await supabase.storage.from("notas-fiscais").createSignedUrl(caminho, 3600);
+    if (error || !data?.signedUrl) { if (aba) aba.close(); alert("Não consegui abrir a nota."); return; }
+    if (aba) aba.location.href = data.signedUrl; else window.location.href = data.signedUrl;
+  };
+  const verNota = async () => {
+    setEditando(true);
+    await buscarOrigens();
+  };
+
+  const salvar = () => agir(i.id, async () => {
+    const nome = novo.trim();
+    const { error } = await supabase.from("insumos").update({ nome }).eq("id", i.id);
+    if (error) {
+      throw new Error(/23505|já existe|duplicate/i.test(`${error.code} ${error.message}`)
+        ? `${error.message}. Use "Juntar com este" no aviso de parecidos.` : error.message);
+    }
+    const { error: e2 } = await supabase.from("insumo_sinonimos").insert({ nome_variante: i.nome, insumo_id: i.id });
+    if (e2 && e2.code !== "23505") throw e2;
+    setAviso(`"${i.nome}" agora se chama "${nome}". O nome antigo virou apelido para as próximas notas.`);
+    setEditando(false);
+  });
+  const juntar = (alvo) => agir(i.id, async () => {
+    if (alvo.unidade !== i.unidade) throw new Error(`Unidades diferentes (${i.unidade} e ${alvo.unidade}): troque a unidade de um deles na aba Insumos antes de juntar.`);
+    const { error } = await supabase.rpc("juntar_e_lembrar", { p_origem: i.id, p_destino: alvo.id });
+    if (error) throw error;
+    setAviso(`"${i.nome}" foi juntado em "${alvo.nome}".`);
+    setEditando(false);
+  });
+
+  return (
+    <div style={{ flex: editando ? "1 1 100%" : 1, minWidth: 200 }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" }}>
+        <Nome i={i} />
+        <button title="Corrigir o nome" disabled={ocupado} onClick={() => { setEditando(!editando); setNovo(i.nome); setOutro(false); if (!editando) buscarOrigens(); }}
+          style={{ border: "none", background: "none", padding: 2, cursor: "pointer", color: CINZA, display: "inline-flex" }}>
+          <Pencil size={13} />
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: CINZA }}>
+        {sub}{sub && i.compras > 0 ? " · " : ""}
+        {i.compras > 0 && <span onClick={verNota} style={{ color: "#185FA5", cursor: "pointer" }}>ver a nota ↗</span>}
+      </div>
+      {editando && (
+        <div style={{ marginTop: 8, maxWidth: 560 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <input value={novo} autoFocus onChange={(e) => { setNovo(e.target.value); setOutro(false); }}
+              onKeyDown={(e) => e.key === "Enter" && mudou && (!lista.length || outro) && salvar()}
+              style={{ flex: 1, minWidth: 180, padding: "7px 9px", borderRadius: 8, border: "1px solid #C9C2AE", fontSize: 13.5, fontFamily: "inherit" }} />
+            <button style={estilo(btnEscuro, ocupado || !mudou || (lista.length > 0 && !outro))}
+              disabled={ocupado || !mudou || (lista.length > 0 && !outro)} onClick={salvar}>Salvar nome</button>
+            <button style={btnClaro} onClick={() => setEditando(false)}>Cancelar</button>
+          </div>
+          {mudou && (
+            <AvisoParecidos lista={lista} rotuloUsar="Juntar com este" confirmado={outro}
+              onConfirmar={() => setOutro(true)} onUsar={juntar} />
+          )}
+          <div style={{ background: "#F7F3E9", borderRadius: 9, padding: "8px 10px", marginTop: 6, fontSize: 12, color: "#5C5A4E", lineHeight: 1.6 }}>
+            {i.compras === 0 ? "Nunca veio em nota: o nome é o do cadastro ou da ficha."
+              : !origens ? "Buscando a nota…"
+              : origens.length === 0 ? "Comprado pela compra manual (aba Compras), sem nota."
+              : origens.map((o, k) => (
+                <div key={k}>
+                  Chegou na nota como <b>"{o.nome}"</b>{o.fornecedor ? ` · ${o.fornecedor}` : ""}{o.data_documento ? ` · ${dataBR(o.data_documento)}` : ""}
+                  {o.arquivo_path && <> · <span onClick={() => abrir(o.arquivo_path)} style={{ color: "#185FA5", cursor: "pointer" }}>abrir a nota ↗</span></>}
+                </div>
+              ))}
+            <div style={{ color: CINZA, marginTop: 2 }}>O nome antigo vira apelido: se a próxima nota ler "{i.nome}" de novo, ela já cai no nome corrigido.</div>
           </div>
         </div>
       )}
