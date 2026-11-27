@@ -6,6 +6,7 @@ import {
   Package, List as ListIcon, EyeOff, RotateCcw, Copy,
 } from "lucide-react";
 import { supabase, extrairErroFuncao } from "../lib/supabaseClient";
+import VendidosSemFicha, { ApelidosDoPrato } from "./FichasVendidosSemFicha";
 
 const UNIDADES = ["un", "g", "kg", "ml", "l"];
 const LINHAS_PRODUTO = [
@@ -344,9 +345,15 @@ export default function FichasTecnicas() {
   const [margensLinha, setMargensLinha] = useState({});
   const [abrirMargens, setAbrirMargens] = useState(false);
   const [verEscondidos, setVerEscondidos] = useState(false);
-  // "todos" | "sem_linha" | "sem_ficha" — pra sentar e preencher o que
-  // falta de uma vez, em vez de caçar na lista de 105.
+  // "todos" | "sem_linha" | "sem_ficha" | "vendidos" — pra sentar e
+  // preencher o que falta de uma vez, em vez de caçar na lista de 105.
   const [filtro, setFiltro] = useState("todos");
+  // "Vendidos sem ficha" (migração 203): o que vendeu nos últimos 30 dias
+  // e entrou no DRE com custo zero. null = ainda não carregou ou a
+  // migração não foi rodada (aí o filtro nem aparece).
+  const [vendidos, setVendidos] = useState(null);
+  const [coberturaVendidos, setCoberturaVendidos] = useState(null);
+  const [carregandoVendidos, setCarregandoVendidos] = useState(false);
   const [excluindo, setExcluindo] = useState(null); // prato que a lixeira abriu
   // Conferência de preços contra o catálogo do CardápioWeb.
   // `resultado` guarda o que a comparação achou; nada vai pro banco antes
@@ -426,8 +433,22 @@ export default function FichasTecnicas() {
     setCarregandoLista(false);
   }, []);
 
-  useEffect(() => { carregarPratos(); carregarMargens(); carregarIrmaos(); },
-            [carregarPratos, carregarMargens, carregarIrmaos]);
+  const carregarVendidos = useCallback(async () => {
+    setCarregandoVendidos(true);
+    const periodo = { p_inicio: diasAtras(30), p_fim: hoje() };
+    const [rLista, rCob] = await Promise.all([
+      supabase.rpc("vendidos_sem_ficha", periodo),
+      supabase.rpc("dre_cmv_periodo", periodo),
+    ]);
+    setCarregandoVendidos(false);
+    // Sem a migração 203 a função não existe: o filtro simplesmente não aparece.
+    if (rLista.error) { setVendidos(null); return; }
+    setVendidos(rLista.data || []);
+    setCoberturaVendidos(Array.isArray(rCob.data) ? rCob.data[0] : rCob.data);
+  }, []);
+
+  useEffect(() => { carregarPratos(); carregarMargens(); carregarIrmaos(); carregarVendidos(); },
+            [carregarPratos, carregarMargens, carregarIrmaos, carregarVendidos]);
 
   const salvarMargemGeral = async (v) => {
     const n = paraNumero(v);
@@ -581,7 +602,7 @@ export default function FichasTecnicas() {
       <EditorFicha
         prato={pratoAtual}
         margem={margemDoPrato(pratoAtual)}
-        onVoltar={() => { setTela("lista"); setPratoAtual(null); carregarPratos(); }}
+        onVoltar={() => { setTela("lista"); setPratoAtual(null); carregarPratos(); carregarVendidos(); }}
       />
     );
   }
@@ -895,7 +916,11 @@ export default function FichasTecnicas() {
             { chave: "todos", rotulo: "Todos", quantos: null },
             { chave: "sem_linha", rotulo: "Sem linha", quantos: semLinha },
             { chave: "sem_ficha", rotulo: "Sem ficha", quantos: semFicha },
-          ].filter((c) => c.quantos === null || c.quantos > 0).map((c) => (
+            // Fica visível enquanto está aberto, mesmo quando zera: zerar a
+            // lista é o objetivo, e o chip sumir da mão seria estranho.
+            ...(vendidos ? [{ chave: "vendidos", rotulo: "Vendidos sem ficha", quantos: vendidos.length,
+                              fixo: filtro === "vendidos" }] : []),
+          ].filter((c) => c.quantos === null || c.quantos > 0 || c.fixo).map((c) => (
             <button key={c.chave} onClick={() => setFiltro(c.chave)}
               style={{
                 border: "1px solid #E8E2D2", borderRadius: 999, padding: "8px 13px", fontSize: 11.5,
@@ -910,6 +935,16 @@ export default function FichasTecnicas() {
         </div>
       )}
 
+      {filtro === "vendidos" ? (
+        <VendidosSemFicha
+          itens={vendidos}
+          cobertura={coberturaVendidos}
+          pratos={pratos}
+          carregando={carregandoVendidos}
+          onRecarregar={async () => { await Promise.all([carregarVendidos(), carregarPratos()]); }}
+          onAbrirPrato={(p) => { setPratoAtual(p); setTela("editor"); }}
+        />
+      ) : <>
       {filtro !== "todos" && visiveis.length === 0 && (
         <div style={{ ...cardStyle, textAlign: "center", color: "#0F6E56", fontSize: 13, marginBottom: 14 }}>
           Nenhum prato nesse filtro — está tudo preenchido.
@@ -995,6 +1030,7 @@ export default function FichasTecnicas() {
           })}
         </div>
       )}
+      </>}
     </div>
   );
 }
@@ -1572,6 +1608,9 @@ function EditorFicha({ prato, margem, onVoltar }) {
           <div style={{ fontWeight: 700, fontSize: 16, color: "#22231F" }}>{brl(prato.preco_venda)}</div>
         </div>
       </div>
+
+      {/* Outros nomes e códigos que trazem venda pra este prato (203) */}
+      <ApelidosDoPrato pratoId={prato.id} />
 
       {/* tipo do produto */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
