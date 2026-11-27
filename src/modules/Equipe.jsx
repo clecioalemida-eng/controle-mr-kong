@@ -10,6 +10,7 @@ import {
   ignorarNome, carregarIgnorados, sugerirPessoa,
 } from "../lib/fiado";
 import FolhaPagamento from "./FolhaPagamento";
+import EncargosRiscos from "./EncargosRiscos";
 // Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
 // collation do banco e às vezes joga nome acentuado ou em maiúscula pro
 // fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
@@ -43,6 +44,14 @@ async function abrirDocumento(path) {
 }
 const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", cozinha: "Cozinha", limpeza: "Limpeza", gerente: "Gerente" };
 const PAPEIS = ["garcom", "caixa", "bar", "chapa", "cozinha", "limpeza"];
+// Vínculo. Freela (eventual) é pago igual ao diarista — base da Matriz
+// de cargos ou por hora, na saída da noite. A diferença é só de registro:
+// serve para a aba Encargos e riscos separar quem vem de vez em quando de
+// quem vem toda semana. Por isso TODA conta que antes perguntava
+// "é diarista?" agora pergunta "não tem carteira?".
+const VINCULO_LABEL = { registrado: "Registrado", diarista: "Diarista", freela: "Freela" };
+function semCarteira(tipo) { return tipo === "diarista" || tipo === "freela"; }
+function rotuloVinculo(tipo) { return VINCULO_LABEL[tipo] || "Diarista"; }
 const PAPEIS_COM_GERENTE = [...PAPEIS, "gerente"];
 // Regra de divisão da premiação diária: só garçom fica no bolo dos
 // garçons — todo o resto (caixa, bar, chapa, cozinha, limpeza, e o
@@ -141,6 +150,7 @@ const SUBABAS = [
   { chave: "premiacao", label: "Escala do dia",       perm: "gente.escala" },
   { chave: "mensal",    label: "Fechamento mensal",   perm: "gente.mensal" },
   { chave: "folha",     label: "Folha de pagamento",  perm: "gente.folha" },
+  { chave: "encargos",  label: "Encargos e riscos",   perm: "gente.encargos" },
 ];
 // Só admin vê valores (salário, matriz de cargos, comissão calculada,
 // fechamento mensal) — outras pessoas aprovadas só marcam quem trabalhou
@@ -209,6 +219,7 @@ export default function Equipe({ permissoes }) {
       {subaba === "premiacao" && liberada(SUBABAS[3]) && <PremiacaoDoDia isAdmin={verValores} />}
       {subaba === "mensal"    && liberada(SUBABAS[4]) && <FechamentoMensal />}
       {subaba === "folha"     && liberada(SUBABAS[5]) && <FolhaPagamento />}
+      {subaba === "encargos"  && liberada(SUBABAS[6]) && <EncargosRiscos verValores={verValores} irParaPessoas={() => setSubaba("pessoas")} />}
     </div>
   );
 }
@@ -425,7 +436,7 @@ function Pessoas({ isAdmin }) {
   // escreveu. Sai do cache — não custa consulta ao CardápioWeb.
   const [nomesFiado, setNomesFiado] = useState([]);
   const [busca, setBusca] = useState("");
-  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", pix: "", nome_fiado: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null });
+  const [form, setForm] = useState({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", pix: "", nome_fiado: "", cpf: "", telefone: "", email: "", data_nascimento: "", data_admissao: "", endereco: "", documento_path: null, arquivoDocumento: null });
   const carregar = useCallback(async () => {
     setCarregando(true);
     const { data, error } = await supabase.from("pessoas").select("*").order("nome");
@@ -444,12 +455,13 @@ function Pessoas({ isAdmin }) {
     // sugestões de nome nunca chegariam a carregar.
   }, [isAdmin]);
   useEffect(() => { carregar(); }, [carregar]);
-  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", pix: "", nome_fiado: "", cpf: "", telefone: "", email: "", data_nascimento: "", documento_path: null, arquivoDocumento: null }); setNovoAberto(true); setEditandoId(null); };
+  const abrirNovo = () => { setForm({ nome: "", papel: "garcom", tipo_contrato: "registrado", salario_base: "", pix: "", nome_fiado: "", cpf: "", telefone: "", email: "", data_nascimento: "", data_admissao: "", endereco: "", documento_path: null, arquivoDocumento: null }); setNovoAberto(true); setEditandoId(null); };
   const abrirEdicao = (p) => {
     setForm({
       nome: p.nome, papel: p.papel, tipo_contrato: p.tipo_contrato, salario_base: p.salario_base ?? "",
       pix: p.pix ?? "", nome_fiado: p.nome_fiado ?? "",
       cpf: p.cpf ?? "", telefone: p.telefone ?? "", email: p.email ?? "", data_nascimento: p.data_nascimento ?? "",
+      data_admissao: p.data_admissao ?? "", endereco: p.endereco ?? "",
       documento_path: p.documento_path ?? null, arquivoDocumento: null,
     });
     setEditandoId(p.id); setNovoAberto(false);
@@ -474,11 +486,14 @@ function Pessoas({ isAdmin }) {
       tipo_contrato: form.tipo_contrato,
       pix: form.pix?.trim() || null,
       nome_fiado: form.nome_fiado?.trim() || null,
-      salario_base: form.tipo_contrato === "diarista" ? null : (parseFloat(form.salario_base) || 0),
+      salario_base: semCarteira(form.tipo_contrato) ? null : (parseFloat(form.salario_base) || 0),
       cpf: form.cpf.trim() || null,
       telefone: form.telefone.trim() || null,
       email: form.email.trim() || null,
       data_nascimento: form.data_nascimento || null,
+      // Admissão só vale para quem tem carteira — é dela que saem férias e 13º.
+      data_admissao: form.tipo_contrato === "registrado" ? (form.data_admissao || null) : null,
+      endereco: form.endereco?.trim() || null,
       documento_path: documentoPath,
     };
     const { data: salvo, error } = editandoId
@@ -538,12 +553,12 @@ function Pessoas({ isAdmin }) {
                   </div>
                   <div style={{ fontSize: 12, color: "#8A8778" }}>
                     {PAPEL_LABEL[p.papel]}
-                    {p.tipo_contrato === "diarista" && " · base/hora pela Matriz de cargos"}
+                    {semCarteira(p.tipo_contrato) && " · base/hora pela Matriz de cargos"}
                     {isAdmin && (p.tipo_contrato === "registrado" || p.papel === "gerente") && p.salario_base ? ` · salário ${brl(p.salario_base)}` : ""}
                   </div>
                 </div>
                 <span style={{ ...pill, background: p.tipo_contrato === "registrado" ? "#37A0E522" : "#FAC77555", color: p.tipo_contrato === "registrado" ? "#185FA5" : "#854F0B" }}>
-                  {p.papel === "gerente" ? "Gerente" : p.tipo_contrato === "registrado" ? "Registrado" : "Diarista"}
+                  {p.papel === "gerente" ? "Gerente" : rotuloVinculo(p.tipo_contrato)}
                 </span>
                 <button onClick={() => setExpandidoId(expandidoId === p.id ? null : p.id)} style={ghostIconBtn} aria-label="Ver todos os dados">
                   {expandidoId === p.id ? <EyeOff size={15} /> : <Eye size={15} />}
@@ -560,6 +575,10 @@ function Pessoas({ isAdmin }) {
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #E8E2D2", display: "grid", gap: 5, fontSize: 12 }}>
                   <div><span style={{ color: "#8A8778" }}>CPF: </span><span style={p.cpf ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.cpf || "não preenchido"}</span></div>
                   <div><span style={{ color: "#8A8778" }}>Telefone: </span><span style={p.telefone ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.telefone || "não preenchido"}</span></div>
+                  <div><span style={{ color: "#8A8778" }}>Endereço: </span><span style={p.endereco ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.endereco || "não preenchido"}</span></div>
+                  {p.tipo_contrato === "registrado" && (
+                    <div><span style={{ color: "#8A8778" }}>Admissão: </span><span style={p.data_admissao ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.data_admissao ? new Date(p.data_admissao + "T12:00:00").toLocaleDateString("pt-BR") : "não preenchida"}</span></div>
+                  )}
                   <div><span style={{ color: "#8A8778" }}>E-mail: </span><span style={p.email ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.email || "não preenchido"}</span></div>
                   <div><span style={{ color: "#8A8778" }}>PIX: </span><span style={p.pix ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.pix || "não preenchido"}</span></div>
                   <div><span style={{ color: "#8A8778" }}>Nome no fiado: </span><span style={p.nome_fiado ? { color: "#22231F" } : { color: "#8A8778" }}>{p.nome_fiado || "mesmo do cadastro"}</span></div>
@@ -1477,7 +1496,7 @@ function PagamentoDasDiarias({ dia, linhasSalvas, fiado, pagamento, aoMudar, set
   const [gravando, setGravando] = useState(false);
   const [desfazendo, setDesfazendo] = useState(false);
 
-  const diaristas = linhasSalvas.filter((l) => l.pessoa?.tipo_contrato === "diarista");
+  const diaristas = linhasSalvas.filter((l) => semCarteira(l.pessoa?.tipo_contrato));
   const bruto = diaristas.reduce((s2, l) => s2 + (Number(l.total_dia) || 0), 0);
   const fiadoAberto = fiado.buscou
     ? diaristas.reduce((s2, l) => s2 + fiado.saldoDe(l.pessoa_id), 0)
@@ -1670,7 +1689,7 @@ function FolhaEscala({ dia, linhas, participacao, taxa, emitidoPor }) {
             return (
               <tr key={l.pessoa_id}>
                 <td style={td}>{l.pessoa?.nome}</td>
-                <td style={td}>{PAPEL_LABEL[l.pessoa?.papel]}{l.pessoa?.tipo_contrato === "diarista" ? " · diarista" : ""}</td>
+                <td style={td}>{PAPEL_LABEL[l.pessoa?.papel]}{semCarteira(l.pessoa?.tipo_contrato) ? ` · ${rotuloVinculo(l.pessoa.tipo_contrato).toLowerCase()}` : ""}</td>
                 <td style={td}>{part.entrada && part.saida ? `${part.entrada}–${part.saida}` : "—"}</td>
                 <td style={n}>{(part.horas || 0).toLocaleString("pt-BR")}</td>
                 <td style={n}>
@@ -1903,6 +1922,7 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin, nomesFiado =
         <select value={form.tipo_contrato} onChange={(e) => setForm((f) => ({ ...f, tipo_contrato: e.target.value }))} style={{ ...inputStyle, flex: 1 }}>
           <option value="registrado">Registrado</option>
           <option value="diarista">Diarista</option>
+          <option value="freela">Freela (eventual)</option>
         </select>
       </div>
       {isAdmin && form.papel === "gerente" && (
@@ -1912,7 +1932,7 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin, nomesFiado =
           <div style={{ fontSize: 11, color: "#8A8778" }}>Gerente não entra na divisão diária de comissão — ganha esse salário + 2% do faturamento bruto do mês, calculado no Fechamento mensal (vale independente de ser registrada ou diarista).</div>
         </>
       )}
-      {form.papel !== "gerente" && form.tipo_contrato === "diarista" && (
+      {form.papel !== "gerente" && semCarteira(form.tipo_contrato) && (
         <div style={{ fontSize: 11, color: "#8A8778" }}>Base diária e valor da hora vêm da Matriz de cargos — não se digita aqui.</div>
       )}
       {isAdmin && form.papel !== "gerente" && form.tipo_contrato === "registrado" && (
@@ -1930,6 +1950,8 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin, nomesFiado =
       </div>
       <input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
         placeholder="E-mail" style={inputStyle} />
+      <input value={form.endereco} onChange={(e) => setForm((f) => ({ ...f, endereco: e.target.value }))}
+        placeholder="Endereço (rua, número, bairro, cidade)" style={inputStyle} autoComplete="off" name="endereco-pessoa" />
       <div>
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Chave PIX</label>
         <input value={form.pix} onChange={(e) => setForm((f) => ({ ...f, pix: e.target.value }))}
@@ -1992,6 +2014,14 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin, nomesFiado =
         )}
       </div>
       <div>
+        {form.tipo_contrato === "registrado" && (
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Data de admissão (da carteira)</label>
+            <input type="date" value={form.data_admissao} onChange={(e) => setForm((f) => ({ ...f, data_admissao: e.target.value }))}
+              style={inputStyle} />
+            <div style={{ fontSize: 11, color: "#8A8778", marginTop: 4 }}>É dela que saem férias e 13º em Encargos e riscos.</div>
+          </div>
+        )}
         <label style={{ fontSize: 11, color: "#8A8778", display: "block", marginBottom: 4 }}>Data de aniversário</label>
         <input type="date" value={form.data_nascimento} onChange={(e) => setForm((f) => ({ ...f, data_nascimento: e.target.value }))}
           style={inputStyle} />
@@ -2313,7 +2343,7 @@ function PremiacaoDoDia({ isAdmin }) {
       // o percentual de cada noite acumula pro fechamento do mês.
       const pct = Number(matriz.gerente?.percentual_faturamento ?? PERCENTUAL_GERENTE_PADRAO) || 0;
       const comissao = round2(faturamentoBrutoDia * pct / 100);
-      const base = p.tipo_contrato === "diarista" ? (parseFloat(baseCategoria.gerente) || 0) : 0;
+      const base = semCarteira(p.tipo_contrato) ? (parseFloat(baseCategoria.gerente) || 0) : 0;
       const total = round2(comissao + base);
       return {
         pessoa: p, peso: 0, horas, comissao, baseCategoriaValor: base,
@@ -2325,7 +2355,7 @@ function PremiacaoDoDia({ isAdmin }) {
     const comissao = categoriaComissao(papelDia) === "garcom" ? comissaoPorGarcom : comissaoPorInterno;
     const baseCategoriaValor = parseFloat(baseCategoria[papelDia]) || 0;
     const m = matriz[papelDia] || { valor_hora: 0 };
-    if (p.tipo_contrato === "diarista") {
+    if (semCarteira(p.tipo_contrato)) {
       const valorMetodoComissao = comissao + baseCategoriaValor;
       const valorMetodoHora = horas * (m.valor_hora || 0);
       // Menos de 8h: vale a hora. Com 8h ou mais: vale o maior dos dois.
@@ -2514,7 +2544,7 @@ function PremiacaoDoDia({ isAdmin }) {
                   <div style={{ fontSize: 11, color: "#8A8778" }}>
                     {PAPEL_LABEL[l.papel_no_dia || l.pessoa.papel]}
                     {l.papel_no_dia && l.papel_no_dia !== l.pessoa.papel ? ` (cadastro: ${PAPEL_LABEL[l.pessoa.papel]})` : ""}
-                    {l.pessoa.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[l.pessoa_id])}
+                    {semCarteira(l.pessoa.tipo_contrato) ? ` · ${rotuloVinculo(l.pessoa.tipo_contrato).toLowerCase()}` : ""} · {textoPonto(participacao[l.pessoa_id])}
                   </div>
                   {isAdmin && <LinhaPix pessoa={l.pessoa} />}
                 </div>
@@ -2551,7 +2581,7 @@ function PremiacaoDoDia({ isAdmin }) {
           {pessoasSemPremiacao.map((p, idx) => (
             <div key={p.id} style={{ padding: "10px 14px", borderTop: (linhasSalvas.length + idx) > 0 ? "1px solid #F0EBDD" : "none" }}>
               <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
-              <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{p.tipo_contrato === "diarista" ? " · diarista" : ""} · {textoPonto(participacao[p.id])}</div>
+              <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}{semCarteira(p.tipo_contrato) ? ` · ${rotuloVinculo(p.tipo_contrato).toLowerCase()}` : ""} · {textoPonto(participacao[p.id])}</div>
               {isAdmin && <LinhaPix pessoa={p} />}
               {isAdmin && <FiadoNoAcerto fiado={fiado} pessoaId={p.id} dia={dia} valorDoDia={null} />}
             </div>
@@ -2675,7 +2705,7 @@ function PremiacaoDoDia({ isAdmin }) {
                         ) : (
                           PAPEL_LABEL[p.papel]
                         )}
-                        {p.tipo_contrato === "diarista" ? " · diarista" : ""}
+                        {semCarteira(p.tipo_contrato) ? ` · ${rotuloVinculo(p.tipo_contrato).toLowerCase()}` : ""}
                       </div>
                     </div>
                     {sujo && (
@@ -3311,7 +3341,7 @@ function FechamentoMensal() {
       if (t > (taxaDaNoite[pr.dia] || 0)) taxaDaNoite[pr.dia] = t;
       const bolo = categoriaComissao(pr.papel_no_dia || pr.pessoa?.papel);
       if (!bolo) return;
-      const contrato = pr.pessoa?.tipo_contrato === "diarista" ? "diarista" : "mensalista";
+      const contrato = semCarteira(pr.pessoa?.tipo_contrato) ? "diarista" : "mensalista";
       rateio[bolo][contrato] += Number(pr.comissao) || 0;
     });
     const totalTaxa = Object.values(taxaDaNoite).reduce((s, t) => s + t, 0);
@@ -3341,7 +3371,7 @@ function FechamentoMensal() {
     });
     const porDiarista = {};
     (premiacoes || []).forEach((pr) => {
-      if (pr.pessoa?.tipo_contrato !== "diarista") return;
+      if (!semCarteira(pr.pessoa?.tipo_contrato)) return;
       if (!porDiarista[pr.pessoa_id]) {
         porDiarista[pr.pessoa_id] = { pessoaId: pr.pessoa_id, nome: pr.pessoa.nome, papel: pr.pessoa.papel, noites: 0, bruto: 0, pago: 0, semPagamento: [] };
       }
@@ -3398,7 +3428,7 @@ function FechamentoMensal() {
     // noites em que ela não foi escalada. Com duas gerentes isso pagaria
     // o percentual duas vezes sobre o mesmo faturamento.
     const listaGerentes = (pessoasData || [])
-      .filter((p) => p.papel === "gerente" && p.tipo_contrato !== "diarista")
+      .filter((p) => p.papel === "gerente" && !semCarteira(p.tipo_contrato))
       .map((p) => {
         const noites = porGerente[p.id] || { dias: 0, comissao: 0, faturamento: 0 };
         const salarioBase = p.salario_base || 0;
