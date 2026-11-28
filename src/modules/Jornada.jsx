@@ -45,16 +45,16 @@ const PICO_INI = 20 * 60, PICO_FIM = 23 * 60;
 const SEGUNDA = 1;                    // casa fechada
 
 // Regime pelo DOMINGO da semana: a semana de 14 a 20/12/2026 já é de 42 h.
-function regimeDe(isoDia) { return REGIMES.find((r) => isoDia <= r.ate); }
+export function regimeDe(isoDia) { return REGIMES.find((r) => isoDia <= r.ate); }
 
 // ---------------------------------------------------------------------------
 // Datas e horas
 // ---------------------------------------------------------------------------
 const p2 = (n) => String(n).padStart(2, "0");
-function iso(d) { return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; }
-function lerData(s) { const [a, m, d] = String(s).slice(0, 10).split("-").map(Number); return new Date(a, m - 1, d); }
-function somaDias(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); }
-function segundaDa(d) { const dow = d.getDay(); return somaDias(d, dow === 0 ? -6 : 1 - dow); }
+export function iso(d) { return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; }
+export function lerData(s) { const [a, m, d] = String(s).slice(0, 10).split("-").map(Number); return new Date(a, m - 1, d); }
+export function somaDias(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); }
+export function segundaDa(d) { const dow = d.getDay(); return somaDias(d, dow === 0 ? -6 : 1 - dow); }
 function hojeData() { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
 function br(d) { return `${p2(d.getDate())}/${p2(d.getMonth() + 1)}`; }
 const DIAS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -67,7 +67,7 @@ function minutos(hhmm) {
   return h * 60 + (m || 0);
 }
 function hhmm(min) { return min == null ? "" : `${p2(Math.floor(min / 60) % 24)}:${p2(Math.round(min % 60))}`; }
-function horas(min) {
+export function horas(min) {
   if (min == null) return "—";
   const t = Math.round(min);
   return `${Math.floor(t / 60)}h${p2(t % 60)}`;
@@ -114,8 +114,21 @@ export function contaPonto({ hora_entrada, hora_saida, intervalo_minutos, horas_
   return { trabalhado, noturno, legal: trabalhado - noturno + noturno * 60 / HORA_NOTURNA };
 }
 
+// Conta de uma noite lançada na Escala do dia. Se o intervalo digitado
+// tem a mesma duração do planejado, usa a HORA do intervalo planejado
+// (sabe se caiu antes ou depois das 22h). Senão, a conta cautelosa.
+export function contaDoPonto(ponto, plano) {
+  const intervalo = Number(ponto.intervalo_minutos) || 0;
+  if (plano?.conta?.i1 != null && plano.conta.intervalo === intervalo && ponto.hora_entrada && ponto.hora_saida) {
+    const c = contaNoite({ entrada: ponto.hora_entrada, intervaloInicio: plano.horario.intervaloInicio,
+      intervaloFim: plano.horario.intervaloFim, saida: ponto.hora_saida });
+    if (c && c.intervalo === intervalo) return c;
+  }
+  return contaPonto(ponto);
+}
+
 // O plano de uma pessoa num dia: folga, horário do dia ou o padrão.
-function planoDoDia(pessoa, dia, ajustes) {
+export function planoDoDia(pessoa, dia, ajustes) {
   const d = lerData(dia);
   if (d.getDay() === SEGUNDA) return { folga: true, fechado: true };
   const a = ajustes[`${pessoa.id}|${dia}`];
@@ -131,30 +144,46 @@ function planoDoDia(pessoa, dia, ajustes) {
 }
 
 // Avisos de uma semana (segunda a domingo) para uma pessoa.
-export function avisosDaSemana(pessoa, dias, ajustes) {
+// `ponto` (opcional): { "pessoa|dia": linha de presencas_diarias }. Dia
+// com ponto conta pelo ponto; dia sem ponto conta pelo planejado — é a
+// projeção da semana.
+export function avisosDaSemana(pessoa, dias, ajustes, ponto = {}) {
   const regime = regimeDe(dias[6]);
-  const planos = dias.map((dia) => ({ dia, ...planoDoDia(pessoa, dia, ajustes) }));
+  const planos = dias.map((dia) => {
+    const plano = { dia, ...planoDoDia(pessoa, dia, ajustes) };
+    const pr = ponto[`${pessoa.id}|${dia}`];
+    if (!pr) return plano;
+    return { ...plano, folga: false, doPonto: true, conta: contaDoPonto(pr, plano), contaPlanejada: plano.conta };
+  });
   const avisos = [];
   const total = planos.reduce((t, p) => t + (p.conta?.legal || 0), 0);
+  const totalPonto = planos.filter((p) => p.doPonto).reduce((t, p) => t + (p.conta?.legal || 0), 0);
+  const noitesPonto = planos.filter((p) => p.doPonto).length;
   const folgas = planos.filter((p) => p.folga).length;
   if (planos.some((p) => !p.folga && p.semHorario)) avisos.push({ nivel: "medio", texto: "sem horário padrão — preencha em Horário de cada um" });
-  if (total > regime.semanal * 60 + 0.5) avisos.push({ nivel: "alto", texto: `${horas(total)} na semana — passa das ${regime.semanal} h (${horas(total - regime.semanal * 60)} de extra)` });
+  if (total > regime.semanal * 60 + 0.5) avisos.push({ nivel: "alto", texto: `${horas(total)} na semana${noitesPonto ? " (projeção com o ponto)" : ""} — passa das ${regime.semanal} h (${horas(total - regime.semanal * 60)} de extra)` });
   if (folgas < regime.folgas) avisos.push({ nivel: "alto", texto: `${folgas} folga(s) na semana — a regra pede ${regime.folgas}` });
   planos.forEach((p, i) => {
     if (p.folga || !p.conta) return;
     const c = p.conta;
+    // Dia com ponto: só a conta do dia (o ponto não diz quando foi o
+    // intervalo nem a hora exata para o descanso entre noites).
+    if (p.doPonto) {
+      if (c.legal > regime.diario + 0.5) avisos.push({ nivel: "alto", texto: `${DIAS[lerData(p.dia).getDay()]} ${br(lerData(p.dia))}: ${horas(c.legal)} pela lei no ponto — passa de ${horas(regime.diario)} no dia` });
+      return;
+    }
     const nomeDia = `${DIAS[lerData(p.dia).getDay()]} ${br(lerData(p.dia))}`;
     if (c.legal > regime.diario + 0.5) avisos.push({ nivel: "alto", texto: `${nomeDia}: ${horas(c.legal)} pela lei — passa de ${horas(regime.diario)} no dia` });
     if (c.trabalhado > 6 * 60 && c.intervalo < INTERVALO_MIN_LONGA) avisos.push({ nivel: "alto", texto: `${nomeDia}: intervalo de ${c.intervalo} min — mais de 6 h de trabalho pede 1 h` });
     else if (c.trabalhado > 4 * 60 && c.trabalhado <= 6 * 60 && c.intervalo < INTERVALO_MIN_CURTA) avisos.push({ nivel: "medio", texto: `${nomeDia}: sem os 15 min de intervalo` });
     if (c.intervalo > INTERVALO_MAX) avisos.push({ nivel: "medio", texto: `${nomeDia}: intervalo de ${horas(c.intervalo)} — passa de 2 h` });
     const prox = planos[i + 1];
-    if (prox && !prox.folga && prox.conta) {
+    if (prox && !prox.folga && prox.conta && !prox.doPonto) {
       const descanso = prox.conta.e + 1440 - c.s;
       if (descanso < INTERJORNADA_MIN) avisos.push({ nivel: "alto", texto: `${nomeDia}: só ${horas(descanso)} de descanso até a noite seguinte (mínimo 11 h)` });
     }
   });
-  return { regime, total, folgas, avisos, planos };
+  return { regime, total, totalPonto, noitesPonto, folgas, avisos, planos };
 }
 
 // Avisos de domingo no mês: mulher (domingo_quinzenal) não pode trabalhar
@@ -211,6 +240,7 @@ export default function Jornada({ verValores }) {
   const [erro, setErro] = useState("");
   const [mes, setMes] = useState(() => new Date(hoje.getFullYear(), hoje.getMonth(), 1));
   const [ajustes, setAjustes] = useState({});
+  const [ponto, setPonto] = useState({});
 
   // Semanas (segunda a domingo) que tocam o mês, mais as 4 de antes — o
   // botão "repetir" copia de lá, e o aviso de domingo olha a vizinhança.
@@ -227,9 +257,11 @@ export default function Jornada({ verValores }) {
     setErro("");
     const de = iso(somaDias(lerData(semanas[0][0]), -28));
     const ate = semanas[semanas.length - 1][6];
-    const [resP, resA] = await Promise.all([
+    const [resP, resA, resPonto] = await Promise.all([
       supabase.from("pessoas").select("*").eq("ativo", true).eq("tipo_contrato", "registrado"),
       supabase.from("escala_jornada").select("*").gte("dia", de).lte("dia", ate),
+      supabase.from("presencas_diarias").select("pessoa_id, dia, hora_entrada, hora_saida, intervalo_minutos, horas_trabalhadas")
+        .gte("dia", semanas[0][0]).lte("dia", ate),
     ]);
     if (resP.error) setErro(resP.error.message);
     else if (resA.error) setErro(resA.error.message.includes("escala_jornada")
@@ -237,6 +269,8 @@ export default function Jornada({ verValores }) {
       : resA.error.message);
     setPessoas((resP.data || []).slice().sort(porNome));
     setAjustes(Object.fromEntries((resA.data || []).map((a) => [`${a.pessoa_id}|${a.dia}`, a])));
+    // O ponto da Escala do dia entra aqui sozinho — não se digita de novo.
+    setPonto(Object.fromEntries((resPonto.data || []).map((x) => [`${x.pessoa_id}|${x.dia}`, x])));
     setCarregando(false);
   }, [semanas]);
 
@@ -263,7 +297,7 @@ export default function Jornada({ verValores }) {
       {pessoas.length === 0 && <div style={cardStyle}><span style={pequeno}>Nenhum registrado ativo. Cadastre em Pessoas com vínculo “Registrado”.</span></div>}
       {pessoas.length > 0 && parte === "padrao" && <ParteHorario pessoas={pessoas} recarregar={carregar} setErro={setErro} hoje={hoje} />}
       {pessoas.length > 0 && parte === "mes" && (
-        <ParteMes pessoas={pessoas} mes={mes} setMes={setMes} semanas={semanas} ajustes={ajustes}
+        <ParteMes pessoas={pessoas} mes={mes} setMes={setMes} semanas={semanas} ajustes={ajustes} ponto={ponto}
           setAjustes={setAjustes} setErro={setErro} hoje={hoje} />
       )}
       {pessoas.length > 0 && parte === "ponto" && <PartePonto pessoas={pessoas} hoje={hoje} verValores={verValores} />}
@@ -349,7 +383,7 @@ function Campo({ rotulo, valor, onChange }) {
 // ---------------------------------------------------------------------------
 // 2. Mês
 // ---------------------------------------------------------------------------
-function ParteMes({ pessoas, mes, setMes, semanas, ajustes, setAjustes, setErro, hoje }) {
+function ParteMes({ pessoas, mes, setMes, semanas, ajustes, ponto, setAjustes, setErro, hoje }) {
   const [diaAberto, setDiaAberto] = useState(null);
   const [ocupado, setOcupado] = useState(false);
   const domingosDoMes = semanas.map((s) => s[6]).filter((d) => lerData(d).getMonth() === mes.getMonth());
@@ -396,7 +430,7 @@ function ParteMes({ pessoas, mes, setMes, semanas, ajustes, setAjustes, setErro,
 
   const resumoSemanas = semanas.map((dias) => ({
     dias,
-    porPessoa: pessoas.map((p) => ({ p, ...avisosDaSemana(p, dias, ajustes) })),
+    porPessoa: pessoas.map((p) => ({ p, ...avisosDaSemana(p, dias, ajustes, ponto) })),
     casa: dias.map((d) => ({ dia: d, avisos: avisosDaCasa(d, pessoas, ajustes) })),
   }));
   const domingos = pessoas.map((p) => ({ p, ...avisosDeDomingo(p, domingosDoMes, ajustes) }));
@@ -422,6 +456,7 @@ function ParteMes({ pessoas, mes, setMes, semanas, ajustes, setAjustes, setErro,
                 const folgam = pessoas.filter((p) => ajustes[`${p.id}|${dia}`]?.folga);
                 const mudaHorario = pessoas.filter((p) => { const a = ajustes[`${p.id}|${dia}`]; return a && !a.folga; });
                 const temAviso = casa[i + 1].avisos.length > 0;
+                const comPonto = pessoas.filter((p) => ponto[`${p.id}|${dia}`]).length;
                 const aberto = diaAberto === dia;
                 return (
                   <button key={dia} onClick={() => setDiaAberto(aberto ? null : dia)} style={{
@@ -429,7 +464,7 @@ function ParteMes({ pessoas, mes, setMes, semanas, ajustes, setAjustes, setErro,
                     minHeight: 58, padding: 4, textAlign: "left", cursor: "pointer", opacity: foraDoMes ? 0.55 : 1, font: "inherit",
                   }}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#8A8778" }}>
-                      <span>{br(d)}</span>{temAviso && <span style={{ color: COR.medio.color }}>●</span>}
+                      <span>{br(d)}{comPonto > 0 && <span title={`ponto de ${comPonto} pessoa(s) lançado`} style={{ color: COR.baixo.color, marginLeft: 3 }}>✓</span>}</span>{temAviso && <span style={{ color: COR.medio.color }}>●</span>}
                     </div>
                     <div style={{ display: "flex", gap: 2, flexWrap: "wrap", marginTop: 3 }}>
                       {folgam.map((p) => <span key={p.id} title={`${p.nome} folga`} style={{ ...chip, background: "#E8E2D2", color: "#5F5E5A" }}>{iniciais(p.nome)}</span>)}
@@ -446,6 +481,7 @@ function ParteMes({ pessoas, mes, setMes, semanas, ajustes, setAjustes, setErro,
         <span><span style={{ ...chip, background: "#E8E2D2", color: "#5F5E5A" }}>AB</span> folga</span>
         <span><span style={{ ...chip, background: "#37A0E522", color: "#185FA5" }}>AB</span> horário diferente</span>
         <span><span style={{ color: COR.medio.color }}>●</span> aviso da casa</span>
+        <span><span style={{ color: COR.baixo.color }}>✓</span> ponto lançado</span>
         <span>Segunda: casa fechada, folga de todos.</span>
         <button onClick={repetirCiclo} disabled={ocupado} style={{ ...linkBtn, fontSize: 11.5, display: "inline-flex", gap: 4, alignItems: "center" }}><RotateCcw size={12} /> Repetir as folgas de 4 semanas antes</button>
       </div>
@@ -453,7 +489,7 @@ function ParteMes({ pessoas, mes, setMes, semanas, ajustes, setAjustes, setErro,
       {diaAberto && <PainelDia dia={diaAberto} pessoas={pessoas} ajustes={ajustes} salvar={salvarAjuste} ocupado={ocupado}
         avisosCasa={avisosDaCasa(diaAberto, pessoas, ajustes)} fechar={() => setDiaAberto(null)} />}
 
-      <div style={titulo}>Horas pela lei por semana</div>
+      <div style={titulo}>Horas pela lei por semana · projeção</div>
       <div style={{ ...tabela, overflowX: "auto" }}>
         <div style={{ minWidth: 120 + 90 * semanas.length }}>
           <div style={{ display: "grid", gridTemplateColumns: `120px repeat(${semanas.length}, 1fr)`, gap: 4, padding: "8px 10px", background: "#F6F1E7" }}>
@@ -469,7 +505,7 @@ function ParteMes({ pessoas, mes, setMes, semanas, ajustes, setAjustes, setErro,
                 return (
                   <div key={dias[0]} style={{ textAlign: "center" }}>
                     <div style={{ fontWeight: 700, color: ruim ? COR.alto.color : "#22231F" }}>{horas(r.total)}</div>
-                    <div style={pequeno}>{r.folgas} folga(s) · {r.regime.semanal} h</div>
+                    <div style={pequeno}>{r.noitesPonto ? `ponto ${horas(r.totalPonto)} (${r.noitesPonto}) · ` : ""}{r.folgas} folga(s)</div>
                   </div>
                 );
               })}
@@ -506,6 +542,7 @@ function ParteMes({ pessoas, mes, setMes, semanas, ajustes, setAjustes, setErro,
         ))}
       </div>
       <div style={nota}>
+        Projeção = o ponto das noites já lançadas na Escala do dia + o planejado das que faltam.
         Regra do painel: pelo menos 1 domingo de folga por mês; quem está marcado “a cada 15 dias” não pode trabalhar dois domingos seguidos.
         A semana que passa de um regime para outro segue o regime do domingo.
       </div>
