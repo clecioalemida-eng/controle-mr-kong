@@ -5,7 +5,7 @@
 // A gerente entra pelo link #gente/previsao (com o login dela) e monta a
 // escala de hoje até 7 dias à frente. A tela ajuda:
 //   - áreas descobertas (cobertura_minima, migração 215), em faixas das
-//     16h às 03h, com sugestões que se aplicam com um toque
+//     17h às 03h, com sugestões que se aplicam com um toque
 //   - mais de 8 h de trabalho no dia, intervalo que falta
 //   - registrado passando das horas da semana (regras da Jornada)
 //   - freela vindo muitas noites (risco de vínculo)
@@ -38,7 +38,7 @@ const INTERVALO_CURTA = 15;            // de 4 h a 6 h
 const PICO_INI = 20 * 60, PICO_FIM = 23 * 60;
 const NOITES_ATENCAO = 3;              // freela com 3 noites na semana: atenção
 const NOITES_RISCO = 4;                // 4 ou mais: risco de vínculo
-const EIXO_INI = 16 * 60, EIXO_FIM = 27 * 60;   // 16:00 às 03:00
+const EIXO_INI = 17 * 60, EIXO_FIM = 27 * 60;   // 17:00 às 03:00 (a casa abre às 17h)
 const PASSO = 15;                      // minutos de cada fatia da conta de cobertura
 const HORARIO_PADRAO = { entrada: "18:00", saida: "02:00" };
 
@@ -477,7 +477,7 @@ export default function PrevisaoEscala() {
           <div style={card}>
             <div style={{ display: "grid", gridTemplateColumns: "104px 1fr", fontSize: 9.5, color: "#8A8778", marginBottom: 4 }}>
               <div />
-              <div style={{ display: "flex", justifyContent: "space-between" }}>{["16h", "18h", "20h", "22h", "00h", "02h"].map((h) => <span key={h}>{h}</span>)}</div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>{["17h", "19h", "21h", "23h", "01h", "03h"].map((h) => <span key={h}>{h}</span>)}</div>
             </div>
             {atual.rs.map(({ regra, faixas }) => (
               <div key={regra.id} style={{ display: "grid", gridTemplateColumns: "104px 1fr", gap: 6, alignItems: "center", fontSize: 12, marginBottom: 5 }}>

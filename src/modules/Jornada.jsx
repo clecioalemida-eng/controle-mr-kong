@@ -60,7 +60,7 @@ const HORA_NOTURNA = 52.5;            // minutos que valem 1 hora
 const INTERVALO_MIN_LONGA = 60;       // mais de 6 h de trabalho: intervalo de 1 h a 2 h
 const INTERVALO_MIN_CURTA = 15;       // de 4 h a 6 h: 15 min
 const INTERJORNADA_MIN = 11 * 60;     // 11 h entre o fim de uma noite e o começo da outra
-const ABERTURA = 16 * 60;             // a casa abre às 16h
+const ABERTURA = 17 * 60;             // a casa abre às 17h
 const PICO_INI = 20 * 60, PICO_FIM = 23 * 60;
 const SEGUNDA = 1;                    // casa fechada, a não ser que o calendário diga que abre
 
@@ -268,7 +268,7 @@ function avisosDaCasa(dia, pessoas, ajustes, cal = {}) {
     .map((p) => ({ p, plano: planoDoDia(p, dia, ajustes, cal) }))
     .filter((x) => !x.plano.folga && x.plano.conta);
   const avisos = [];
-  if (!trabalhando.some((x) => x.plano.conta.e <= ABERTURA)) avisos.push("nenhum registrado chega às 16h — quem abre?");
+  if (!trabalhando.some((x) => x.plano.conta.e <= ABERTURA)) avisos.push(`nenhum registrado chega às ${hhmm(ABERTURA).slice(0, 2)}h — quem abre?`);
   if (pessoas.some((p) => p.papel === "chapa") && !trabalhando.some((x) => x.p.papel === "chapa")) avisos.push("chapa sem registrado — confirme o substituto");
   if (pessoas.some((p) => p.papel === "gerente") && !trabalhando.some((x) => x.p.papel === "gerente")) avisos.push("sem gerente — quem responde pela casa?");
   // Dois ou mais em intervalo ao mesmo tempo no pico.
