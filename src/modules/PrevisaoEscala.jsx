@@ -233,7 +233,20 @@ export default function PrevisaoEscala() {
 
   const { pessoas, inativos, prev, status, ajustes, cal, regras, presencas, eu } = dados;
   const statusDe = (dia) => status[dia]?.status || "rascunho";
-  const podeEditar = (dia) => eu.admin || !["enviada", "aprovada"].includes(statusDe(dia));
+  // A previsão pode ser mexida até o próprio dia (a janela já começa hoje).
+  // Mexer num dia enviado ou aprovado devolve o dia para rascunho: ele
+  // precisa ser enviado e aprovado de novo.
+  const podeEditar = () => true;
+  const alteradaDepois = (dia) => statusDe(dia) === "rascunho" && !!status[dia]?.aprovado_em;
+  const confirmarMudanca = (dia) => {
+    const st0 = statusDe(dia);
+    if (st0 !== "aprovada" && st0 !== "enviada") return true;
+    return window.confirm(`${DIAS_LONGO[lerData(dia).getDay()]} ${br(lerData(dia))} já foi ${st0 === "aprovada" ? "aprovado" : "enviado para aprovação"}.\n\nSe mudar, o dia volta para aprovação — depois toque em "Enviar para aprovação" de novo. Continuar?`);
+  };
+  const voltarParaRascunho = async (dia) => {
+    if (!["aprovada", "enviada"].includes(statusDe(dia))) return;
+    await supabase.from("previsoes_escala_dias").upsert({ dia, status: "rascunho", fechada: false, atualizado_em: new Date().toISOString() }, { onConflict: "dia" });
+  };
 
   // ----- análise de cada dia -----
   const analise = (dia) => {
@@ -278,8 +291,10 @@ export default function PrevisaoEscala() {
 
   // ----- gravações -----
   const gravarPrevisao = async (p, dia, campos) => {
+    if (!confirmarMudanca(dia)) return false;
     setOcupado(true);
     const { error } = await supabase.from("previsoes_escala").upsert({ pessoa_id: p.id, dia, ...campos }, { onConflict: "pessoa_id,dia" });
+    if (!error) await voltarParaRascunho(dia);
     setOcupado(false);
     if (error) { setErro(/papel_no_dia|entrada/.test(error.message) ? "Falta rodar a migração 215 no Supabase." : error.message); return false; }
     await carregar();
@@ -300,14 +315,17 @@ export default function PrevisaoEscala() {
     });
   };
   const tirarPrevisao = async (p, dia) => {
+    if (!confirmarMudanca(dia)) return;
     setOcupado(true);
     const { error } = await supabase.from("previsoes_escala").delete().eq("pessoa_id", p.id).eq("dia", dia);
+    if (!error) await voltarParaRascunho(dia);
     setOcupado(false);
     if (error) { setErro(error.message); return; }
     carregar();
   };
   // Registrado da Jornada: folga ou horário do dia vão para escala_jornada.
   const gravarJornada = async (p, dia, campos) => {
+    if (!confirmarMudanca(dia)) return false;
     setOcupado(true);
     const atualLinha = ajustes[`${p.id}|${dia}`] || {};
     const linha = { ...atualLinha, pessoa_id: p.id, dia, atualizado_em: new Date().toISOString(), ...campos };
@@ -316,6 +334,7 @@ export default function PrevisaoEscala() {
     const { error } = vazio
       ? await supabase.from("escala_jornada").delete().eq("pessoa_id", p.id).eq("dia", dia)
       : await supabase.from("escala_jornada").upsert(linha, { onConflict: "pessoa_id,dia" });
+    if (!error) await voltarParaRascunho(dia);
     setOcupado(false);
     if (error) { setErro(error.message); return false; }
     await carregar();
@@ -539,7 +558,7 @@ export default function PrevisaoEscala() {
             }}>
               <div>{DIAS_SEM[d.getDay()]} {p2(d.getDate())}</div>
               <div style={{ fontSize: 10, marginTop: 2, color: on ? "#F3EFE3" : r.fechada ? "#8A8778" : r.vazio ? "#8A8778" : r.problemas ? "#A32D2D" : "#1F6B42" }}>
-                {r.fechada ? "fechada" : r.vazio ? "vazio" : r.problemas ? `● ${r.problemas}` : "✓"}
+                {r.fechada ? "fechada" : r.vazio ? "vazio" : alteradaDepois(r.dia) ? "alterado" : r.problemas ? `● ${r.problemas}` : statusDe(r.dia) === "aprovada" ? "✓ aprov." : "✓"}
               </div>
             </button>
           );
@@ -551,7 +570,14 @@ export default function PrevisaoEscala() {
       ) : (
         <>
           {esp && <div style={{ ...card, borderColor: "#A32D2D", color: "#A32D2D", fontSize: 12.5, marginBottom: 10 }}><b>{esp.nome}</b> — {esp.tipo === "dia_categoria" ? "dia da categoria: quem trabalhar recebe em dobro" : "feriado: quem trabalhar recebe as horas com +100%"}.</div>}
-          {!editavel && <div style={{ ...card, fontSize: 12.5, marginBottom: 10 }}>{st === "enviada" ? "Enviada para aprovação — aguarde, ou peça ao administrador para devolver." : "Aprovada."}{eu.admin && <> <button onClick={() => reabrir(diaSel)} style={linkBtn}><RotateCcw size={12} /> Reabrir</button></>}</div>}
+          {(st === "enviada" || st === "aprovada" || alteradaDepois(diaSel)) && (
+            <div style={{ ...card, fontSize: 12.5, marginBottom: 10, ...(alteradaDepois(diaSel) ? { borderColor: "#E8A33D", background: "#FFF8E6" } : {}) }}>
+              {st === "enviada" && "Enviado para aprovação. Ainda dá para mudar — se mudar, o dia volta para rascunho e precisa ser enviado de novo."}
+              {st === "aprovada" && "Aprovado. Ainda dá para mudar até o dia — se mudar, volta para aprovação."}
+              {alteradaDepois(diaSel) && <><b>Alterado depois de aprovado</b> — toque em “Enviar para aprovação” de novo.</>}
+              {eu.admin && st === "aprovada" && <> <button onClick={() => reabrir(diaSel)} style={linkBtn}><RotateCcw size={12} /> Reabrir</button></>}
+            </div>
+          )}
 
           {/* Faixas de cobertura */}
           <div style={titulo}>{DIAS_LONGO[lerData(diaSel).getDay()]} {br(lerData(diaSel))} · áreas da casa</div>
