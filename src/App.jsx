@@ -88,6 +88,8 @@ export default function App() {
   const [modulos, setModulos] = useState([]);
   const [carregandoModulos, setCarregandoModulos] = useState(false);
   const [totalPendentes, setTotalPendentes] = useState(0);
+  // Dias de previsão de escala enviados pela gerente, esperando aprovação.
+  const [previsoesPendentes, setPrevisoesPendentes] = useState(0);
   // ---- sessão -------------------------------------------------------------
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -153,6 +155,12 @@ export default function App() {
       .select("id", { count: "exact", head: true })
       .eq("status", "pendente");
     setTotalPendentes(count || 0);
+    // Sem a migração 215 a coluna não existe: fica em zero, sem erro na tela.
+    const { count: prev } = await supabase
+      .from("previsoes_escala_dias")
+      .select("dia", { count: "exact", head: true })
+      .eq("status", "enviada");
+    setPrevisoesPendentes(prev || 0);
   }, [perfil]);
   useEffect(() => {
     if (perfil?.status === "aprovado") {
@@ -228,6 +236,8 @@ export default function App() {
       modulos={modulos}
       carregando={carregandoModulos}
       totalPendentes={totalPendentes}
+      previsoesPendentes={previsoesPendentes}
+      onAbrirPrevisao={() => { setSub("previsao"); setSub2(null); setTela("gente"); }}
       onAbrirModulo={(chave) => { setSub(null); setSub2(null); setTela(chave); }}
       onAbrirPermissoes={(aba) => { setAbaPermissoes(aba || "cargos"); setTela("permissoes"); }}
       onSair={sair}
@@ -550,7 +560,7 @@ function TelaAguardando({ perfil, onSair }) {
 // ---------------------------------------------------------------------------
 // Início: grid de cards
 // ---------------------------------------------------------------------------
-function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, onAbrirModulo, onAbrirPermissoes, onSair }) {
+function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, previsoesPendentes = 0, onAbrirPrevisao, onAbrirModulo, onAbrirPermissoes, onSair }) {
   // Dashboard e Gente e Gestão agora são módulos de verdade, com linha na
   // tabela `modulos` — entram pela lista como qualquer outro card.
   const nadaParaMostrar = modulos.length === 0 && !perfil?.is_admin;
@@ -586,6 +596,18 @@ function TelaInicio({ perfil, permissoes, modulos, carregando, totalPendentes, o
             <button onClick={onSair} style={iconBtn} aria-label="Sair"><LogOut size={18} /></button>
           </div>
         </div>
+        {perfil?.is_admin && previsoesPendentes > 0 && (
+          <button onClick={onAbrirPrevisao} style={{
+            ...cardStyle, width: "100%", textAlign: "left", cursor: "pointer", marginBottom: 14,
+            border: "2px solid #22231F", display: "flex", alignItems: "center", gap: 10, font: "inherit",
+          }}>
+            <Clock size={18} />
+            <span style={{ flex: 1, fontSize: 13.5 }}>
+              <b>Previsão de escala aguardando sua aprovação</b>
+              <span style={{ display: "block", fontSize: 12, color: "#8A8778" }}>{previsoesPendentes} dia(s) enviados pela gerente — toque para ver</span>
+            </span>
+          </button>
+        )}
         {carregando ? (
           <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
         ) : nadaParaMostrar ? (

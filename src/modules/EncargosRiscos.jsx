@@ -49,7 +49,7 @@ function brl(v) { return (Number(v) || 0).toLocaleString("pt-BR", { style: "curr
 function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 function porNome(a, b) { return (a.nome || "").localeCompare(b.nome || "", "pt-BR", { sensitivity: "base" }); }
 
-const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", cozinha: "Cozinha", limpeza: "Limpeza", gerente: "Gerente" };
+const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", espeteiro: "Espeteiro", cozinha: "Cozinha", limpeza: "Limpeza", gerente: "Gerente" };
 const VINCULO_LABEL = { registrado: "Registrado", diarista: "Diarista", freela: "Freela" };
 const semCarteira = (p) => p?.tipo_contrato === "diarista" || p?.tipo_contrato === "freela";
 

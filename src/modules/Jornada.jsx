@@ -933,7 +933,7 @@ function ParteCalendario({ hoje, setErro, aoMudar }) {
 // ---------------------------------------------------------------------------
 // Estilo
 // ---------------------------------------------------------------------------
-const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", cozinha: "Cozinha", limpeza: "Limpeza", gerente: "Gerente" };
+const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", espeteiro: "Espeteiro", cozinha: "Cozinha", limpeza: "Limpeza", gerente: "Gerente" };
 const COR = {
   baixo: { background: "#2F8F5B22", color: "#1F6B42" },
   medio: { background: "#FAC77555", color: "#854F0B" },

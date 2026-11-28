@@ -13,6 +13,7 @@ import FolhaPagamento from "./FolhaPagamento";
 import EncargosRiscos from "./EncargosRiscos";
 import Jornada, { planoDoDia, contaDoPonto, avisosDaSemana, regimeDe, horas as horasLei, segundaDa, iso as isoData, lerData, somaDias, casaFechada, diaEspecial } from "./Jornada";
 import DocumentosPessoa from "./DocumentosPessoa";
+import PrevisaoEscala from "./PrevisaoEscala";
 // Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
 // collation do banco e às vezes joga nome acentuado ou em maiúscula pro
 // fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
@@ -44,8 +45,8 @@ async function abrirDocumento(path) {
   if (error || !data?.signedUrl) { alert("Não consegui abrir o documento: " + (error?.message || "")); return; }
   window.open(data.signedUrl, "_blank");
 }
-const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", cozinha: "Cozinha", limpeza: "Limpeza", gerente: "Gerente" };
-const PAPEIS = ["garcom", "caixa", "bar", "chapa", "cozinha", "limpeza"];
+const PAPEL_LABEL = { garcom: "Garçom", interno: "Equipe interna", caixa: "Caixa", bar: "Bar", chapa: "Chapa", espeteiro: "Espeteiro", cozinha: "Cozinha", limpeza: "Limpeza", gerente: "Gerente" };
+const PAPEIS = ["garcom", "caixa", "bar", "chapa", "espeteiro", "cozinha", "limpeza"];
 // Vínculo. Freela (eventual) é pago igual ao diarista — base da Matriz
 // de cargos ou por hora, na saída da noite. A diferença é só de registro:
 // serve para a aba Encargos e riscos separar quem vem de vez em quando de
@@ -179,7 +180,7 @@ function useIsAdmin() {
   }, []);
   return isAdmin;
 }
-export default function Equipe({ permissoes }) {
+export default function Equipe({ permissoes, abaInicial, onAba }) {
   const isAdmin = useIsAdmin();
   // Administrador continua passando por cima de tudo — é assim no banco
   // (nivel_acesso) e tem que ser assim aqui, senão as duas pontas
@@ -191,7 +192,11 @@ export default function Equipe({ permissoes }) {
   // precisar cadastrar e escalar sem enxergar salário, CPF ou fiado.
   const verValores = isAdmin || podeVer(permissoes, "gente.salarios");
 
-  const [subaba, setSubaba] = useState("pessoas");
+  // A sub-aba vai para o endereço (#gente/previsao): recarregar volta
+  // nela, e dá para mandar o link direto de uma tela — é assim que a
+  // gerente abre a Previsão de escala.
+  const [subaba, setSubabaInterna] = useState(() => (SUBABAS.some((a) => a.chave === abaInicial) ? abaInicial : "pessoas"));
+  const setSubaba = (a) => { setSubabaInterna(a); if (onAba) onAba(a, null); };
   // Se a primeira aba não é permitida, cai na primeira que for — em vez
   // de mostrar uma tela vazia sem explicar por quê. A dependência é a
   // LISTA de chaves, não o array: o array é novo a cada render e faria
@@ -226,150 +231,12 @@ export default function Equipe({ permissoes }) {
       </div>
       {subaba === "pessoas"   && liberada(SUBABAS[0]) && <Pessoas isAdmin={verValores} />}
       {subaba === "matriz"    && liberada(SUBABAS[1]) && <MatrizCargos />}
-      {subaba === "previsao"  && liberada(SUBABAS[2]) && <PrevisaoDeEscala />}
+      {subaba === "previsao"  && liberada(SUBABAS[2]) && <PrevisaoEscala />}
       {subaba === "premiacao" && liberada(SUBABAS[3]) && <PremiacaoDoDia isAdmin={verValores} />}
       {subaba === "mensal"    && liberada(SUBABAS[4]) && <FechamentoMensal />}
       {subaba === "folha"     && liberada(SUBABAS[5]) && <FolhaPagamento />}
       {subaba === "encargos"  && liberada(SUBABAS[6]) && <EncargosRiscos verValores={verValores} irParaPessoas={() => setSubaba("pessoas")} />}
       {subaba === "jornada"   && liberada(SUBABAS[7]) && <Jornada verValores={verValores} />}
-    </div>
-  );
-}
-// ---------------------------------------------------------------------------
-// Previsão de Escala — planejamento de dias futuros, sem nenhum cálculo
-// de valor (isso só acontece na Escala do dia, quando o dia chegar).
-// Serve pra organizar quem está previsto pra trabalhar em cada dia.
-// ---------------------------------------------------------------------------
-function PrevisaoDeEscala() {
-  const [dia, setDia] = useState(() => {
-    const amanha = new Date();
-    amanha.setDate(amanha.getDate() + 1);
-    return amanha.toISOString().slice(0, 10);
-  });
-  const [pessoas, setPessoas] = useState([]);
-  const [previstos, setPrevistos] = useState(new Set());
-  // Registrado com horário na Jornada: quem decide se vem é a Jornada
-  // (folga ou não). Marcar/desmarcar aqui grava a folga lá — um lugar só.
-  const [jornadaAj, setJornadaAj] = useState({});
-  const [calDia, setCalDia] = useState({});
-  const [fechada, setFechada] = useState(false);
-  const [carregando, setCarregando] = useState(true);
-  const [erro, setErro] = useState("");
-  const [mensagem, setMensagem] = useState("");
-  const carregar = useCallback(async () => {
-    setCarregando(true);
-    setMensagem("");
-    const [{ data: pessoasData, error }, { data: previsoesData }, { data: statusData }, { data: jornadaData }, { data: calData }] = await Promise.all([
-      supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
-      supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
-      supabase.from("previsoes_escala_dias").select("fechada").eq("dia", dia).maybeSingle(),
-      supabase.from("escala_jornada").select("*").eq("dia", dia),
-      supabase.from("calendario_casa").select("*").eq("dia", dia),
-    ]);
-    setJornadaAj(Object.fromEntries((jornadaData || []).map((a) => [a.pessoa_id, a])));
-    setCalDia(Object.fromEntries((calData || []).map((c) => [c.dia, c])));
-    if (error) setErro(error.message);
-    setPessoas([...(pessoasData || [])].sort(porNome));
-    setPrevistos(new Set((previsoesData || []).map((p) => p.pessoa_id)));
-    setFechada(statusData?.fechada || false);
-    setCarregando(false);
-  }, [dia]);
-  useEffect(() => { carregar(); }, [carregar]);
-  const alternar = async (pessoaId) => {
-    const jaPrevisto = previstos.has(pessoaId);
-    if (jaPrevisto) {
-      await supabase.from("previsoes_escala").delete().eq("pessoa_id", pessoaId).eq("dia", dia);
-    } else {
-      await supabase.from("previsoes_escala").insert({ pessoa_id: pessoaId, dia });
-    }
-    setPrevistos((prev) => {
-      const novo = new Set(prev);
-      jaPrevisto ? novo.delete(pessoaId) : novo.add(pessoaId);
-      return novo;
-    });
-    setMensagem("Previsão salva.");
-  };
-  const fecharPrevisao = async () => {
-    await supabase.from("previsoes_escala_dias").upsert({ dia, fechada: true, atualizado_em: new Date().toISOString() }, { onConflict: "dia" });
-    setFechada(true);
-    setMensagem("");
-  };
-  const reabrirPrevisao = async () => {
-    await supabase.from("previsoes_escala_dias").upsert({ dia, fechada: false, atualizado_em: new Date().toISOString() }, { onConflict: "dia" });
-    setFechada(false);
-  };
-  const pelaJornada = (p) => jornadaAtiva(p) && dia >= INICIO_JORNADA_NA_ESCALA && !casaFechada(dia, calDia);
-  const marcado = (p) => (pelaJornada(p) ? !jornadaAj[p.id]?.folga : previstos.has(p.id));
-  const alternarJornada = async (p) => {
-    const linha = jornadaAj[p.id];
-    let res;
-    if (linha?.folga) {
-      // Tira a folga. Se a linha só existia pela folga, apaga; se tinha
-      // horário do dia, mantém o horário.
-      const temHorario = linha.entrada || linha.saida || linha.intervalo_inicio || linha.intervalo_fim;
-      res = temHorario
-        ? await supabase.from("escala_jornada").update({ folga: false, atualizado_em: new Date().toISOString() }).eq("id", linha.id).select().single()
-        : await supabase.from("escala_jornada").delete().eq("id", linha.id);
-      if (res.error) { setErro(res.error.message); return; }
-      setJornadaAj((a) => { const n = { ...a }; if (temHorario) n[p.id] = res.data; else delete n[p.id]; return n; });
-    } else {
-      res = await supabase.from("escala_jornada")
-        .upsert({ ...(linha || {}), pessoa_id: p.id, dia, folga: true, atualizado_em: new Date().toISOString() }, { onConflict: "pessoa_id,dia" })
-        .select().single();
-      if (res.error) { setErro(res.error.message); return; }
-      setJornadaAj((a) => ({ ...a, [p.id]: res.data }));
-    }
-    setMensagem("Folga gravada na Jornada.");
-  };
-  const selecionados = pessoas.filter(marcado);
-  return (
-    <div>
-      <div style={{ fontSize: 12, color: "#8A8778", marginBottom: 14 }}>
-        Só planejamento — sem taxa de serviço, sem cálculo de valor. Quando o dia chegar, marque de novo (ou confirme) na Escala do dia pra calcular os valores de verdade.
-      </div>
-      <input type="date" value={dia} onChange={(e) => setDia(e.target.value)} style={{ ...inputStyle, marginBottom: 14 }} />
-      {mensagem && <div style={{ ...avisoStyle, background: "#EAF3DE", borderColor: "#97C459", color: "#27500A" }}>{mensagem}</div>}
-      {erro && <div style={avisoStyle}><AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /><div style={{ fontSize: 13 }}>{erro}</div></div>}
-      {carregando ? (
-        <div style={{ fontSize: 13, color: "#8A8778" }}>Carregando…</div>
-      ) : fechada ? (
-        <div>
-          <div style={{ fontSize: 11, color: "#8A8778", marginBottom: 8 }}>{selecionados.length} marcado{selecionados.length !== 1 ? "s" : ""} — previsão fechada</div>
-          <div style={{ border: "1px solid #E8E2D2", borderRadius: 12, overflow: "hidden", background: "#FFFFFF", marginBottom: 12 }}>
-            {selecionados.map((p, idx) => (
-              <div key={p.id} style={{ padding: "10px 14px", borderTop: idx > 0 ? "1px solid #F0EBDD" : "none" }}>
-                <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
-                <div style={{ fontSize: 11, color: "#8A8778" }}>{PAPEL_LABEL[p.papel]}</div>
-              </div>
-            ))}
-            {selecionados.length === 0 && <div style={{ padding: 14, fontSize: 13, color: "#8A8778" }}>Ninguém marcado nesse dia.</div>}
-          </div>
-          <button onClick={reabrirPrevisao} style={linkBtn}>✎ Editar de novo</button>
-        </div>
-      ) : (
-        <>
-          <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
-            {pessoas.map((p) => (
-              <div key={p.id} style={{ ...cardStyle, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-                <input type="checkbox" checked={marcado(p)} onChange={() => (pelaJornada(p) ? alternarJornada(p) : alternar(p.id))} />
-                <div>
-                  <div style={{ fontSize: 13, color: "#22231F" }}>{p.nome}</div>
-                  <div style={{ fontSize: 11, color: "#8A8778" }}>
-                    {PAPEL_LABEL[p.papel]}
-                    {pelaJornada(p) && <span style={{ color: "#185FA5" }}> · pela Jornada{jornadaAj[p.id]?.folga ? " (folga)" : ""}</span>}
-                  </div>
-                </div>
-              </div>
-            ))}
-            {pessoas.length === 0 && <div style={{ fontSize: 13, color: "#8A8778" }}>Cadastre pessoas na aba "Pessoas" primeiro.</div>}
-          </div>
-          {pessoas.length > 0 && (
-            <button onClick={fecharPrevisao} style={{ ...btnSecondary, width: "100%", display: "flex", justifyContent: "center", gap: 6 }}>
-              <Check size={14} /> Fechar previsão desse dia
-            </button>
-          )}
-        </>
-      )}
     </div>
   );
 }
@@ -2192,7 +2059,7 @@ function PremiacaoDoDia({ isAdmin }) {
         supabase.from("premiacoes_diarias").select("*").eq("dia", dia),
         supabase.from("matriz_cargos").select("*"),
         supabase.from("taxas_do_dia").select("*").eq("dia", dia).maybeSingle(),
-        supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
+        supabase.from("previsoes_escala").select("*").eq("dia", dia),
       ]);
       const { data: pagDia } = await supabase
         .from("pagamentos_diaria").select("*").eq("dia", dia).maybeSingle();
@@ -2249,16 +2116,22 @@ function PremiacaoDoDia({ isAdmin }) {
           mapaPart[p.id] = { incluido: !plano.folga, horas: horasPlano === null ? 0 : horasPlano, ...h, papel: null };
           return;
         }
-        const entrada = TURNO_PADRAO.entrada;
-        const saida = TURNO_PADRAO.saida;
-        const horas = horasDoPonto(entrada, saida, INTERVALO_PADRAO_MIN);
+        // Previsão com horário (feita pela gerente): abre com ele e com a
+        // função do dia. Sem horário, o turno padrão de sempre.
+        const prevDia = (previsoesData || []).find((x) => x.pessoa_id === p.id);
+        const entrada = prevDia?.entrada ? hhmmDe(prevDia.entrada) : TURNO_PADRAO.entrada;
+        const saida = prevDia?.saida ? hhmmDe(prevDia.saida) : TURNO_PADRAO.saida;
+        const intervaloPrev = prevDia?.intervalo_inicio && prevDia?.intervalo_fim
+          ? (((minutosDoHorario(hhmmDe(prevDia.intervalo_fim)) - minutosDoHorario(hhmmDe(prevDia.intervalo_inicio))) + 1440) % 1440)
+          : (prevDia?.entrada ? 0 : INTERVALO_PADRAO_MIN);
+        const horas = horasDoPonto(entrada, saida, intervaloPrev);
         mapaPart[p.id] = {
           incluido: idsPrevistos.has(p.id),
           horas: horas === null ? 0 : horas,
           entrada,
           saida,
-          intervalo: INTERVALO_PADRAO_MIN,
-          papel: null,
+          intervalo: intervaloPrev,
+          papel: prevDia?.papel_no_dia || null,
         };
       });
       (presencasData || []).forEach((pr) => {

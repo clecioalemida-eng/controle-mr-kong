@@ -13,7 +13,7 @@ import Equipe from "./Equipe";
 // Este arquivo é a moldura de página que o Financeiro fornecia antes
 // (cabeçalho e botão de voltar) — e o carteiro das permissões: o Equipe
 // precisa delas pra decidir quais sub-abas cada cargo enxerga.
-export default function GenteGestao({ onVoltar, permissoes }) {
+export default function GenteGestao({ onVoltar, permissoes, abaInicial, onAba }) {
   return (
     <div style={pageStyle}>
       <div className="app-shell">
@@ -21,7 +21,7 @@ export default function GenteGestao({ onVoltar, permissoes }) {
           <button onClick={onVoltar} style={iconBtn}><ChevronLeft size={18} /></button>
           <div style={{ fontWeight: 800, fontSize: 17, color: "#22231F" }}>Gente e Gestão</div>
         </div>
-        <Equipe permissoes={permissoes} />
+        <Equipe permissoes={permissoes} abaInicial={abaInicial} onAba={onAba} />
       </div>
     </div>
   );
