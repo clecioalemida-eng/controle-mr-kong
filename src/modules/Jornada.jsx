@@ -45,10 +45,10 @@ const REGIMES = [
   { ate: "9999-12-31", semanal: 40, diario: 8 * 60, folgas: 2, divisor: 200, nome: "40 h · 2 folgas (EC 141/2026)" },
 ];
 // Convenção GO000217/2026
-const EXTRA_UTIL = 0.6;               // hora extra de segunda a sábado: +60%
-const EXTRA_DOMINGO = 1.0;            // hora extra no domingo: +100%
-const ADICIONAL_FERIADO = 1.0;        // toda hora no feriado: +100%
-const ADICIONAL_CATEGORIA = 1.0;      // segunda de Carnaval trabalhada: dobro
+export const EXTRA_UTIL = 0.6;               // hora extra de segunda a sábado: +60%
+export const EXTRA_DOMINGO = 1.0;            // hora extra no domingo: +100%
+export const ADICIONAL_FERIADO = 1.0;        // toda hora no feriado: +100%
+export const ADICIONAL_CATEGORIA = 1.0;      // segunda de Carnaval trabalhada: dobro
 const ADICIONAL_NOTURNO = 0.2;        // 20% sobre o salário base
 const INTERVALO_MIN_ACORDO = 30;      // com acordo individual (cl. 34ª)
 // Domingos seguidos trabalhados, no máximo
@@ -735,9 +735,12 @@ function PartePonto({ pessoas, hoje, verValores }) {
         .gte("dia", dias[0]).lte("dia", dias[6]).in("pessoa_id", pessoas.map((p) => p.id)),
       supabase.from("escala_jornada").select("*").gte("dia", dias[0]).lte("dia", dias[6]),
       supabase.from("calendario_casa").select("*").gte("dia", dias[0]).lte("dia", dias[6]),
-    ]).then(([rp, ra, rc]) => {
+      // Extra aprovada na Previsão de escala (migração 220) — para comparar.
+      supabase.from("previsoes_extras").select("*").eq("semana", dias[0]),
+    ]).then(([rp, ra, rc, rx]) => {
       if (!vivo) return;
       setDados({
+        aprovadas: Object.fromEntries((rx.data || []).map((x) => [x.pessoa_id, x])),
         presencas: rp.data || [], erro: rp.error?.message || ra.error?.message || "",
         ajustes: Object.fromEntries((ra.data || []).map((a) => [`${a.pessoa_id}|${a.dia}`, a])),
         cal: Object.fromEntries((rc.data || []).map((c) => [c.dia, c])),
@@ -766,7 +769,22 @@ function PartePonto({ pessoas, hoje, verValores }) {
               </div>
               {linhas.map((l) => (
                 <div key={l.p.id} style={{ display: "grid", gridTemplateColumns: "1.3fr .8fr .8fr .8fr 1fr .9fr", gap: 6, padding: 10, borderTop: "1px solid #F0EBDD", fontSize: 13, alignItems: "center" }}>
-                  <div><b>{l.p.nome}</b><div style={pequeno}>{l.noites} noite(s) · {l.folgas} folga(s){l.semHorario ? " · alguma sem entrada/saída" : ""}</div></div>
+                  <div><b>{l.p.nome}</b><div style={pequeno}>{l.noites} noite(s) · {l.folgas} folga(s){l.semHorario ? " · alguma sem entrada/saída" : ""}</div>
+                    {(() => {
+                      const ap = dados.aprovadas?.[l.p.id];
+                      const apMin = ap ? ap.minutos_extra60 + ap.minutos_extra100 + ap.minutos_feriado : 0;
+                      const real = l.extra60 + l.min100;
+                      if (!ap && real <= 0.5) return null;
+                      const passou = real - apMin > 15;
+                      return (
+                        <div style={{ fontSize: 11, marginTop: 2, color: passou ? COR.alto.color : COR.baixo.color }}>
+                          {ap ? `aprovada na previsão: ${horas(apMin)}` : "nenhuma extra aprovada na previsão"}
+                          {passou ? ` · ${horas(real - apMin)} a mais que o aprovado` : real > 0.5 ? " · dentro do aprovado" : ""}
+                          {ap?.motivo ? <span style={{ color: "#8A8778" }}> · “{ap.motivo}”</span> : null}
+                        </div>
+                      );
+                    })()}
+                  </div>
                   <div style={{ textAlign: "right" }}>{horas(l.planejado)}</div>
                   <div style={{ textAlign: "right" }}>{l.noites ? horas(l.real) : "—"}</div>
                   <div style={{ textAlign: "right", fontWeight: 700, color: l.extra60 > 0 ? COR.alto.color : "#8A8778" }}>{l.extra60 > 0 ? horas(l.extra60) : "—"}</div>

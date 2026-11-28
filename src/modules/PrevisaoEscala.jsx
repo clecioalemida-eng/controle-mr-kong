@@ -24,6 +24,7 @@ import { supabase } from "../lib/supabaseClient";
 import {
   contaNoite, planoDoDia, casaFechada, diaEspecial, avisosDaSemana,
   iso, lerData, somaDias, segundaDa, horas,
+  EXTRA_UTIL, EXTRA_DOMINGO, ADICIONAL_FERIADO,
 } from "./Jornada";
 import DocumentosPessoa, { cpfValido } from "./DocumentosPessoa";
 
@@ -57,6 +58,7 @@ function minNoite(t) { const m = minutos(t); return m == null ? null : (m < 12 *
 function hhmm(min) { return min == null ? "" : `${p2(Math.floor(min / 60) % 24)}:${p2(Math.round(min % 60))}`; }
 // Busca sem acento e sem diferença de maiúscula: "joao" acha "João".
 function semAcento(t) { return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
+function brl(v) { return (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
 function primeiroNome(n) { return String(n || "").split(" ")[0]; }
 function jornadaAtiva(p) { return p?.tipo_contrato === "registrado" && !!p.jornada_entrada && !!p.jornada_saida; }
 // Risco de vínculo só existe para quem não tem carteira.
@@ -122,6 +124,41 @@ export function faixasDaRegra(regra, turnos) {
   });
   return faixas;
 }
+// Hora extra que a previsão gera para um registrado numa semana (segunda
+// a domingo), com os motivos. Feriado e dia da categoria contam à parte
+// (+100% / dobro) e não entram de novo na conta do limite da semana.
+export function extrasDaSemana(p, diasSemana, ajustes, cal) {
+  const r = avisosDaSemana(p, diasSemana, ajustes, {}, cal);
+  const limite = r.regime.semanal * 60;
+  const paraLimite = r.total - r.minFeriado - r.minCategoria;
+  const excesso = Math.max(0, paraLimite - limite);
+  const minDomingo = r.planos
+    .filter((x) => !x.folga && x.conta && lerData(x.dia).getDay() === 0 && !diaEspecial(x.dia, cal))
+    .reduce((t, x) => t + x.conta.legal, 0);
+  const extra100 = Math.min(excesso, minDomingo);
+  const extra60 = excesso - extra100;
+  const feriado = r.minFeriado + r.minCategoria;
+  const motivos = [];
+  if (r.folgas < r.regime.folgas) motivos.push(`${7 - r.folgas} noites (falta ${r.regime.folgas - r.folgas} folga)`);
+  r.planos.forEach((x) => {
+    const nomeDia = `${DIAS_SEM[lerData(x.dia).getDay()]} ${br(lerData(x.dia))}`;
+    if (!x.folga && x.ajuste && !x.ajuste.folga && (x.ajuste.entrada || x.ajuste.saida)) motivos.push(`horário diferente na ${nomeDia}`);
+    const esp = diaEspecial(x.dia, cal);
+    if (!x.folga && x.conta && esp) motivos.push(`${esp.tipo === "dia_categoria" ? "dia da categoria" : "feriado"} ${nomeDia}`);
+  });
+  if (excesso > 0 && minDomingo > 0 && extra100 > 0) motivos.push("trabalha domingo");
+  return {
+    p, regime: r.regime, previsto: paraLimite, limite, excesso, extra60, extra100, feriado, motivos,
+    temExtra: excesso > 0.5 || feriado > 0.5,
+    valorHora: (Number(p.salario_base) || 0) / r.regime.divisor,
+  };
+}
+export function valorDaExtra(x) {
+  return (x.extra60 / 60) * x.valorHora * (1 + EXTRA_UTIL)
+    + (x.extra100 / 60) * x.valorHora * (1 + EXTRA_DOMINGO)
+    + (x.feriado / 60) * x.valorHora * ADICIONAL_FERIADO;
+}
+
 function regrasDoDia(dia, regras, cal) {
   if (casaFechada(dia, cal)) return [];
   const dow = lerData(dia).getDay();
@@ -363,20 +400,38 @@ export default function PrevisaoEscala() {
   const enviadas = dias.filter((d) => statusDe(d) === "enviada");
   const devolvidas = dias.filter((d) => statusDe(d) === "devolvida");
   const paraEnviar = diasAbertos.filter((d) => ["rascunho", "devolvida"].includes(statusDe(d)));
+  // Horas extras que a previsão gera: semana a semana, para quem tem
+  // horário na Jornada (os demais registrados não têm como ser contados).
+  const semanasJanela = [...new Set(dias.map((d) => iso(segundaDa(lerData(d)))))];
+  const extras = semanasJanela.flatMap((seg) => {
+    const ds = [0, 1, 2, 3, 4, 5, 6].map((i) => iso(somaDias(lerData(seg), i)));
+    return pessoas.filter(jornadaAtiva).map((p) => ({ semana: seg, ...extrasDaSemana(p, ds, ajustes, cal) })).filter((x) => x.temExtra);
+  });
+  const totalExtraMin = extras.reduce((t, x) => t + x.excesso + x.feriado, 0);
+  const totalExtraValor = extras.reduce((t, x) => t + valorDaExtra(x), 0);
   const totalAlertas = dias.reduce((t, d) => { const a = analise(d); return t + a.descobertas.length + a.alertas.filter((x) => x.nivel === "alto").length; }, 0);
 
   const enviar = async () => {
     if (!paraEnviar.length) return;
+    let motivoExtra = null;
+    if (totalExtraMin > 0.5) {
+      // Hora extra pode ser necessária — mas vai com o motivo, para quem aprova.
+      while (!motivoExtra) {
+        const m = window.prompt(`Esta previsão gera ${horas(totalExtraMin)} de hora extra (${extras.map((x) => `${primeiroNome(x.p.nome)} ${horas(x.excesso + x.feriado)}`).join(", ")}).\n\nQual o motivo?`, "");
+        if (m === null) return;
+        motivoExtra = m.trim() || null;
+      }
+    }
     const comentario = window.prompt(`Enviar a previsão de ${br(lerData(paraEnviar[0]))} a ${br(lerData(paraEnviar[paraEnviar.length - 1]))} para aprovação?${totalAlertas ? `\n\nAinda há ${totalAlertas} alerta(s). Se quiser, explique:` : "\n\nComentário (opcional):"}`, "");
     if (comentario === null) return;
     setOcupado(true);
     const agora = new Date().toISOString();
     const { error } = await supabase.from("previsoes_escala_dias").upsert(paraEnviar.map((dia) => ({
       dia, status: "enviada", fechada: false, enviado_por: eu.nome || "gerente", enviado_em: agora,
-      comentario_gerente: comentario.trim() || null, atualizado_em: agora,
+      comentario_gerente: comentario.trim() || null, motivo_extra: motivoExtra, atualizado_em: agora,
     })), { onConflict: "dia" });
     setOcupado(false);
-    if (error) { setErro(/status|enviado/.test(error.message) ? "Falta rodar a migração 215 no Supabase." : error.message); return; }
+    if (error) { setErro(/motivo_extra/.test(error.message) ? "Falta rodar a migração 220 no Supabase." : /status|enviado/.test(error.message) ? "Falta rodar a migração 215 no Supabase." : error.message); return; }
     carregar();
   };
   const decidir = async (aprovar) => {
@@ -391,8 +446,17 @@ export default function PrevisaoEscala() {
       dia, status: aprovar ? "aprovada" : "devolvida", fechada: aprovar,
       aprovado_por: eu.nome || "administrador", aprovado_em: agora, comentario_aprovacao: comentario, atualizado_em: agora,
     })), { onConflict: "dia" });
+    if (error) { setOcupado(false); setErro(error.message); return; }
+    // Aprovada: guarda a extra combinada, para comparar com o ponto depois.
+    if (aprovar && extras.length) {
+      const motivo = status[enviadas[0]]?.motivo_extra || null;
+      const { error: errExtra } = await supabase.from("previsoes_extras").upsert(extras.map((x) => ({
+        semana: x.semana, pessoa_id: x.p.id, minutos_extra60: Math.round(x.extra60), minutos_extra100: Math.round(x.extra100),
+        minutos_feriado: Math.round(x.feriado), motivo, aprovado_por: eu.nome || "administrador", aprovado_em: agora,
+      })), { onConflict: "semana,pessoa_id" });
+      if (errExtra) setErro(/previsoes_extras/.test(errExtra.message) ? "Aprovada, mas a extra não foi guardada — rode a migração 220." : errExtra.message);
+    }
     setOcupado(false);
-    if (error) { setErro(error.message); return; }
     carregar();
   };
   const reabrir = async (dia) => {
@@ -420,10 +484,18 @@ export default function PrevisaoEscala() {
             {totalAlertas > 0 ? <span style={{ ...pill, ...COR.alto }}>{totalAlertas} alerta(s) em aberto</span> : <span style={{ ...pill, ...COR.ok }}>sem alertas</span>}
             {semDoc.length > 0 && <span style={{ ...pill, ...COR.alto }}>{semDoc.length} sem documentação: {semDoc.map((x) => primeiroNome(x.p.nome)).join(", ")}</span>}
           </div>
+          {totalExtraMin > 0.5 && (
+            <div style={{ marginTop: 8 }}>
+              <span style={{ ...pill, ...COR.alto }}>gera {horas(totalExtraMin)} de hora extra</span>{" "}
+              {totalExtraValor > 0 && <span style={{ ...pill, ...COR.alto }}>≈ {brl(totalExtraValor)}</span>}
+              {pendentesAprovacao.motivo_extra && <div style={{ ...pequeno, marginTop: 4 }}>Motivo: “{pendentesAprovacao.motivo_extra}”</div>}
+              <TabelaExtras extras={extras} comValor />
+            </div>
+          )}
           {pendentesAprovacao.comentario_gerente && <div style={{ ...pequeno, marginTop: 6 }}>Comentário: “{pendentesAprovacao.comentario_gerente}”</div>}
           <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-            <button disabled={ocupado} onClick={() => decidir(true)} style={btnPrimario}><Check size={14} /> Aprovar</button>
-            <button disabled={ocupado} onClick={() => decidir(false)} style={btn}><X size={14} /> Devolver com comentário</button>
+            <button disabled={ocupado} onClick={() => decidir(true)} style={btnPrimario}><Check size={14} /> {totalExtraMin > 0.5 ? "Aprovar com a hora extra" : "Aprovar"}</button>
+            <button disabled={ocupado} onClick={() => decidir(false)} style={btn}><X size={14} /> {totalExtraMin > 0.5 ? "Devolver (ex.: tire a extra)" : "Devolver com comentário"}</button>
           </div>
         </div>
       )}
@@ -445,6 +517,15 @@ export default function PrevisaoEscala() {
           <button disabled={ocupado} onClick={enviar} style={btnPrimario}><Send size={14} /> Enviar para aprovação</button>
         )}
       </div>
+
+      {/* Horas extras que esta previsão gera */}
+      {extras.length > 0 && (
+        <div style={{ ...card, marginBottom: 10, borderColor: "#E8A33D" }}>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>Horas extras que esta previsão gera · {horas(totalExtraMin)}</div>
+          <TabelaExtras extras={extras} comValor={eu.admin} />
+          <div style={{ ...pequeno, marginTop: 6 }}>Hora extra pode ser necessária — ao enviar, a tela pede o motivo para quem aprova. Feriado conta à parte, com +100%.</div>
+        </div>
+      )}
 
       {/* Dias */}
       <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 12, paddingBottom: 2 }}>
@@ -587,6 +668,35 @@ export default function PrevisaoEscala() {
           {mostrarConfig && <ConfigCobertura regras={regras} pessoas={pessoas} aoMudar={carregar} setErro={setErro} />}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tabela das horas extras previstas
+// ---------------------------------------------------------------------------
+function TabelaExtras({ extras, comValor }) {
+  const col = comValor ? "1.2fr .7fr .7fr .8fr .7fr" : "1.2fr .7fr .7fr .8fr";
+  return (
+    <div style={{ marginTop: 8, fontSize: 12.5 }}>
+      <div style={{ display: "grid", gridTemplateColumns: col, gap: 6, ...pequeno, fontWeight: 700, textTransform: "uppercase", fontSize: 10 }}>
+        <div>Pessoa · semana</div><div style={{ textAlign: "right" }}>Previsto</div><div style={{ textAlign: "right" }}>Limite</div><div style={{ textAlign: "right" }}>Extra</div>{comValor && <div style={{ textAlign: "right" }}>≈ Valor</div>}
+      </div>
+      {extras.map((x) => (
+        <div key={`${x.semana}-${x.p.id}`} style={{ borderTop: "1px solid #F0EBDD", padding: "6px 0" }}>
+          <div style={{ display: "grid", gridTemplateColumns: col, gap: 6, alignItems: "center" }}>
+            <div><b>{primeiroNome(x.p.nome)}</b> <span style={pequeno}>{br(lerData(x.semana))}–{br(somaDias(lerData(x.semana), 6))}</span></div>
+            <div style={{ textAlign: "right" }}>{horas(x.previsto)}</div>
+            <div style={{ textAlign: "right" }}>{horas(x.limite)}</div>
+            <div style={{ textAlign: "right", fontWeight: 700, color: COR.alto.color }}>
+              {horas(x.excesso + x.feriado)}
+              <div style={pequeno}>{[x.extra60 > 0.5 && `${horas(x.extra60)} a 60%`, x.extra100 > 0.5 && `${horas(x.extra100)} dom.`, x.feriado > 0.5 && `${horas(x.feriado)} feriado`].filter(Boolean).join(" · ")}</div>
+            </div>
+            {comValor && <div style={{ textAlign: "right" }}>{x.valorHora > 0 ? brl(valorDaExtra(x)) : "sem salário"}</div>}
+          </div>
+          {x.motivos.length > 0 && <div style={pequeno}>{x.motivos.join(" · ")}</div>}
+        </div>
+      ))}
     </div>
   );
 }
