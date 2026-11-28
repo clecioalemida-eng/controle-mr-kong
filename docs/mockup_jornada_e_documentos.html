@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mockup — Jornada e documentos</title>
+<style>
+body{margin:0;background:#F6F1E7;font-family:-apple-system,system-ui,sans-serif;color:#22231F}
+.w{max-width:780px;margin:0 auto;padding:20px 16px}
+.card{background:#fff;border:1px solid #E8E2D2;border-radius:12px;padding:14px;margin-bottom:12px}
+.lab{font-size:12px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#8A8778;margin:24px 0 8px}
+.mk{font-size:11px;background:#22231F;color:#F3EFE3;border-radius:8px;padding:10px 12px;margin-bottom:18px;line-height:1.55}
+.novo{outline:2px dashed #2F8F5B;outline-offset:3px}
+.p{font-size:11px}.m{color:#8A8778}.b{font-weight:700}.r{text-align:right}
+.pill{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:99px}
+.ok{background:#2F8F5B22;color:#1F6B42}.at{background:#FAC77555;color:#854F0B}.al{background:#E5484D22;color:#A32D2D}.ne{background:#E8E2D2;color:#5F5E5A}
+.in{border:1px solid #E8E2D2;border-radius:8px;padding:7px 9px;font-size:13px;background:#fff}
+.btn{display:inline-block;background:#22231F;color:#F3EFE3;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700}
+.btn2{display:inline-block;background:#F6F1E7;border:1px solid #E8E2D2;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600}
+.nota{font-size:11.5px;color:#8A8778;line-height:1.55}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{font-size:10px;text-transform:uppercase;color:#8A8778;background:#F6F1E7;padding:7px 5px;text-align:center}
+td{border-top:1px solid #F0EBDD;padding:7px 5px;text-align:center}
+td.n{text-align:left}
+.c{border-radius:6px;padding:4px 2px;font-size:11px;line-height:1.3}
+.f{background:#E8E2D2;color:#8A8778}.t{background:#2F8F5B18}.x{background:#E5484D22;color:#A32D2D;font-weight:700}
+.wrap{overflow-x:auto}
+.aviso{background:#FFF8E6;border:1px solid #F2DDA6;border-radius:12px;padding:12px 14px;font-size:12.5px;line-height:1.55;margin-bottom:14px}
+</style></head><body><div class="w">
+
+<div class="mk"><b>MOCKUP</b> — nomes e horários de exemplo. Nada disso existe ainda. Borda verde tracejada = novo.
+As regras da jornada abaixo são as da CLT de hoje; ajusto ao que estiver na conversa do ChatGPT e ao que o contador confirmar
+(convenção coletiva do sindicato de Rio Verde pode mudar intervalo, domingo e banco de horas).</div>
+
+<!-- =================== PARTE 1 — DOCUMENTO =================== -->
+<div style="font-size:20px;font-weight:700;margin-bottom:4px">1 · Pessoas › anexar documento</div>
+<div class="nota" style="margin-bottom:12px">Hoje o anexo só guarda o arquivo. A ideia: a IA lê o documento e propõe os campos — você confere e confirma. Nada é sobrescrito sem o seu clique.</div>
+
+<div class="card novo">
+ <div class="b" style="margin-bottom:8px">Diego · Garçom · Diarista</div>
+ <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+  <span class="btn2">📎 RG frente e verso.jpg</span><span class="btn2">📎 conta de luz.pdf</span><span class="btn2">+ anexar outro</span>
+ </div>
+ <div class="p m" style="margin-bottom:6px">Li os 2 documentos. Encontrei:</div>
+ <table>
+  <tr><th style="width:26px"></th><th style="text-align:left">Campo</th><th style="text-align:left">No cadastro</th><th style="text-align:left">No documento</th></tr>
+  <tr><td>☑</td><td class="n">Nome completo</td><td class="n m">Diego</td><td class="n b">Diego Henrique Souza Lima</td></tr>
+  <tr><td>☑</td><td class="n">CPF</td><td class="n" style="color:#C4432B;font-style:italic">não preenchido</td><td class="n b">123.456.789-00</td></tr>
+  <tr><td>☑</td><td class="n">Nascimento</td><td class="n" style="color:#C4432B;font-style:italic">não preenchido</td><td class="n b">14/05/2001</td></tr>
+  <tr><td>☑</td><td class="n">Endereço</td><td class="n" style="color:#C4432B;font-style:italic">não preenchido</td><td class="n b">R. 12, 340 · Jd. Marconal · Rio Verde-GO <span class="p m">(conta de luz)</span></td></tr>
+  <tr><td>☐</td><td class="n">RG</td><td class="n m">—</td><td class="n">4.567.890 SSP-GO</td></tr>
+ </table>
+ <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">
+  <span class="btn">Atualizar cadastro com os marcados</span><span class="p m">telefone não vem em documento — digite à mão</span>
+ </div>
+ <div class="p" style="margin-top:8px;color:#854F0B">Se o CPF lido não passar na conta dos dígitos verificadores, ele vem desmarcado com aviso “confira — pode ser erro de leitura”.</div>
+</div>
+<div class="nota">Mais de um anexo por pessoa (RG, CPF, comprovante de endereço, carteira de trabalho, contrato), cada um com o tipo.
+A pendência “documento” some quando houver ao menos um documento com foto; “endereço” some com o campo preenchido.</div>
+
+<!-- =================== PARTE 2 — JORNADA =================== -->
+<div style="font-size:20px;font-weight:700;margin:30px 0 4px">2 · Jornada dos registrados — regra nova de 16/12</div>
+<div class="nota" style="margin-bottom:12px">Emenda Constitucional 141/2026: a partir de <b>16/12/2026</b>, no máximo <b>42 h por semana</b>, <b>5 dias de trabalho e 2 de folga</b>, até 8h24 por dia sem acordo coletivo.
+A partir de <b>16/12/2027</b>, 40 h. Sem redução de salário. A tela troca o limite sozinha em cada data.</div>
+
+<div class="lab">No cadastro do registrado</div>
+<div class="card novo">
+ <div style="display:flex;gap:8px;flex-wrap:wrap;font-size:13px">
+  <div style="flex:1;min-width:110px"><div class="p m">Entrada</div><div class="in">16:00</div></div>
+  <div style="flex:1;min-width:130px"><div class="p m">Intervalo</div><div class="in">18:00 → 20:00</div></div>
+  <div style="flex:1;min-width:110px"><div class="p m">Saída</div><div class="in">01:45</div></div>
+  <div style="flex:1;min-width:130px"><div class="p m">Folga fixa</div><div class="in">segunda</div></div>
+ </div>
+ <div class="p" style="margin-top:8px">Hussiono · <b>7h45</b> trabalhadas · <b>8h17</b> pela lei (3h45 depois das 22h valem 4h17) · 5 noites = <b>41h26</b> <span class="pill ok">dentro das 42 h</span></div>
+</div>
+
+<div class="lab">Gente e Gestão › Jornada · como está hoje × proposta</div>
+<div class="card novo">
+ <div class="wrap"><table style="min-width:600px">
+  <tr><th style="text-align:left">Registrado</th><th>Hoje</th><th>Hoje pela lei<br>(6 noites)</th><th>Proposta</th><th>Proposta pela lei<br>(5 noites)</th></tr>
+  <tr><td class="n"><b>Hussiono</b><div class="p m">Garçom</div></td><td>16:00–02:15<div class="p m">int. 18–20</div></td><td class="b" style="color:#A32D2D">53h09</td><td>16:00–01:45<div class="p m">int. 18–20</div></td><td class="b" style="color:#1F6B42">41h26</td></tr>
+  <tr><td class="n"><b>Maria Luiza</b><div class="p m">Gerente</div></td><td>16:40–02:15<div class="p m">int. 20–21</div></td><td class="b" style="color:#A32D2D">55h09</td><td>17:30–02:15<div class="p m">int. 19–20</div></td><td class="b" style="color:#1F6B42">41h47</td></tr>
+  <tr><td class="n"><b>Lidiane</b><div class="p m">Caixa</div></td><td>17:05–02:15<div class="p m">int. 19–20</div></td><td class="b" style="color:#A32D2D">52h39</td><td>17:30–02:15<div class="p m">int. 19–20</div></td><td class="b" style="color:#1F6B42">41h47</td></tr>
+  <tr><td class="n"><b>Jesse</b><div class="p m">Chapeiro</div></td><td>17:00–02:36<div class="p m">int. 22–23</div></td><td class="b" style="color:#A32D2D">54h41</td><td>17:45–02:30<div class="p m">int. 22–23</div></td><td class="b" style="color:#1F6B42">41h15</td></tr>
+ </table></div>
+ <div class="p" style="margin-top:8px;color:#A32D2D">Hoje, contando a hora noturna, cada registrado faz de 8 a 11 horas além das 44 h atuais — toda semana. Com 42 h a partir de 16/12, a diferença aumenta.</div>
+</div>
+
+<div class="lab">Previsão de escala › mês dos registrados</div>
+<div class="card novo">
+ <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span class="btn2">‹</span><b>dezembro de 2026</b><span class="btn2">›</span></div>
+ <div class="wrap"><table style="min-width:640px">
+  <tr><th style="text-align:left">Semana</th><th>Ter</th><th>Qua</th><th>Qui</th><th>Sex</th><th>Sáb</th><th>Dom</th><th>Horas pela lei</th></tr>
+  <tr><td class="n">15 a 20/12</td><td><div class="c f">H</div></td><td><div class="c f">J</div></td><td><div class="c f">L</div></td><td>—</td><td>—</td><td><div class="c f">ML</div></td><td class="p">H 41h26 · ML 41h47<br>L 41h47 · J 41h15</td></tr>
+  <tr><td class="n">22 a 27/12</td><td><div class="c f">ML</div></td><td><div class="c f">J</div></td><td>—</td><td>—</td><td>—</td><td><div class="c f">H · L</div></td><td class="p">todos ≤ 42 h</td></tr>
+  <tr><td class="n">29/12 a 03/01</td><td><div class="c f">H</div></td><td><div class="c f">J</div></td><td><div class="c f">L</div></td><td>—</td><td>—</td><td><div class="c f">ML</div></td><td class="p">todos ≤ 42 h</td></tr>
+ </table></div>
+ <div class="p m" style="margin-top:6px">Cinza = folga além da segunda. Toque no dia para trocar quem folga. Sexta e sábado ficam sem folga de registrado.</div>
+ <div style="display:grid;gap:7px;font-size:12.5px;margin-top:12px">
+  <div class="b">Domingos de folga a cada 4 semanas</div>
+  <div><span class="pill ok">Hussiono</span> 1 · <span class="pill ok">Jesse</span> 1 · <span class="pill ok">Maria Luiza</span> 2 (alternados) · <span class="pill ok">Lidiane</span> 2 (alternados)</div>
+  <div class="p m">Regra que você pediu: pelo menos 1 domingo por mês. Para as mulheres, a CLT (art. 386) pede domingo de folga a cada 15 dias — a tela cobra isso delas.</div>
+ </div>
+</div>
+
+<div class="card novo">
+ <div class="b" style="margin-bottom:8px">Conferência da semana — o que a tela avisa</div>
+ <div style="display:grid;gap:7px;font-size:12.5px">
+  <div><span class="pill al">Fulano</span> 44h10 na semana — passa das 42 h. 2h10 de hora extra (divisor 210, +50%).</div>
+  <div><span class="pill al">Fulano</span> só 1 folga nesta semana — a regra nova pede 2.</div>
+  <div><span class="pill al">Lidiane</span> 3 semanas sem domingo — para mulher, a cada 15 dias.</div>
+  <div><span class="pill at">Pico 20h–23h</span> 4 pessoas no intervalo ao mesmo tempo das 22 às 23 (Jesse + 3 freelas). Sugestão: espalhar.</div>
+  <div><span class="pill at">Abertura 16h</span> dia de folga do Hussiono: ninguém registrado chega às 16h — quem abre?</div>
+  <div><span class="pill at">Chapa</span> folga do Jesse sem substituto marcado.</div>
+ </div>
+</div>
+
+<div class="lab">Depois da semana › planejado × ponto</div>
+<div class="card novo">
+ <table>
+  <tr><th style="text-align:left">Pessoa</th><th>Planejado</th><th>Ponto (Escala do dia)</th><th>Extra</th></tr>
+  <tr><td class="n"><b>Hussiono</b></td><td>41h26</td><td>42h40</td><td style="color:#A32D2D" class="b">0h40</td></tr>
+  <tr><td class="n"><b>Jesse</b></td><td>41h15</td><td>41h05</td><td>—</td></tr>
+ </table>
+ <div class="p m" style="margin-top:6px">Sai do horário de entrada e saída que já é lançado na Escala do dia, com a hora noturna. Vai para o contador junto com a folha.</div>
+</div>
+
+<div class="aviso"><b>Freelancers fora da grade, mas não fora do radar.</b> Se o Luiz Guilherme vier as 6 noites no horário de hoje, são 56 h pela lei — mais que qualquer registrado.
+Freela com dia, horário, chefe e pagamento fixos tende a ser visto como empregado. Isso aparece na aba Encargos e riscos, que já conta as noites de cada um.</div>
+
+<div class="nota">Antes de implantar: confirmar com o contador a convenção dos bares e restaurantes de Rio Verde (registro GO000217/2026) — ela pode mudar intervalo, domingo e banco de horas.
+Cada regra fica num lugar só da tela, para mudar sem reescrever o resto.</div>
+</div></body></html>
