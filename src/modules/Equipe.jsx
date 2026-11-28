@@ -11,7 +11,7 @@ import {
 } from "../lib/fiado";
 import FolhaPagamento from "./FolhaPagamento";
 import EncargosRiscos from "./EncargosRiscos";
-import Jornada, { planoDoDia, contaDoPonto, avisosDaSemana, regimeDe, horas as horasLei, segundaDa, iso as isoData, lerData, somaDias } from "./Jornada";
+import Jornada, { planoDoDia, contaDoPonto, avisosDaSemana, regimeDe, horas as horasLei, segundaDa, iso as isoData, lerData, somaDias, casaFechada, diaEspecial } from "./Jornada";
 import DocumentosPessoa from "./DocumentosPessoa";
 // Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
 // collation do banco e às vezes joga nome acentuado ou em maiúscula pro
@@ -251,6 +251,7 @@ function PrevisaoDeEscala() {
   // Registrado com horário na Jornada: quem decide se vem é a Jornada
   // (folga ou não). Marcar/desmarcar aqui grava a folga lá — um lugar só.
   const [jornadaAj, setJornadaAj] = useState({});
+  const [calDia, setCalDia] = useState({});
   const [fechada, setFechada] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
@@ -258,13 +259,15 @@ function PrevisaoDeEscala() {
   const carregar = useCallback(async () => {
     setCarregando(true);
     setMensagem("");
-    const [{ data: pessoasData, error }, { data: previsoesData }, { data: statusData }, { data: jornadaData }] = await Promise.all([
+    const [{ data: pessoasData, error }, { data: previsoesData }, { data: statusData }, { data: jornadaData }, { data: calData }] = await Promise.all([
       supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
       supabase.from("previsoes_escala").select("pessoa_id").eq("dia", dia),
       supabase.from("previsoes_escala_dias").select("fechada").eq("dia", dia).maybeSingle(),
       supabase.from("escala_jornada").select("*").eq("dia", dia),
+      supabase.from("calendario_casa").select("*").eq("dia", dia),
     ]);
     setJornadaAj(Object.fromEntries((jornadaData || []).map((a) => [a.pessoa_id, a])));
+    setCalDia(Object.fromEntries((calData || []).map((c) => [c.dia, c])));
     if (error) setErro(error.message);
     setPessoas([...(pessoasData || [])].sort(porNome));
     setPrevistos(new Set((previsoesData || []).map((p) => p.pessoa_id)));
@@ -295,7 +298,7 @@ function PrevisaoDeEscala() {
     await supabase.from("previsoes_escala_dias").upsert({ dia, fechada: false, atualizado_em: new Date().toISOString() }, { onConflict: "dia" });
     setFechada(false);
   };
-  const pelaJornada = (p) => jornadaAtiva(p) && dia >= INICIO_JORNADA_NA_ESCALA && lerData(dia).getDay() !== 1;
+  const pelaJornada = (p) => jornadaAtiva(p) && dia >= INICIO_JORNADA_NA_ESCALA && !casaFechada(dia, calDia);
   const marcado = (p) => (pelaJornada(p) ? !jornadaAj[p.id]?.folga : previstos.has(p.id));
   const alternarJornada = async (p) => {
     const linha = jornadaAj[p.id];
@@ -2101,14 +2104,16 @@ function FormPessoa({ form, setForm, onSalvar, onCancelar, isAdmin, nomesFiado =
 // O quadrinho da Jornada embaixo de cada registrado na Escala do dia:
 // horas de hoje pela lei, a semana até aqui e a projeção. O ponto digitado
 // aqui é o mesmo que a Jornada lê depois — não se digita em dois lugares.
-function QuadroJornada({ pessoa, dia, part, ajustes, pontoSemana }) {
-  const plano = planoDoDia(pessoa, dia, ajustes);
-  if (plano.fechado) return null;
+function QuadroJornada({ pessoa, dia, part, ajustes, cal = {}, pontoSemana }) {
+  const plano = planoDoDia(pessoa, dia, ajustes, cal);
+  const esp = diaEspecial(dia, cal);
+  // Casa fechada no calendário e a pessoa veio mesmo assim: a conta vale.
+  const veioComCasaFechada = plano.fechado;
   const pontoHoje = { hora_entrada: part.entrada, hora_saida: part.saida, intervalo_minutos: part.intervalo, horas_trabalhadas: part.horas };
   const conta = contaDoPonto(pontoHoje, plano);
   if (!conta) return null;
   const dias = semanaDe(dia);
-  const r = avisosDaSemana(pessoa, dias, ajustes, { ...pontoSemana, [`${pessoa.id}|${dia}`]: pontoHoje });
+  const r = avisosDaSemana(pessoa, dias, ajustes, { ...pontoSemana, [`${pessoa.id}|${dia}`]: pontoHoje }, cal);
   const regime = regimeDe(dias[6]);
   const passaDia = conta.legal > regime.diario + 0.5;
   const passaSemana = r.total > regime.semanal * 60 + 0.5;
@@ -2127,7 +2132,9 @@ function QuadroJornada({ pessoa, dia, part, ajustes, pontoSemana }) {
       Jornada: <b>{horasLei(conta.legal)}</b> pela lei hoje{passaDia ? ` — passa de ${horasLei(regime.diario)} no dia` : ""}
       {" · "}semana com o ponto <b>{horasLei(r.totalPonto)}</b> de {regime.semanal} h
       {difSaida != null && Math.abs(difSaida) >= 10 && <> · <b>saiu {horasLei(Math.abs(difSaida))} {difSaida > 0 ? "depois" : "antes"} do planejado</b></>}
-      {plano.folga && <> · <b>era folga na Jornada</b> — a semana fica com {r.folgas} folga(s), a regra pede {regime.folgas}</>}
+      {plano.folga && !veioComCasaFechada && <> · <b>era folga na Jornada</b> — a semana fica com {r.folgas} folga(s), a regra pede {regime.folgas}</>}
+      {veioComCasaFechada && <> · <b>casa fechada no calendário</b> — a semana fica com {r.folgas} folga(s), a regra pede {regime.folgas}</>}
+      {esp && <><br /><b>{esp.nome}</b>: {esp.tipo === "dia_categoria" ? "dia da categoria — horas de hoje em dobro (convenção, cl. 13ª)" : "feriado — todas as horas de hoje com +100% (convenção, cl. 29ª)"}</>}
       <br />
       {passaSemana
         ? <>Projeção da semana: <b>{horasLei(r.total)} — {horasLei(r.total - regime.semanal * 60)} de extra</b> se o resto for como planejado.</>
@@ -2170,6 +2177,7 @@ function PremiacaoDoDia({ isAdmin }) {
   // Jornada da semana: o que foge do padrão (folga, horário do dia) e o
   // ponto já lançado nos outros dias. É daqui que sai o quadrinho da lei.
   const [jornadaAjustes, setJornadaAjustes] = useState({});
+  const [jornadaCal, setJornadaCal] = useState({});
   const [pontoSemana, setPontoSemana] = useState({});
   const fiado = useFiadoEquipe(pessoas, isAdmin);
   const [pagamentoDoDia, setPagamentoDoDia] = useState(null);
@@ -2190,14 +2198,17 @@ function PremiacaoDoDia({ isAdmin }) {
         .from("pagamentos_diaria").select("*").eq("dia", dia).maybeSingle();
       setPagamentoDoDia(pagDia || null);
       const diasSemana = semanaDe(dia);
-      const [{ data: ajustesSemana }, { data: presSemana }] = await Promise.all([
-        // Sem a migração 210 a tabela não existe: segue sem a Jornada.
+      const [{ data: ajustesSemana }, { data: presSemana }, { data: calSemana }] = await Promise.all([
+        // Sem a migração 210/214 a tabela não existe: segue sem a Jornada.
         supabase.from("escala_jornada").select("*").gte("dia", diasSemana[0]).lte("dia", diasSemana[6]),
         supabase.from("presencas_diarias").select("pessoa_id, dia, hora_entrada, hora_saida, intervalo_minutos, horas_trabalhadas")
           .gte("dia", diasSemana[0]).lte("dia", diasSemana[6]).neq("dia", dia),
+        supabase.from("calendario_casa").select("*").gte("dia", diasSemana[0]).lte("dia", diasSemana[6]),
       ]);
       const mapaAjustes = Object.fromEntries((ajustesSemana || []).map((a) => [`${a.pessoa_id}|${a.dia}`, a]));
+      const mapaCal = Object.fromEntries((calSemana || []).map((c) => [c.dia, c]));
       setJornadaAjustes(mapaAjustes);
+      setJornadaCal(mapaCal);
       setPontoSemana(Object.fromEntries((presSemana || []).map((x) => [`${x.pessoa_id}|${x.dia}`, x])));
       const { data: usuario } = await supabase.auth.getUser();
       if (usuario?.user?.id) {
@@ -2228,7 +2239,7 @@ function PremiacaoDoDia({ isAdmin }) {
         // Registrado com horário na Jornada: abre com o planejado do dia e
         // vem marcado, a não ser que tenha folga. Quem decide quem vem é a
         // Jornada — a previsão não precisa repetir.
-        const plano = jornadaAtiva(p) && dia >= INICIO_JORNADA_NA_ESCALA ? planoDoDia(p, dia, mapaAjustes) : null;
+        const plano = jornadaAtiva(p) && dia >= INICIO_JORNADA_NA_ESCALA ? planoDoDia(p, dia, mapaAjustes, mapaCal) : null;
         if (plano && !plano.fechado) {
           const h = plano.folga
             ? { entrada: hhmmDe(p.jornada_entrada), saida: hhmmDe(p.jornada_saida),
@@ -2825,7 +2836,7 @@ function PremiacaoDoDia({ isAdmin }) {
                         {semCarteira(p.tipo_contrato) ? ` · ${rotuloVinculo(p.tipo_contrato).toLowerCase()}` : ""}
                       </div>
                     </div>
-                    {jornadaAtiva(p) && dia >= INICIO_JORNADA_NA_ESCALA && planoDoDia(p, dia, jornadaAjustes).folga && !planoDoDia(p, dia, jornadaAjustes).fechado && (
+                    {jornadaAtiva(p) && dia >= INICIO_JORNADA_NA_ESCALA && planoDoDia(p, dia, jornadaAjustes, jornadaCal).folga && !planoDoDia(p, dia, jornadaAjustes, jornadaCal).fechado && (
                       <span style={{ ...pill, background: "#FAC77555", color: "#854F0B" }}>folga na Jornada</span>
                     )}
                     {sujo && (
@@ -2899,7 +2910,7 @@ function PremiacaoDoDia({ isAdmin }) {
                         </div>
                       )}
                       {jornadaAtiva(p) && dia >= INICIO_JORNADA_NA_ESCALA && (
-                        <QuadroJornada pessoa={p} dia={dia} part={part} ajustes={jornadaAjustes} pontoSemana={pontoSemana} />
+                        <QuadroJornada pessoa={p} dia={dia} part={part} ajustes={jornadaAjustes} cal={jornadaCal} pontoSemana={pontoSemana} />
                       )}
                     </>
                   )}
