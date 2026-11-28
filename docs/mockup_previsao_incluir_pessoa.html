@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mockup — Incluir pessoa na previsão</title>
+<style>
+body{margin:0;background:#F6F1E7;font-family:-apple-system,system-ui,sans-serif;color:#22231F}
+.w{max-width:720px;margin:0 auto;padding:20px 16px}
+.card{background:#fff;border:1px solid #E8E2D2;border-radius:12px;padding:14px;margin-bottom:12px}
+.lab{font-size:12px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#8A8778;margin:20px 0 8px}
+.mk{font-size:11px;background:#22231F;color:#F3EFE3;border-radius:8px;padding:10px 12px;margin-bottom:18px;line-height:1.55}
+.novo{outline:2px dashed #2F8F5B;outline-offset:3px}
+.p{font-size:11px}.m{color:#8A8778}.b{font-weight:700}
+.pill{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px}
+.al{background:#E5484D22;color:#A32D2D}.ne{background:#E8E2D2;color:#5F5E5A}
+.row{display:flex;gap:8px;align-items:center;padding:8px 0;border-top:1px solid #F0EBDD;font-size:12.5px}
+.in{border:1px solid #E8E2D2;border-radius:8px;padding:8px 10px;font-size:13px;background:#fff;flex:1;min-width:120px}
+.btn{display:inline-block;background:#22231F;color:#F3EFE3;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700}
+.btn2{display:inline-block;background:#F6F1E7;border:1px solid #E8E2D2;border-radius:8px;padding:7px 12px;font-size:12.5px;font-weight:600}
+.nota{font-size:11.5px;color:#8A8778;line-height:1.55}
+</style></head><body><div class="w">
+<div class="mk"><b>MOCKUP</b> — Previsão de escala, parte “Quem trabalha”. Borda verde tracejada = novo.</div>
+
+<div class="lab">Quem trabalha</div>
+<div class="card">
+ <div class="in novo" style="margin-bottom:6px">🔍 Buscar nome (inclui quem não vem há tempo)…</div>
+ <div class="row"><span>☐</span><b>Bianca Felix Silica</b> <span class="pill al">sem documento</span> <span class="p m">Cozinha · diarista</span></div>
+ <div class="row"><span>☐</span><b>Bruno Silva Bueno</b> <span class="pill al">sem documento</span> <span class="p m">Garçom · diarista</span></div>
+ <div class="row"><span>☐</span><b>…</b> <span class="p m">(os ativos, como hoje)</span></div>
+
+ <div class="novo" style="margin-top:10px">
+  <div class="row" style="border-top:2px solid #E8E2D2"><span class="b p m" style="text-transform:uppercase">Outras pessoas · 33 fora da lista</span><span class="p m" style="margin-left:auto">tocar para abrir ▾</span></div>
+  <div class="row"><span>☐</span><b>Ezequiel Assis</b> <span class="pill ne">inativo</span> <span class="p m">Garçom · diarista · última noite 12/09</span></div>
+  <div class="row"><span>☐</span><b>Kauã Ferreira</b> <span class="pill ne">inativo</span> <span class="p m">Cozinha · freela · nunca veio</span></div>
+  <div class="p m" style="margin-top:4px">Marcar alguém daqui pergunta “Voltar a Kauã para a equipe ativa?” — ativo, ele aparece também na Escala do dia.</div>
+ </div>
+
+ <div style="margin-top:12px" class="novo"><span class="btn2">+ Incluir pessoa nova</span></div>
+</div>
+
+<div class="lab">+ Incluir pessoa nova</div>
+<div class="card novo">
+ <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+  <div class="in">Nome completo</div>
+ </div>
+ <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+  <div class="in">Função: Espeteiro ▾</div>
+  <div class="in">Vínculo: Freela ▾ <span class="p m">(diarista / freela)</span></div>
+ </div>
+ <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+  <div class="in">Telefone</div><div class="in">CPF</div>
+ </div>
+ <div class="in" style="margin-bottom:8px">Endereço</div>
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+  <span class="btn2">📎 Anexar documento (foto do RG, CNH, comprovante)</span>
+  <span class="p m">a IA lê e preenche nome, CPF, nascimento e endereço — ela confere e confirma</span>
+ </div>
+ <div style="margin-top:12px;display:flex;gap:8px"><span class="btn">Salvar e escalar neste dia</span><span class="btn2">Cancelar</span></div>
+ <div class="p m" style="margin-top:8px;line-height:1.55">A gerente não vê nem preenche salário, PIX ou fiado — isso continua só com você em Pessoas. Registrado também continua sendo cadastrado só por você.</div>
+</div>
+
+<div class="lab">Pessoa já escalada sem documento</div>
+<div class="card novo">
+ <div class="row" style="border-top:none"><span>☑</span><b>Daniella Pires Vieira</b> <span class="pill al">sem documento</span> <span class="btn2" style="padding:3px 9px;font-size:11.5px">Completar cadastro</span></div>
+ <div class="p m">“Completar cadastro” abre, ali mesmo, telefone, CPF, endereço e o anexo do documento (com a leitura pela IA). Completo, a etiqueta vermelha some.</div>
+</div>
+
+<div class="nota">Corrigido junto: o aviso “risco de vínculo” só aparece para diarista e freela — não mais para registrado sem horário na Jornada (caso do Jesse).</div>
+</div></body></html>

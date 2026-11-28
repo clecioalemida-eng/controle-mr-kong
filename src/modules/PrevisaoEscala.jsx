@@ -19,12 +19,13 @@
 // diarista, registrado sem horário) ficam em previsoes_escala, com horário
 // e função do dia.
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { Loader2, AlertTriangle, Send, Check, X, RotateCcw, Settings } from "lucide-react";
+import { Loader2, AlertTriangle, Send, Check, X, RotateCcw, Settings, Search, UserPlus } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import {
   contaNoite, planoDoDia, casaFechada, diaEspecial, avisosDaSemana,
   iso, lerData, somaDias, segundaDa, horas,
 } from "./Jornada";
+import DocumentosPessoa, { cpfValido } from "./DocumentosPessoa";
 
 // ---------------------------------------------------------------------------
 // Regras — mude aqui
@@ -54,8 +55,12 @@ function minutos(t) { if (!t) return null; const [h, m] = String(t).split(":").m
 // Hora da noite: o que é antes do meio-dia é madrugada (+24 h).
 function minNoite(t) { const m = minutos(t); return m == null ? null : (m < 12 * 60 ? m + 1440 : m); }
 function hhmm(min) { return min == null ? "" : `${p2(Math.floor(min / 60) % 24)}:${p2(Math.round(min % 60))}`; }
+// Busca sem acento e sem diferença de maiúscula: "joao" acha "João".
+function semAcento(t) { return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
 function primeiroNome(n) { return String(n || "").split(" ")[0]; }
 function jornadaAtiva(p) { return p?.tipo_contrato === "registrado" && !!p.jornada_entrada && !!p.jornada_saida; }
+// Risco de vínculo só existe para quem não tem carteira.
+function semCarteira(p) { return p?.tipo_contrato === "diarista" || p?.tipo_contrato === "freela"; }
 function pendenciasDe(p) {
   const f = [];
   if (!p.documento_path) f.push("documento");
@@ -144,6 +149,10 @@ export default function PrevisaoEscala() {
   const [erro, setErro] = useState("");
   const [ocupado, setOcupado] = useState(false);
   const [mostrarConfig, setMostrarConfig] = useState(false);
+  const [busca, setBusca] = useState("");
+  const [mostrarOutros, setMostrarOutros] = useState(false);
+  const [novaAberta, setNovaAberta] = useState(false);
+  const [completarId, setCompletarId] = useState(null);
 
   // Da segunda da semana de hoje até o domingo da semana do último dia:
   // é o que precisa para contar noites e horas da semana.
@@ -154,7 +163,8 @@ export default function PrevisaoEscala() {
     setErro("");
     const { data: usuario } = await supabase.auth.getUser();
     const [rp, rprev, rdias, raj, rcal, rcob, rpres, rperfil] = await Promise.all([
-      supabase.from("pessoas").select("*").eq("ativo", true).order("nome"),
+      // Todo mundo: os ativos na lista, os outros em "Outras pessoas".
+      supabase.from("pessoas").select("*").order("nome"),
       supabase.from("previsoes_escala").select("*").gte("dia", de).lte("dia", ate),
       supabase.from("previsoes_escala_dias").select("*").gte("dia", dias[0]).lte("dia", dias[dias.length - 1]),
       supabase.from("escala_jornada").select("*").gte("dia", de).lte("dia", ate),
@@ -169,7 +179,8 @@ export default function PrevisaoEscala() {
     else if (falta) setErro(/cobertura_minima|entrada|papel_no_dia/.test(falta.error.message)
       ? "Falta rodar a migração 215 no Supabase." : falta.error.message);
     setDados({
-      pessoas: (rp.data || []).slice().sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR", { sensitivity: "base" })),
+      pessoas: (rp.data || []).filter((p) => p.ativo).sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR", { sensitivity: "base" })),
+      inativos: (rp.data || []).filter((p) => !p.ativo).sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR", { sensitivity: "base" })),
       prev: Object.fromEntries((rprev.data || []).map((r) => [`${r.pessoa_id}|${r.dia}`, r])),
       status: Object.fromEntries((rdias.data || []).map((r) => [r.dia, r])),
       ajustes: Object.fromEntries((raj.data || []).map((a) => [`${a.pessoa_id}|${a.dia}`, a])),
@@ -183,7 +194,7 @@ export default function PrevisaoEscala() {
 
   if (!dados) return <div style={{ fontSize: 13, color: "#8A8778", display: "flex", gap: 8, alignItems: "center" }}><Loader2 size={15} /> Carregando…</div>;
 
-  const { pessoas, prev, status, ajustes, cal, regras, presencas, eu } = dados;
+  const { pessoas, inativos, prev, status, ajustes, cal, regras, presencas, eu } = dados;
   const statusDe = (dia) => status[dia]?.status || "rascunho";
   const podeEditar = (dia) => eu.admin || !["enviada", "aprovada"].includes(statusDe(dia));
 
@@ -206,7 +217,7 @@ export default function PrevisaoEscala() {
         const r = avisosDaSemana(t.p, diasSemana, ajustes, {}, cal);
         const para = r.total - r.minFeriado - r.minCategoria;
         if (para > r.regime.semanal * 60 + 0.5) alertas.push({ t, nivel: "alto", texto: `${nome}: semana com ${horas(para)} — passa das ${r.regime.semanal} h (ver Jornada)` });
-      } else {
+      } else if (semCarteira(t.p)) {
         const noites = diasSemana.filter((d) => prev[`${t.p.id}|${d}`] || presencas.some((x) => x.pessoa_id === t.p.id && x.dia === d)).length;
         if (noites >= NOITES_RISCO) alertas.push({ t, nivel: "alto", texto: `${nome}: ${noites} noites nesta semana — ${VINCULO[t.p.tipo_contrato] || "sem carteira"} vindo sempre vira risco de vínculo` });
         else if (noites >= NOITES_ATENCAO) alertas.push({ t, nivel: "medio", texto: `${nome}: ${noites} noites nesta semana — atenção ao risco de vínculo` });
@@ -236,6 +247,20 @@ export default function PrevisaoEscala() {
     if (error) { setErro(/papel_no_dia|entrada/.test(error.message) ? "Falta rodar a migração 215 no Supabase." : error.message); return false; }
     await carregar();
     return true;
+  };
+  // Marcar alguém de "Outras pessoas": volta para a equipe ativa (assim
+  // aparece também na Escala do dia) e já entra na previsão do dia.
+  const voltarParaEquipe = async (p) => {
+    if (!window.confirm(`Voltar ${p.nome} para a equipe ativa e escalar em ${br(lerData(diaSel))}?`)) return;
+    setOcupado(true);
+    const { error } = await supabase.from("pessoas").update({ ativo: true }).eq("id", p.id);
+    setOcupado(false);
+    if (error) { setErro(error.message); return; }
+    const ultima = presencas.filter((x) => x.pessoa_id === p.id && x.hora_entrada && x.hora_saida).sort((a, b) => (a.dia < b.dia ? 1 : -1))[0];
+    await gravarPrevisao(p, diaSel, {
+      entrada: ultima ? String(ultima.hora_entrada).slice(0, 5) : HORARIO_PADRAO.entrada,
+      saida: ultima ? String(ultima.hora_saida).slice(0, 5) : HORARIO_PADRAO.saida,
+    });
   };
   const tirarPrevisao = async (p, dia) => {
     setOcupado(true);
@@ -326,7 +351,7 @@ export default function PrevisaoEscala() {
       const trab = s - e - (int ? 60 : 0);
       sugestoes.push({
         chave: `cha-${c.p.id}-${f.ini}`,
-        risco: c.noites >= NOITES_ATENCAO,
+        risco: semCarteira(c.p) && c.noites >= NOITES_ATENCAO,
         texto: `${primeiroNome(c.p.nome)} (${PAPEL_LABEL[c.p.papel] || c.p.papel}${c.mesmo ? "" : `, fez ${PAPEL_LABEL[papelAlvo]?.toLowerCase()} ${c.exp}x`}, ${VINCULO[c.p.tipo_contrato] || ""}, ${c.noites} noite(s) nesta semana) das ${hhmm(e)} às ${hhmm(s)}${int ? `, intervalo das ${hhmm(int[0])} às ${hhmm(int[1])}` : ""} — ${horas(trab)} como ${PAPEL_LABEL[papelAlvo]?.toLowerCase()}.`,
         aplicar: () => gravarPrevisao(c.p, diaSel, { entrada: hhmm(e), saida: hhmm(s), intervalo_inicio: int ? hhmm(int[0]) : null, intervalo_fim: int ? hhmm(int[1]) : null, papel_no_dia: c.p.papel === papelAlvo ? null : papelAlvo }),
       });
@@ -500,12 +525,57 @@ export default function PrevisaoEscala() {
           {/* Quem trabalha */}
           <div style={titulo}>Quem trabalha</div>
           <div style={card}>
-            {pessoas.map((p) => (
-              <LinhaPessoa key={p.id} p={p} dia={diaSel} turno={atual.turnos.find((t) => t.p.id === p.id)}
-                ajustes={ajustes} cal={cal} prev={prev} presencas={presencas} editavel={editavel && !ocupado}
-                semDoc={pendenciasDe(p).length > 0}
-                gravarPrevisao={gravarPrevisao} tirarPrevisao={tirarPrevisao} gravarJornada={gravarJornada} mudarHorario={mudarHorario} />
+            <div style={{ position: "relative", marginBottom: 6 }}>
+              <Search size={14} color="#8A8778" style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
+              <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar nome (inclui quem não vem há tempo)…"
+                style={{ ...inp, width: "100%", boxSizing: "border-box", paddingLeft: 30 }} />
+            </div>
+            {pessoas.filter((p) => !busca || semAcento(p.nome).includes(semAcento(busca))).map((p) => (
+              <div key={p.id}>
+                <LinhaPessoa p={p} dia={diaSel} turno={atual.turnos.find((t) => t.p.id === p.id)}
+                  ajustes={ajustes} cal={cal} prev={prev} presencas={presencas} editavel={editavel && !ocupado}
+                  semDoc={pendenciasDe(p).length > 0} onCompletar={() => setCompletarId(completarId === p.id ? null : p.id)}
+                  gravarPrevisao={gravarPrevisao} tirarPrevisao={tirarPrevisao} gravarJornada={gravarJornada} mudarHorario={mudarHorario} />
+                {completarId === p.id && <CompletarCadastro p={p} aoMudar={carregar} setErro={setErro} fechar={() => setCompletarId(null)} />}
+              </div>
             ))}
+
+            {/* Outras pessoas: quem está fora da equipe ativa */}
+            {inativos.length > 0 && (() => {
+              const lista = inativos.filter((p) => !busca || semAcento(p.nome).includes(semAcento(busca)));
+              const aberto = mostrarOutros || !!busca;
+              return (
+                <div style={{ marginTop: 10, borderTop: "2px solid #E8E2D2" }}>
+                  <button onClick={() => setMostrarOutros((x) => !x)} style={{ ...linkBtn, width: "100%", justifyContent: "space-between", padding: "8px 0", color: "#8A8778" }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.4 }}>Outras pessoas · {inativos.length} fora da lista</span>
+                    <span style={{ fontSize: 11 }}>{aberto ? "▴" : "tocar para abrir ▾"}</span>
+                  </button>
+                  {aberto && lista.map((p) => {
+                    const ultima = presencas.filter((x) => x.pessoa_id === p.id).map((x) => x.dia).sort().pop();
+                    return (
+                      <div key={p.id} style={{ display: "grid", gridTemplateColumns: "24px 1fr", gap: 6, padding: "8px 0", borderTop: "1px solid #F0EBDD", fontSize: 12.5 }}>
+                        <input type="checkbox" checked={false} disabled={!editavel || ocupado} onChange={() => voltarParaEquipe(p)} style={{ marginTop: 3 }} />
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                          <b>{p.nome}</b>
+                          <span style={{ ...pill, background: "#E8E2D2", color: "#5F5E5A", fontSize: 9.5 }}>inativo</span>
+                          {pendenciasDe(p).length > 0 && <span style={{ ...pill, ...COR.alto, fontSize: 9.5 }}>sem documento</span>}
+                          <span style={pequeno}>{PAPEL_LABEL[p.papel] || p.papel} · {VINCULO[p.tipo_contrato] || p.tipo_contrato} · {ultima ? `última noite ${br(lerData(ultima))}` : "sem noite nos últimos 2 meses"}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {aberto && lista.length === 0 && <div style={{ ...pequeno, padding: "6px 0" }}>Ninguém com esse nome fora da lista.</div>}
+                </div>
+              );
+            })()}
+
+            {editavel && (
+              <div style={{ marginTop: 12 }}>
+                {!novaAberta
+                  ? <button onClick={() => setNovaAberta(true)} style={btn}><UserPlus size={14} /> Incluir pessoa nova</button>
+                  : <NovaPessoa dia={diaSel} buscaInicial={busca} gravarPrevisao={gravarPrevisao} aoMudar={carregar} setErro={setErro} fechar={() => setNovaAberta(false)} />}
+              </div>
+            )}
             <div style={{ ...pequeno, marginTop: 8 }}>Registrado com horário na Jornada: folga e horário vêm de lá (e mudar aqui grava lá). Os demais: marque, ponha o horário e a função do dia. Horas sem o intervalo.</div>
           </div>
         </>
@@ -524,7 +594,7 @@ export default function PrevisaoEscala() {
 // ---------------------------------------------------------------------------
 // Uma pessoa no dia
 // ---------------------------------------------------------------------------
-function LinhaPessoa({ p, dia, turno, ajustes, cal, prev, presencas, editavel, semDoc, gravarPrevisao, tirarPrevisao, gravarJornada, mudarHorario }) {
+function LinhaPessoa({ p, dia, turno, ajustes, cal, prev, presencas, editavel, semDoc, onCompletar, gravarPrevisao, tirarPrevisao, gravarJornada, mudarHorario }) {
   const daJornada = jornadaAtiva(p);
   const plano = daJornada ? planoDoDia(p, dia, ajustes, cal) : null;
   const linha = prev[`${p.id}|${dia}`];
@@ -559,6 +629,7 @@ function LinhaPessoa({ p, dia, turno, ajustes, cal, prev, presencas, editavel, s
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <b>{p.nome}</b>
           {semDoc && <span style={{ ...pill, ...COR.alto, fontSize: 9.5 }}>sem documento</span>}
+          {semDoc && onCompletar && <button onClick={onCompletar} style={{ ...btn, padding: "2px 8px", fontSize: 11 }}>Completar cadastro</button>}
           {daJornada && plano?.folga && !plano.fechado && <span style={{ ...pill, background: "#E8E2D2", color: "#5F5E5A", fontSize: 9.5 }}>folga na Jornada</span>}
           <span style={pequeno}>{PAPEL_LABEL[turno?.papel || p.papel] || p.papel} · {VINCULO[p.tipo_contrato] || p.tipo_contrato}{daJornada ? " · horário da Jornada" : ""}</span>
           {turno && !turno.semHorario && <span style={{ marginLeft: "auto", fontWeight: 700, color: corHoras }}>{horas(turno.trabalhado)}</span>}
@@ -585,6 +656,105 @@ function LinhaPessoa({ p, dia, turno, ajustes, cal, prev, presencas, editavel, s
     </div>
   );
 }
+// ---------------------------------------------------------------------------
+// Completar cadastro (telefone, CPF, endereço, documento) — ali mesmo
+// ---------------------------------------------------------------------------
+function CompletarCadastro({ p, aoMudar, setErro, fechar }) {
+  const [f, setF] = useState({ telefone: p.telefone || "", cpf: p.cpf || "", endereco: p.endereco || "" });
+  const [salvo, setSalvo] = useState(false);
+  const salvar = async () => {
+    const { error } = await supabase.from("pessoas").update({
+      telefone: f.telefone.trim() || null, cpf: f.cpf.trim() || null, endereco: f.endereco.trim() || null,
+    }).eq("id", p.id);
+    if (error) { setErro(/endereco/.test(error.message) ? "Falta rodar a migração 199 no Supabase." : error.message); return; }
+    setSalvo(true);
+    aoMudar();
+  };
+  return (
+    <div style={{ margin: "0 0 10px 30px", padding: 10, background: "#FBF9F3", border: "1px solid #E8E2D2", borderRadius: 10, display: "grid", gap: 8 }}>
+      <div style={{ fontSize: 12.5 }}><b>Completar o cadastro de {primeiroNome(p.nome)}</b> <span style={pequeno}>· falta {pendenciasDe(p).join(", ")}</span></div>
+      <CamposContato f={f} setF={setF} />
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button onClick={salvar} style={btn}><Check size={13} /> Salvar dados</button>
+        <button onClick={fechar} style={linkBtn}>Fechar</button>
+        {salvo && <span style={{ ...pequeno, color: COR.ok.color }}>salvo</span>}
+      </div>
+      <DocumentosPessoa pessoa={p} aoAtualizar={aoMudar} />
+    </div>
+  );
+}
+function CamposContato({ f, setF }) {
+  const cpfRuim = f.cpf && f.cpf.replace(/\D/g, "").length === 11 && !cpfValido(f.cpf);
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <input value={f.telefone} onChange={(e) => setF({ ...f, telefone: e.target.value })} placeholder="Telefone" style={{ ...inp, flex: 1, minWidth: 130 }} />
+        <input value={f.cpf} onChange={(e) => setF({ ...f, cpf: e.target.value })} placeholder="CPF" style={{ ...inp, flex: 1, minWidth: 130 }} />
+      </div>
+      {cpfRuim && <div style={{ fontSize: 11, color: COR.alto.color }}>Esse CPF não fecha nos dígitos — confira.</div>}
+      <input value={f.endereco} onChange={(e) => setF({ ...f, endereco: e.target.value })} placeholder="Endereço (rua, número, bairro, cidade)" style={inp} />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Incluir pessoa nova (diarista ou freela) e já escalar no dia
+// ---------------------------------------------------------------------------
+function NovaPessoa({ dia, buscaInicial, gravarPrevisao, aoMudar, setErro, fechar }) {
+  const [f, setF] = useState({ nome: buscaInicial || "", papel: "garcom", tipo_contrato: "freela", telefone: "", cpf: "", endereco: "" });
+  const [criada, setCriada] = useState(null);
+  const [salvando, setSalvando] = useState(false);
+  const salvar = async () => {
+    if (f.nome.trim().split(/\s+/).length < 2) { setErro("Escreva o nome completo (nome e sobrenome)."); return; }
+    setSalvando(true);
+    const { data, error } = await supabase.from("pessoas").insert({
+      nome: f.nome.trim(), papel: f.papel, tipo_contrato: f.tipo_contrato, ativo: true,
+      telefone: f.telefone.trim() || null, cpf: f.cpf.trim() || null, endereco: f.endereco.trim() || null,
+    }).select().single();
+    if (error) {
+      setSalvando(false);
+      setErro(/espeteiro|papel_check/.test(error.message) ? "A função espeteiro ainda não existe no banco — rode a migração 215."
+        : /freela|tipo_contrato/.test(error.message) ? "O vínculo freela ainda não existe no banco — rode a migração 198."
+        : error.message);
+      return;
+    }
+    await gravarPrevisao(data, dia, { entrada: HORARIO_PADRAO.entrada, saida: HORARIO_PADRAO.saida });
+    setSalvando(false);
+    setCriada(data);
+  };
+  if (criada) {
+    return (
+      <div style={{ padding: 10, background: "#FBF9F3", border: "1px solid #E8E2D2", borderRadius: 10, display: "grid", gap: 8 }}>
+        <div style={{ fontSize: 12.5 }}><b>{criada.nome}</b> incluído(a) e escalado(a) em {br(lerData(dia))}, das {HORARIO_PADRAO.entrada} às {HORARIO_PADRAO.saida} — ajuste o horário na lista.
+          Agora anexe a foto do documento: a IA lê e preenche o que faltar.</div>
+        <DocumentosPessoa pessoa={criada} aoAtualizar={aoMudar} />
+        <button onClick={() => { setCriada(null); fechar(); }} style={{ ...btn, justifySelf: "start" }}>Pronto</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: 10, background: "#FBF9F3", border: "1px solid #E8E2D2", borderRadius: 10, display: "grid", gap: 8 }}>
+      <b style={{ fontSize: 13 }}>Incluir pessoa nova</b>
+      <input value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} placeholder="Nome completo" style={inp} />
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <select value={f.papel} onChange={(e) => setF({ ...f, papel: e.target.value })} style={{ ...inp, flex: 1 }}>
+          {PAPEIS.filter((x) => x !== "gerente").map((x) => <option key={x} value={x}>{PAPEL_LABEL[x]}</option>)}
+        </select>
+        <select value={f.tipo_contrato} onChange={(e) => setF({ ...f, tipo_contrato: e.target.value })} style={{ ...inp, flex: 1 }}>
+          <option value="freela">Freela (eventual)</option>
+          <option value="diarista">Diarista</option>
+        </select>
+      </div>
+      <CamposContato f={f} setF={setF} />
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button disabled={salvando} onClick={salvar} style={btnPrimario}>{salvando ? <Loader2 size={13} /> : <Check size={13} />} Salvar e escalar neste dia</button>
+        <button onClick={fechar} style={linkBtn}>Cancelar</button>
+      </div>
+      <div style={pequeno}>Depois de salvar, aparece o anexo do documento. Salário, PIX e fiado ficam só com o administrador, em Pessoas. Registrado também é cadastrado lá.</div>
+    </div>
+  );
+}
+
 function Hora({ rot, v, on, dis }) {
   return (
     <div>
