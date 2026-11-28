@@ -11,6 +11,8 @@ import {
 } from "../lib/fiado";
 import FolhaPagamento from "./FolhaPagamento";
 import EncargosRiscos from "./EncargosRiscos";
+import Jornada from "./Jornada";
+import DocumentosPessoa from "./DocumentosPessoa";
 // Ordem alfabética de verdade. O `order("nome")` do Postgres depende da
 // collation do banco e às vezes joga nome acentuado ou em maiúscula pro
 // fim da lista. localeCompare com "pt-BR" e sensitivity "base" trata
@@ -151,6 +153,7 @@ const SUBABAS = [
   { chave: "mensal",    label: "Fechamento mensal",   perm: "gente.mensal" },
   { chave: "folha",     label: "Folha de pagamento",  perm: "gente.folha" },
   { chave: "encargos",  label: "Encargos e riscos",   perm: "gente.encargos" },
+  { chave: "jornada",   label: "Jornada",             perm: "gente.jornada" },
 ];
 // Só admin vê valores (salário, matriz de cargos, comissão calculada,
 // fechamento mensal) — outras pessoas aprovadas só marcam quem trabalhou
@@ -220,6 +223,7 @@ export default function Equipe({ permissoes }) {
       {subaba === "mensal"    && liberada(SUBABAS[4]) && <FechamentoMensal />}
       {subaba === "folha"     && liberada(SUBABAS[5]) && <FolhaPagamento />}
       {subaba === "encargos"  && liberada(SUBABAS[6]) && <EncargosRiscos verValores={verValores} irParaPessoas={() => setSubaba("pessoas")} />}
+      {subaba === "jornada"   && liberada(SUBABAS[7]) && <Jornada verValores={verValores} />}
     </div>
   );
 }
@@ -431,6 +435,7 @@ function Pessoas({ isAdmin }) {
   const [novoAberto, setNovoAberto] = useState(false);
   const [expandidoId, setExpandidoId] = useState(null);
   const [fiadoId, setFiadoId] = useState(null);
+  const [docsId, setDocsId] = useState(null);
   // Nomes que realmente aparecem nos pedidos fiado. Viram sugestão no
   // campo "Nome no fiado", pra ninguém precisar adivinhar como o caixa
   // escreveu. Sai do cache — não custa consulta ao CardápioWeb.
@@ -501,6 +506,15 @@ function Pessoas({ isAdmin }) {
       : await supabase.from("pessoas").insert(payload).select("id").single();
     if (error) { setErro(error.message); return; }
 
+    // Documento anexado pelo formulário também entra na lista de
+    // documentos da pessoa (migração 211). Se a tabela ainda não existir,
+    // o anexo continua salvo no campo antigo — não trava o cadastro.
+    if (form.arquivoDocumento && documentoPath && salvo?.id) {
+      await supabase.from("pessoas_documentos").insert({
+        pessoa_id: salvo.id, caminho: documentoPath, nome_arquivo: form.arquivoDocumento.name, tipo: "outro",
+      });
+    }
+
     // O campo "Nome no fiado" do formulário é atalho pra tabela de
     // apelidos, que é onde o vínculo mora de verdade — uma pessoa pode ter
     // vários nomes de caixa, e o formulário só edita um.
@@ -545,11 +559,10 @@ function Pessoas({ isAdmin }) {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "#22231F", display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{p.nome}</span>
-                    {p.documento_path && (
-                      <button onClick={() => abrirDocumento(p.documento_path)} style={{ ...ghostIconBtn, flexShrink: 0 }} aria-label="Baixar documento anexado">
-                        <Paperclip size={14} />
-                      </button>
-                    )}
+                    <button onClick={() => setDocsId(docsId === p.id ? null : p.id)} style={{ ...ghostIconBtn, flexShrink: 0, color: p.documento_path ? "#22231F" : "#C4432B" }}
+                      aria-label="Documentos da pessoa" title={p.documento_path ? "Documentos" : "Sem documento — anexar"}>
+                      <Paperclip size={14} />
+                    </button>
                   </div>
                   <div style={{ fontSize: 12, color: "#8A8778" }}>
                     {PAPEL_LABEL[p.papel]}
@@ -586,6 +599,7 @@ function Pessoas({ isAdmin }) {
                   <div><span style={{ color: "#8A8778" }}>Documento anexado: </span><span style={p.documento_path ? { color: "#22231F" } : CAMPO_FALTANDO}>{p.documento_path ? "sim" : "nenhum"}</span></div>
                 </div>
               )}
+              {docsId === p.id && <DocumentosPessoa pessoa={p} aoAtualizar={carregar} />}
               {isAdmin && fiadoId === p.id && <FiadoDaPessoa pessoa={p} pessoas={pessoas} isAdmin={isAdmin} />}
               {editandoId === p.id && (
                 <FormPessoa form={form} setForm={setForm} onSalvar={salvar} onCancelar={() => setEditandoId(null)} isAdmin={isAdmin} nomesFiado={nomesFiado} pessoas={pessoas} />
